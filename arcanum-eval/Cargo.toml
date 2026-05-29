@@ -5,3 +5,9 @@ edition = "2021"
 
 [dependencies]
 arcanum-core = { path = "../arcanum-core" }
+async-trait  = { workspace = true }
+tokio        = { workspace = true }
+serde        = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
