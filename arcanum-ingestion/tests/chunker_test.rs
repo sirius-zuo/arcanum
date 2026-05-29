@@ -1,4 +1,4 @@
-use arcanum_ingestion::{FixedSizeChunker, SemanticChunker};
+use arcanum_ingestion::FixedSizeChunker;
 use arcanum_core::traits::Chunker;
 use arcanum_core::types::*;
 

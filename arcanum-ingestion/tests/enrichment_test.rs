@@ -1,4 +1,4 @@
-use arcanum_ingestion::{ContextEnricher, EntityExtractor};
+use arcanum_ingestion::ContextEnricher;
 use arcanum_core::types::*;
 use arcanum_core::traits::*;
 use std::sync::Arc;
