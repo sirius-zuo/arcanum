@@ -1,4 +1,4 @@
-use arcanum_eval::{compute_hit_rate_at_k, compute_mrr, compute_ndcg_at_k};
+use arcanum_eval::{compute_hit_rate_at_k, compute_mrr};
 use arcanum_core::types::*;
 
 #[test]
