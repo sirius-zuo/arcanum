@@ -1,1 +1,2 @@
-// placeholder
+mod ollama;
+pub use ollama::OllamaProvider;
