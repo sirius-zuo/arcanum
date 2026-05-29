@@ -1,38 +1,79 @@
 use axum::{
-    extract::{ws::{WebSocket, WebSocketUpgrade, Message}, State, Query},
-    http::StatusCode,
+    extract::{ws::{WebSocket, WebSocketUpgrade, Message}, State},
+    http::{StatusCode, HeaderMap},
     response::IntoResponse,
 };
 use std::sync::Arc;
-use serde::Deserialize;
 use arcanum_engine::{ArcanumEngine, auth::ApiKeyClaims};
 
-#[derive(Deserialize)]
-pub struct WsParams {
-    /// Short-lived token for WebSocket auth (passed as ?token=<bearer>).
-    token: Option<String>,
-}
-
+/// Token delivery: client sends `Sec-WebSocket-Protocol: arcanum-v1, <jwt>`.
+/// This is the browser-compatible pattern — the browser WebSocket API does not
+/// allow arbitrary headers, but does allow subprotocol negotiation.
+/// Non-browser clients may also use `Authorization: Bearer <jwt>` in the
+/// HTTP upgrade request headers directly.
 pub async fn ws_handler(
     ws: WebSocketUpgrade,
-    Query(params): Query<WsParams>,
+    headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_ws_token(&params.token, &engine) {
+    let claims = match extract_and_validate_ws_token(&headers, &engine) {
         Ok(c) => c,
         Err(status) => return status.into_response(),
     };
     ws.on_upgrade(move |socket| handle_socket(socket, claims))
 }
 
-fn validate_ws_token(token: &Option<String>, engine: &Option<Arc<ArcanumEngine>>)
-    -> Result<ApiKeyClaims, StatusCode>
-{
+fn extract_and_validate_ws_token(
+    headers: &HeaderMap,
+    engine: &Option<Arc<ArcanumEngine>>,
+) -> Result<ApiKeyClaims, StatusCode> {
     let Some(engine) = engine else {
         return Err(StatusCode::UNAUTHORIZED);
     };
-    let token = token.as_deref().ok_or(StatusCode::UNAUTHORIZED)?;
-    engine.auth.validate_api_key(token).map_err(|_| StatusCode::UNAUTHORIZED)
+
+    // Prefer `Authorization: Bearer <token>` (non-browser clients).
+    // Fall back to `Sec-WebSocket-Protocol: arcanum-v1, <token>` (browser clients).
+    let token = if let Some(auth) = headers.get("Authorization") {
+        auth.to_str()
+            .unwrap_or("")
+            .strip_prefix("Bearer ")
+            .unwrap_or("")
+            .to_string()
+    } else if let Some(proto) = headers.get("Sec-WebSocket-Protocol") {
+        // Format: "arcanum-v1, <jwt>"
+        proto.to_str()
+            .unwrap_or("")
+            .splitn(2, ',')
+            .nth(1)
+            .unwrap_or("")
+            .trim()
+            .to_string()
+    } else {
+        return Err(StatusCode::UNAUTHORIZED);
+    };
+
+    if token.is_empty() {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+
+    engine.auth.validate_api_key(&token)
+        .map_err(|_| StatusCode::UNAUTHORIZED)
+}
+
+/// Topic format: `<prefix>:<collection_id>` e.g. `ingestion:my-docs`, `system:health`.
+/// Returns true if `claims` grants access to the given topic.
+fn topic_allowed(topic: &str, claims: &ApiKeyClaims) -> bool {
+    let Some((prefix, collection_id)) = topic.split_once(':') else {
+        // Reject malformed topics.
+        return false;
+    };
+    if prefix == "system" {
+        // System-level topics are admin-only.
+        return claims.is_admin;
+    }
+    // Collection-scoped topics: exact match against allowed_collections.
+    claims.is_admin
+        || claims.allowed_collections.iter().any(|c| c == collection_id)
 }
 
 async fn handle_socket(mut socket: WebSocket, claims: ApiKeyClaims) {
@@ -40,15 +81,9 @@ async fn handle_socket(mut socket: WebSocket, claims: ApiKeyClaims) {
         if let Ok(Message::Text(text)) = msg {
             if let Ok(cmd) = serde_json::from_str::<serde_json::Value>(&text) {
                 if let Some(topics) = cmd["subscribe"].as_array() {
-                    // Filter topics to only those the caller is allowed to see.
                     let allowed: Vec<_> = topics.iter()
-                        .filter(|t| {
-                            let t = t.as_str().unwrap_or("");
-                            // System topics (e.g. "ingestion:progress") allowed for admins;
-                            // collection-scoped topics checked against claims.
-                            claims.is_admin || t.starts_with("system:") ||
-                            claims.allowed_collections.iter().any(|c| t.contains(c.as_str()))
-                        })
+                        .filter_map(|t| t.as_str())
+                        .filter(|t| topic_allowed(t, &claims))
                         .collect();
                     let _ = socket.send(Message::Text(
                         serde_json::json!({ "type": "subscribed", "topics": allowed }).to_string()
