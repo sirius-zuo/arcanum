@@ -7,7 +7,7 @@ use std::path::PathBuf;
 pub enum Source {
     File(PathBuf),
     Url(String),
-    Database { connection_string: String, query: String },
+    Database { connection_string: String, query: String, display_uri: String },
     Raw { content: Vec<u8>, mime_type: String, uri: String },
 }
 
@@ -16,7 +16,7 @@ impl Source {
         match self {
             Source::File(p) => p.to_str().unwrap_or(""),
             Source::Url(u) => u,
-            Source::Database { connection_string, .. } => connection_string,
+            Source::Database { display_uri, .. } => display_uri,
             Source::Raw { uri, .. } => uri,
         }
     }
@@ -58,6 +58,19 @@ mod tests {
         fn supports(&self, source: &Source) -> bool {
             matches!(source, Source::File(_))
         }
+    }
+
+    #[test]
+    fn test_database_uri_does_not_expose_credentials() {
+        let source = Source::Database {
+            connection_string: "postgres://admin:secret123@host:5432/mydb".to_string(),
+            query: "SELECT * FROM docs".to_string(),
+            display_uri: "postgres://host:5432/mydb".to_string(),
+        };
+        let uri = source.uri();
+        assert!(!uri.contains("secret123"));
+        assert!(!uri.contains("admin:"));
+        assert!(uri.contains("host:5432"));
     }
 
     #[tokio::test]
