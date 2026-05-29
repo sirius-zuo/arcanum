@@ -6,7 +6,7 @@ use std::sync::Arc;
 struct StubRetriever(RetrievalStrategy);
 #[async_trait]
 impl Retriever for StubRetriever {
-    async fn retrieve(&self, query: &Query) -> arcanum_core::Result<Vec<RetrievedChunk>> {
+    async fn retrieve(&self, _query: &Query) -> arcanum_core::Result<Vec<RetrievedChunk>> {
         Ok(vec![RetrievedChunk {
             indexed_chunk: IndexedChunk {
                 chunk: Chunk {
