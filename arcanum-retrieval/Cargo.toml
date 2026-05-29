@@ -4,4 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arcanum-core = { path = "../arcanum-core" }
+arcanum-core   = { path = "../arcanum-core" }
+arcanum-vector = { path = "../arcanum-vector" }
+async-trait    = { workspace = true }
+tokio          = { workspace = true }
+serde          = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
