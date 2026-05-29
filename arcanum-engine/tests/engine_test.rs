@@ -1,4 +1,4 @@
-use arcanum_engine::{ArcanumEngine, ArcanumEngineBuilder};
+use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_core::config::*;
 
 #[tokio::test]

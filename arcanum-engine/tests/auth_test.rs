@@ -1,4 +1,4 @@
-use arcanum_engine::auth::{AuthMiddleware, ApiKeyClaims};
+use arcanum_engine::auth::AuthMiddleware;
 
 #[test]
 fn test_valid_api_key_authenticates() {
