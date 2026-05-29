@@ -1,0 +1,27 @@
+[package]
+name    = "arcanum-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core   = { path = "../arcanum-core" }
+arcanum-engine = { path = "../arcanum-engine" }
+async-trait    = { workspace = true }
+tokio          = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+anyhow         = { workspace = true }
+tracing        = { workspace = true }
+axum           = { version = "0.7", features = ["ws", "macros"] }
+tower-http     = { version = "0.5", features = ["trace", "cors"] }
+uuid           = { workspace = true }
+
+[dev-dependencies]
+tokio  = { workspace = true }
+tower  = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
+hyper  = { version = "1", features = ["full"] }
+
+[[test]]
+name = "smoke_test"
+path = "../tests/integration/smoke_test.rs"

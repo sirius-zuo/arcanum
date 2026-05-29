@@ -1,0 +1,19 @@
+[package]
+name    = "arcanum-ingestion"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core  = { path = "../arcanum-core" }
+async-trait   = { workspace = true }
+tokio         = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+anyhow        = { workspace = true }
+sha2          = "0.10"
+hex           = "0.4"
+scraper       = "0.19"
+
+[dev-dependencies]
+tokio    = { workspace = true }
+tempfile = "3"

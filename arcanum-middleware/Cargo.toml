@@ -1,0 +1,12 @@
+[package]
+name    = "arcanum-middleware"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core = { path = "../arcanum-core" }
+tokio        = { workspace = true }
+serde        = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

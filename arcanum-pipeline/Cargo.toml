@@ -1,0 +1,19 @@
+[package]
+name    = "arcanum-pipeline"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core       = { path = "../arcanum-core" }
+arcanum-ingestion  = { path = "../arcanum-ingestion" }
+arcanum-vector     = { path = "../arcanum-vector" }
+arcanum-models     = { path = "../arcanum-models" }
+arcanum-middleware = { path = "../arcanum-middleware" }
+async-trait        = { workspace = true }
+tokio              = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+tracing            = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

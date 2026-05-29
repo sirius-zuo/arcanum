@@ -1,0 +1,26 @@
+[package]
+name    = "arcanum-engine"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core       = { path = "../arcanum-core" }
+arcanum-vector     = { path = "../arcanum-vector" }
+arcanum-models     = { path = "../arcanum-models" }
+arcanum-ingestion  = { path = "../arcanum-ingestion" }
+arcanum-retrieval  = { path = "../arcanum-retrieval" }
+arcanum-eval       = { path = "../arcanum-eval" }
+arcanum-pipeline   = { path = "../arcanum-pipeline" }
+arcanum-middleware = { path = "../arcanum-middleware" }
+async-trait        = { workspace = true }
+tokio              = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+anyhow             = { workspace = true }
+tracing            = { workspace = true }
+jsonwebtoken       = "9"
+uuid               = { workspace = true }
+chrono             = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name    = "arcanum-mcp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core   = { path = "../arcanum-core" }
+arcanum-engine = { path = "../arcanum-engine" }
+async-trait    = { workspace = true }
+tokio          = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+anyhow         = { workspace = true }
+tracing        = { workspace = true }
+axum           = { version = "0.7", features = ["ws"] }
+futures        = "0.3"
+uuid           = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,8 @@
+pub mod routes {
+    pub mod admin;
+    pub mod api;
+    pub mod health;
+}
+pub mod server;
+pub mod ws;
+pub use server::build_app;
