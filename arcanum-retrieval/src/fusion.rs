@@ -12,7 +12,9 @@ impl RrfFusion {
         for (_strategy, chunks) in strategy_results {
             for (rank, chunk) in chunks.into_iter().enumerate() {
                 let rrf_score = 1.0 / (k + rank as f32 + 1.0);
-                let key = chunk.indexed_chunk.chunk.text.clone();
+                // Key on stable ChunkId, not text — prevents wrong-record retention
+                // when two chunks share identical text but differ in provenance.
+                let key = chunk.indexed_chunk.chunk.id.0.to_string();
                 scores.entry(key)
                     .and_modify(|(s, _)| *s += rrf_score)
                     .or_insert((rrf_score, chunk));

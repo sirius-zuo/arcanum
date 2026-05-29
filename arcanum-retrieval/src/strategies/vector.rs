@@ -18,7 +18,12 @@ impl VectorRetriever {
 impl Retriever for VectorRetriever {
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let vectors = self.embedder.embed(vec![query.text.clone()]).await?;
-        let collection = query.collection_id.as_ref().map(|c| c.0.as_str()).unwrap_or("default");
+        // Require explicit collection_id — fail-open fallback would allow cross-collection access.
+        let collection_id = query.collection_id.as_ref()
+            .ok_or_else(|| arcanum_core::ArcanumError::Config(
+                "VectorRetriever requires an explicit collection_id".into()
+            ))?;
+        let collection = collection_id.0.as_str();
         let results = self.store.search(collection, &VectorQuery {
             vector: vectors.into_iter().next().unwrap_or(Vector(vec![])),
             top_k: query.top_k,
