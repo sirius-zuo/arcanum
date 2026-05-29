@@ -1,4 +1,4 @@
-use arcanum_core::{config::ArcanumConfig, Result};
+use arcanum_core::{config::ArcanumConfig, Result, ArcanumError};
 use std::sync::Arc;
 use crate::{
     audit::AuditLogger,
@@ -20,23 +20,36 @@ pub struct ArcanumEngine {
 
 pub struct ArcanumEngineBuilder {
     config: ArcanumConfig,
-    auth_secret: String,
+    auth_secret: Option<String>,
 }
 
 impl ArcanumEngineBuilder {
+    /// Create a builder. Call `with_auth_secret` or set `ARCANUM_AUTH_SECRET` env var
+    /// before calling `build()`. No hardcoded default is provided.
     pub fn new(config: ArcanumConfig) -> Self {
-        // In production, secret should come from SecretStore / env. Default is dev-only.
-        Self { config, auth_secret: "dev-secret-change-in-production".into() }
+        Self { config, auth_secret: None }
     }
 
     pub fn with_auth_secret(mut self, secret: impl Into<String>) -> Self {
-        self.auth_secret = secret.into();
+        self.auth_secret = Some(secret.into());
         self
     }
 
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
-        let auth = Arc::new(AuthMiddleware::new(&self.auth_secret));
+
+        // Resolve auth secret: explicit > env var > error (no hardcoded fallback).
+        let secret = self.auth_secret
+            .or_else(|| std::env::var("ARCANUM_AUTH_SECRET").ok())
+            .ok_or_else(|| ArcanumError::Config(
+                "ARCANUM_AUTH_SECRET must be set via with_auth_secret() or the ARCANUM_AUTH_SECRET env var".into()
+            ))?;
+        if secret.len() < 32 {
+            return Err(ArcanumError::Config(
+                "ARCANUM_AUTH_SECRET must be at least 32 characters".into()
+            ));
+        }
+        let auth = Arc::new(AuthMiddleware::new(&secret));
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
         let ingestion = Arc::new(IngestionService::new(self.config.clone(), events.clone(), audit.clone()));
