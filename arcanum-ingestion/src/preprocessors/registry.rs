@@ -24,11 +24,13 @@ impl PreprocessorRegistry {
     }
 
     pub fn default_chains() -> Self {
-        use crate::preprocessors::{HtmlCleaner, PdfParser, EpubParser};
+        use crate::preprocessors::{HtmlCleaner, PdfParser, EpubParser, DocxPreprocessor};
+        const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
         Self::new()
             .register("text/html",             Arc::new(HtmlCleaner::new()))
             .register("application/xhtml+xml", Arc::new(HtmlCleaner::new()))
             .register("application/pdf",       Arc::new(PdfParser::new()))
             .register("application/epub+zip",  Arc::new(EpubParser::new()))
+            .register(DOCX,                    Arc::new(DocxPreprocessor::new()))
     }
 }
