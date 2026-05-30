@@ -1,4 +1,5 @@
 pub mod detection;
+pub mod sanitizer;
 pub use detection::MimeDetector;
 
 pub mod loaders;

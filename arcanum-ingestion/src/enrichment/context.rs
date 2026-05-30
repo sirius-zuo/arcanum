@@ -1,5 +1,6 @@
 use arcanum_core::{traits::TextEnricher, types::*, Result};
 use std::sync::Arc;
+use crate::sanitizer::sanitize_for_enrichment;
 
 pub struct ContextEnricher {
     enricher: Arc<dyn TextEnricher>,
@@ -10,7 +11,7 @@ impl ContextEnricher {
 
     pub async fn enrich_chunk(&self, mut chunk: Chunk, doc_context: &str) -> Result<Chunk> {
         let result = self.enricher.enrich(EnrichRequest {
-            text: chunk.text.clone(),
+            text: sanitize_for_enrichment(&chunk.text),
             intent: EnrichIntent::ContextPrefix,
             context: Some(EnrichContext {
                 document_title: Some(doc_context.to_string()),
