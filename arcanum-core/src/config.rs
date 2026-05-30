@@ -1,4 +1,6 @@
 use serde::{Deserialize, Serialize};
+use std::{path::Path, sync::Arc};
+use tokio::sync::RwLock;
 use crate::{ArcanumError, Result};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -22,7 +24,9 @@ pub enum MetadataBackend {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GlobalConfig {
+    #[serde(default)]
     pub runtime_mode: RuntimeMode,
+    #[serde(default)]
     pub log_level: String,
 }
 
@@ -166,13 +170,21 @@ impl Default for AdminConfig {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ArcanumConfig {
+    #[serde(default)]
     pub global: GlobalConfig,
+    #[serde(default)]
     pub ingestion: IngestionConfig,
+    #[serde(default)]
     pub embedding: EmbeddingConfig,
+    #[serde(default)]
     pub enrichment: EnrichmentConfig,
+    #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
     pub retrieval: RetrievalConfig,
+    #[serde(default)]
     pub eval: EvalConfig,
+    #[serde(default)]
     pub admin: AdminConfig,
 }
 
@@ -208,6 +220,50 @@ impl ArcanumConfig {
         cfg
     }
 
+    /// Load config from a TOML or YAML file. Extension determines format.
+    pub fn from_file(path: &Path) -> crate::Result<Self> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| crate::ArcanumError::Config(format!("cannot read config file: {}", e)))?;
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        match ext {
+            "toml" => toml::from_str(&content)
+                .map_err(|e| crate::ArcanumError::Config(format!("TOML parse error: {}", e))),
+            "yaml" | "yml" => serde_yaml::from_str(&content)
+                .map_err(|e| crate::ArcanumError::Config(format!("YAML parse error: {}", e))),
+            other => Err(crate::ArcanumError::Config(
+                format!("unsupported config format '.{}'; use .toml or .yaml", other)
+            )),
+        }
+    }
+
+    /// Layer: defaults → file → env. Later layers override earlier ones.
+    pub fn merged(file_path: Option<&Path>) -> crate::Result<Self> {
+        let mut cfg = Self::default();
+        if let Some(path) = file_path {
+            cfg = Self::from_file(path)?;
+        }
+        let from_env = Self::from_env();
+        if std::env::var("ARCANUM_RUNTIME_MODE").is_ok() {
+            cfg.global.runtime_mode = from_env.global.runtime_mode;
+        }
+        if std::env::var("ARCANUM_INGESTION_WORKER_POOL_SIZE").is_ok() {
+            cfg.ingestion.worker_pool_size = from_env.ingestion.worker_pool_size;
+        }
+        if std::env::var("ARCANUM_INGESTION_QUEUE_CAPACITY").is_ok() {
+            cfg.ingestion.queue_capacity = from_env.ingestion.queue_capacity;
+        }
+        if std::env::var("ARCANUM_EMBEDDING_PROVIDER").is_ok() {
+            cfg.embedding.provider = from_env.embedding.provider;
+        }
+        if std::env::var("ARCANUM_EMBEDDING_MODEL_ID").is_ok() {
+            cfg.embedding.model_id = from_env.embedding.model_id;
+        }
+        if std::env::var("ARCANUM_EVAL_ENABLED").is_ok() {
+            cfg.eval.enabled = from_env.eval.enabled;
+        }
+        Ok(cfg)
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.global.runtime_mode != RuntimeMode::Development
             && self.storage.metadata_backend == MetadataBackend::Sqlite
@@ -218,6 +274,25 @@ impl ArcanumConfig {
             ));
         }
         Ok(())
+    }
+}
+
+/// Hot-reloadable config wrapper. The admin API calls `update()` to apply patches at runtime.
+#[derive(Clone)]
+pub struct LiveConfig(Arc<RwLock<ArcanumConfig>>);
+
+impl LiveConfig {
+    pub fn new(config: ArcanumConfig) -> Self {
+        Self(Arc::new(RwLock::new(config)))
+    }
+
+    pub async fn get(&self) -> ArcanumConfig {
+        self.0.read().await.clone()
+    }
+
+    pub async fn update(&self, f: impl FnOnce(&mut ArcanumConfig) + Send) {
+        let mut cfg = self.0.write().await;
+        f(&mut cfg);
     }
 }
 
@@ -264,5 +339,36 @@ mod tests {
         let cfg = ArcanumConfig::from_env();
         assert_eq!(cfg.ingestion.queue_capacity, 500);
         std::env::remove_var("ARCANUM_INGESTION_QUEUE_CAPACITY");
+    }
+
+    #[test]
+    fn test_from_toml_file() {
+        use std::io::Write;
+        let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
+        writeln!(f, r#"
+[global]
+log_level = "info"
+
+[ingestion]
+worker_pool_size = 8
+queue_capacity = 5000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+"#).unwrap();
+        let cfg = ArcanumConfig::from_file(f.path()).unwrap();
+        assert_eq!(cfg.ingestion.worker_pool_size, 8);
+    }
+
+    #[test]
+    fn test_from_file_unsupported_extension() {
+        let result = ArcanumConfig::from_file(std::path::Path::new("config.json"));
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_live_config_hot_update() {
+        let live = LiveConfig::new(ArcanumConfig::default());
+        live.update(|cfg| cfg.ingestion.worker_pool_size = 99).await;
+        assert_eq!(live.get().await.ingestion.worker_pool_size, 99);
     }
 }
