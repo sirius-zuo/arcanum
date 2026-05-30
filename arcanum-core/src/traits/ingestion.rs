@@ -53,6 +53,9 @@ impl Source {
         if uri.starts_with("http://") || uri.starts_with("https://") {
             return Ok(Source::Url(uri.to_string()));
         }
+        if uri.starts_with("raw://") {
+            return Ok(Source::Raw { content: Vec::new(), mime_hint: None, uri: uri.to_string() });
+        }
         if let Some(rest) = uri.strip_prefix("s3://") {
             let (bucket, key) = split_bucket_key(rest);
             return Ok(Source::CloudStorage { provider: CloudProvider::S3, bucket, key });
