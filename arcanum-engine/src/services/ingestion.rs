@@ -6,14 +6,6 @@ use crate::audit::{AuditLogger, AuditEntry};
 use crate::event_bus::EventBus;
 
 #[derive(Debug, Clone)]
-pub struct IngestionTask {
-    pub operation_id: OperationId,
-    pub source_uri: String,
-    pub collection_id: CollectionId,
-    pub pipeline_template: String,
-}
-
-#[derive(Debug, Clone)]
 pub struct IngestRequest {
     pub source_uri: String,
     pub collection_id: CollectionId,
