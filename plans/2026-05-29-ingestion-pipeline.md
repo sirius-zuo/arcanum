@@ -18,6 +18,7 @@
 | Modify | `src/traits/ingestion.rs` | Extend `Source` enum; add `CloudProvider`, `ConnectorKind`, `Source::from_uri()` |
 | Create | `src/traits/progress.rs` | `ProgressEmitter` trait so `IngestionWorker` emits events without depending on arcanum-engine |
 | Modify | `src/traits/mod.rs` | Re-export `ProgressEmitter` |
+| Modify | `src/types/operation.rs` | Move `IngestionTask` here from arcanum-engine so both arcanum-engine and arcanum-pipeline can import it without a cycle |
 
 ### arcanum-ingestion
 | Action | File | Purpose |
@@ -318,11 +319,43 @@ cargo test -p arcanum-core 2>&1 | tail -20
 
 Expected: all tests pass. Fix any `Source::Raw { mime_type` usages elsewhere that now need `mime_hint`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Move `IngestionTask` to arcanum-core**
+
+`IngestionTask` is currently in `arcanum-engine/src/services/ingestion.rs`. `IngestionWorker` lives in `arcanum-pipeline` which cannot import from `arcanum-engine` (would create a cycle: pipeline→engine→pipeline). Moving `IngestionTask` to `arcanum-core` lets both crates use it via a common import.
+
+Add to `arcanum-core/src/types/operation.rs` (where `OperationId` already lives):
+
+```rust
+use crate::types::document::CollectionId;
+
+#[derive(Debug, Clone)]
+pub struct IngestionTask {
+    pub operation_id:      OperationId,
+    pub source_uri:        String,
+    pub collection_id:     CollectionId,
+    pub pipeline_template: String,
+}
+```
+
+Add to `arcanum-core/src/types/mod.rs` public re-exports:
+
+```rust
+pub use operation::IngestionTask;
+```
+
+- [ ] **Step 6: Run tests**
 
 ```bash
-git add arcanum-core/src/traits/ingestion.rs
-git commit -m "feat(core): extend Source enum with CloudStorage/Git/Connector variants and from_uri()"
+cargo test -p arcanum-core 2>&1 | tail -10
+```
+
+Expected: all pass.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add arcanum-core/src/traits/ingestion.rs arcanum-core/src/types/operation.rs
+git commit -m "feat(core): extend Source enum, add from_uri(), move IngestionTask to arcanum-core"
 ```
 
 ---
@@ -1942,8 +1975,45 @@ fn test_registry_unknown_template_errors() {
 Create `arcanum-pipeline/tests/standard_pipeline_test.rs`:
 
 ```rust
-// Uses the same stub_deps helper as registry_test.rs (copy it here for independence)
-// ... (same stub_deps function)
+use arcanum_pipeline::{ArcanumPipelineRegistry, DagExecutor, IngestionState, PipelineDeps};
+use arcanum_core::traits::Source;
+use arcanum_core::types::CollectionId;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+// Paste stub_deps() verbatim from registry_test.rs (each test file is independent):
+fn stub_deps() -> Arc<PipelineDeps> {
+    use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker, RawLoader};
+    use arcanum_core::traits::{Chunker, Embedder, VectorStore};
+    use arcanum_core::types::*;
+    use async_trait::async_trait;
+    struct StubChunker;
+    #[async_trait] impl Chunker for StubChunker {
+        async fn chunk(&self, _: &RawDocument) -> arcanum_core::Result<Vec<Chunk>> { Ok(vec![]) }
+    }
+    struct StubEmbedder;
+    #[async_trait] impl Embedder for StubEmbedder {
+        async fn embed(&self, _: Vec<String>) -> arcanum_core::Result<Vec<Vector>> { Ok(vec![]) }
+        fn dimension(&self) -> usize { 3 }
+    }
+    struct StubVectorStore;
+    #[async_trait] impl VectorStore for StubVectorStore {
+        async fn upsert(&self, _: &str, _: Vec<IndexedChunk>) -> arcanum_core::Result<()> { Ok(()) }
+        async fn search(&self, _: &str, _: &arcanum_core::traits::VectorQuery) -> arcanum_core::Result<Vec<arcanum_core::traits::ScoredChunk>> { Ok(vec![]) }
+        async fn delete(&self, _: &str, _: &[ChunkId]) -> arcanum_core::Result<()> { Ok(()) }
+        async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> { Ok(true) }
+    }
+    Arc::new(PipelineDeps {
+        loaders: Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
+        preprocessors: Arc::new(PreprocessorRegistry::new()),
+        chunker: Arc::new(StubChunker),
+        context_enricher: None, entity_extractor: None,
+        embedder: Arc::new(StubEmbedder),
+        vector_store: Arc::new(StubVectorStore),
+        graph_store: None, tree_store: None,
+        hash_tracker: Arc::new(DocumentHashTracker::new()),
+    })
+}
 
 #[tokio::test]
 async fn test_standard_pipeline_runs_all_five_stages() {
@@ -2370,20 +2440,17 @@ Create `arcanum-pipeline/src/worker.rs`:
 ```rust
 use crate::{deps::PipelineDeps, executor::DagExecutor,
             ingestion_state::IngestionState, registry::ArcanumPipelineRegistry};
-use arcanum_core::{traits::{ProgressEmitter, Source}, types::CollectionId, Result, ArcanumError};
+use arcanum_core::{traits::{ProgressEmitter, Source}, types::{CollectionId, IngestionTask}, Result};
 use arcanum_middleware::BoundedQueue;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-#[derive(Clone)]
-pub struct WorkerTask {
-    pub source_uri:        String,
-    pub collection_id:     CollectionId,
-    pub pipeline_template: String,
-}
+// IngestionTask is imported from arcanum-core (moved there in Task 1, Step 5)
+// so both arcanum-engine (which pushes) and arcanum-pipeline (which pops) share
+// the same BoundedQueue<IngestionTask> — no separate WorkerTask needed.
 
 pub struct IngestionWorker {
-    queue:    Arc<BoundedQueue<WorkerTask>>,
+    queue:    Arc<BoundedQueue<IngestionTask>>,
     registry: Arc<ArcanumPipelineRegistry>,
     deps:     Arc<PipelineDeps>,
     emitter:  Arc<dyn ProgressEmitter>,
@@ -2391,7 +2458,7 @@ pub struct IngestionWorker {
 
 impl IngestionWorker {
     pub fn new(
-        queue:    Arc<BoundedQueue<WorkerTask>>,
+        queue:    Arc<BoundedQueue<IngestionTask>>,
         registry: Arc<ArcanumPipelineRegistry>,
         deps:     Arc<PipelineDeps>,
         emitter:  Arc<dyn ProgressEmitter>,
@@ -2412,6 +2479,7 @@ impl IngestionWorker {
     async fn run_loop(&self) {
         while let Some(task) = self.queue.pop().await {
             self.emitter.emit("ingestion:progress", serde_json::json!({
+                "operation_id": task.operation_id.0,
                 "source_uri": task.source_uri, "status": "processing"
             })).await;
             match run_task(
@@ -2419,9 +2487,11 @@ impl IngestionWorker {
                 self.registry.clone(), self.deps.clone(), self.emitter.clone(),
             ).await {
                 Ok(_) => self.emitter.emit("ingestion:progress", serde_json::json!({
+                    "operation_id": task.operation_id.0,
                     "source_uri": task.source_uri, "status": "completed"
                 })).await,
                 Err(e) => self.emitter.emit("ingestion:progress", serde_json::json!({
+                    "operation_id": task.operation_id.0,
                     "source_uri": task.source_uri, "status": "failed", "error": e.to_string()
                 })).await,
             }
@@ -2458,7 +2528,8 @@ Add to `arcanum-pipeline/src/lib.rs`:
 
 ```rust
 pub mod worker;
-pub use worker::{IngestionWorker, WorkerTask};
+pub use worker::IngestionWorker;
+// IngestionTask is re-exported from arcanum-core — no WorkerTask needed
 ```
 
 - [ ] **Step 4: Run tests**
@@ -2513,10 +2584,11 @@ async fn test_ingest_skips_already_seen_uri() {
         source_uri: "file:///doc.pdf".into(),
         collection_id: CollectionId("col".into()),
         pipeline_template: None,
+        force: false,  // dedup active — second call with same URI should skip
     };
     let op1 = svc.ingest(req1.clone(), "user1").await.unwrap();
 
-    // Second call with same URI — returns immediately, does NOT push to queue
+    // Second call with same URI — skipped because tracker already has this URI
     let op2 = svc.ingest(req1, "user1").await.unwrap();
     assert_ne!(op1.0, op2.0); // different OperationIds (each call creates a new one)
     // Verify queue depth is 1, not 2 — the second call was skipped
@@ -2551,19 +2623,16 @@ Modify `arcanum-engine/src/services/ingestion.rs`:
 
 ```rust
 use arcanum_core::{config::ArcanumConfig, types::*, Result};
+// IngestionTask moved to arcanum-core in Task 1 Step 5 — import from there.
+// Both IngestionService (engine) and IngestionWorker (pipeline) now share
+// the same BoundedQueue<IngestionTask> without a circular dependency.
 use arcanum_middleware::BoundedQueue;
 use arcanum_ingestion::DocumentHashTracker;
 use std::sync::Arc;
 use crate::audit::{AuditLogger, AuditEntry};
 use crate::event_bus::EventBus;
 
-#[derive(Debug, Clone)]
-pub struct IngestionTask {
-    pub operation_id: OperationId,
-    pub source_uri: String,
-    pub collection_id: CollectionId,
-    pub pipeline_template: String,
-}
+// IngestionTask is now in arcanum_core::types — re-exported via `use arcanum_core::types::*`
 
 #[derive(Debug, Clone)]
 pub struct IngestRequest {
