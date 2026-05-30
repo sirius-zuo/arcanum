@@ -1,4 +1,4 @@
-use arcanum_ingestion::{FileLoader, RawLoader};
+use arcanum_ingestion::{FileLoader, RawLoader, HttpLoader};
 use arcanum_core::traits::{DocumentLoader, Source};
 use std::io::Write;
 
@@ -39,4 +39,19 @@ async fn test_raw_loader_defaults_mime_when_hint_absent() {
     };
     let doc = loader.load(&source).await.unwrap();
     assert_eq!(doc.mime_type, "application/octet-stream");
+}
+
+#[test]
+fn test_http_loader_supports_url() {
+    let loader = HttpLoader::new();
+    assert!(loader.supports(&Source::Url("https://example.com".into())));
+    assert!(!loader.supports(&Source::File("/tmp/x".into())));
+}
+
+#[tokio::test]
+async fn test_http_loader_returns_error_on_connection_refused() {
+    let loader = HttpLoader::new();
+    // Port 1 — always refused
+    let source = Source::Url("http://127.0.0.1:1/doc".into());
+    assert!(loader.load(&source).await.is_err());
 }
