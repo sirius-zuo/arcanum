@@ -4,6 +4,7 @@ pub mod templates;
 pub mod ingestion_state;
 pub mod deps;
 pub mod stage_failure;
+pub mod stages;
 
 pub use dag::{PipelineDAG, PipelineStage, StageFn, StageContext};
 pub use executor::DagExecutor;

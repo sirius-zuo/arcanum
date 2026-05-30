@@ -1,12 +1,12 @@
 use std::sync::Arc;
 use arcanum_core::{traits::TreeStore, types::*, Result};
 
-pub struct RaptorBuilder<S: TreeStore> {
+pub struct RaptorBuilder<S: TreeStore + ?Sized> {
     store: Arc<S>,
     max_depth: u32,
 }
 
-impl<S: TreeStore + Send + Sync + 'static> RaptorBuilder<S> {
+impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     pub fn new(store: Arc<S>, max_depth: u32) -> Self {
         Self { store, max_depth }
     }

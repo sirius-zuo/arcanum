@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 arcanum-core       = { path = "../arcanum-core" }
 arcanum-ingestion  = { path = "../arcanum-ingestion" }
+arcanum-tree       = { path = "../arcanum-tree" }
 arcanum-vector     = { path = "../arcanum-vector" }
 arcanum-models     = { path = "../arcanum-models" }
 arcanum-middleware = { path = "../arcanum-middleware" }
