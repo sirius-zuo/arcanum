@@ -1,8 +1,10 @@
+pub mod cache;
 pub mod ingestion;
 pub mod model;
 pub mod progress;
 pub mod retrieval;
 pub mod store;
+pub use cache::*;
 pub use ingestion::*;
 pub use model::*;
 pub use progress::*;
