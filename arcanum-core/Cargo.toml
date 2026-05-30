@@ -11,6 +11,8 @@ thiserror   = { workspace = true }
 anyhow      = { workspace = true }
 uuid        = { workspace = true }
 chrono      = { workspace = true }
+sha2        = "0.10"
+hex         = "0.4"
 
 [dev-dependencies]
 tokio = { workspace = true }
