@@ -12,6 +12,7 @@ impl FileLoader {
             Some("html") | Some("htm")    => "text/html",
             Some("txt")                   => "text/plain",
             Some("pdf")                   => "application/pdf",
+            Some("epub")                  => "application/epub+zip",
             _                             => "application/octet-stream",
         }
     }
