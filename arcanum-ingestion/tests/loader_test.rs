@@ -55,3 +55,39 @@ async fn test_http_loader_returns_error_on_connection_refused() {
     let source = Source::Url("http://127.0.0.1:1/doc".into());
     assert!(loader.load(&source).await.is_err());
 }
+
+use arcanum_core::traits::{CloudProvider, ConnectorKind};
+use arcanum_ingestion::loaders::{DatabaseLoader, CloudStorageLoader, GitLoader, ConnectorLoader};
+
+#[test]
+fn test_stub_loaders_support_correct_variants() {
+    assert!(DatabaseLoader::new().supports(&Source::Database {
+        connection_string: "postgres://localhost/db".into(),
+        query: "SELECT 1".into(),
+        display_uri: "postgres://localhost/db".into(),
+    }));
+    assert!(CloudStorageLoader::new().supports(&Source::CloudStorage {
+        provider: CloudProvider::S3,
+        bucket: "b".into(),
+        key: "k".into(),
+    }));
+    assert!(GitLoader::new().supports(&Source::Git {
+        repo_url: "https://github.com/x/y".into(),
+        branch: "main".into(),
+        path_glob: None,
+    }));
+    assert!(ConnectorLoader::new().supports(&Source::Connector {
+        provider: ConnectorKind::Notion,
+        resource_id: "page-123".into(),
+    }));
+}
+
+#[tokio::test]
+async fn test_stub_loaders_return_error_on_load() {
+    let src = Source::Database {
+        connection_string: "postgres://localhost/db".into(),
+        query: "SELECT 1".into(),
+        display_uri: "postgres://localhost/db".into(),
+    };
+    assert!(DatabaseLoader::new().load(&src).await.is_err());
+}
