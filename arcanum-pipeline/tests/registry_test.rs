@@ -63,3 +63,15 @@ fn test_registry_unknown_template_errors() {
     let deps = stub_deps();
     assert!(reg.build("nonexistent", state, &deps).is_err());
 }
+
+#[test]
+fn test_registry_all_five_templates_build() {
+    let reg = ArcanumPipelineRegistry::default();
+    let deps = stub_deps();
+    for name in ["standard", "contextual", "graph", "raptor", "full"] {
+        let state = Arc::new(Mutex::new(IngestionState::new(
+            Source::File("/tmp/x".into()), CollectionId("col".into()),
+        )));
+        assert!(reg.build(name, state, &deps).is_ok(), "template '{name}' failed to build");
+    }
+}
