@@ -78,11 +78,102 @@ pub enum FusionStrategy {
     Learned,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IngestionConfig {
+    pub worker_pool_size: usize,
+    pub queue_capacity: usize,
+    pub retry_max_attempts: u32,
+    pub retry_base_delay_ms: u64,
+}
+
+impl Default for IngestionConfig {
+    fn default() -> Self {
+        Self {
+            worker_pool_size: 4,
+            queue_capacity: 10_000,
+            retry_max_attempts: 3,
+            retry_base_delay_ms: 1_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingConfig {
+    pub provider: String,
+    pub model_id: String,
+    pub dimension: usize,
+    pub batch_size: usize,
+    pub cache_enabled: bool,
+    pub parallelism: usize,
+}
+
+impl Default for EmbeddingConfig {
+    fn default() -> Self {
+        Self {
+            provider: "ollama".to_string(),
+            model_id: "nomic-embed-text".to_string(),
+            dimension: 0,
+            batch_size: 32,
+            cache_enabled: false,
+            parallelism: 4,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct EnrichmentConfig {
+    pub context_prefix_provider: Option<String>,
+    pub entity_extraction_provider: Option<String>,
+    pub summarize_provider: Option<String>,
+    pub caption_provider: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvalConfig {
+    pub enabled: bool,
+    pub schedule_cron: Option<String>,
+    pub default_k: usize,
+}
+
+impl Default for EvalConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            schedule_cron: None,
+            default_k: 10,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminConfig {
+    pub jwt_rs256_public_key_pem: Option<String>,
+    pub ip_allowlist: Vec<String>,
+    pub portal_enabled: bool,
+    pub audit_retention_days: u32,
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            jwt_rs256_public_key_pem: None,
+            ip_allowlist: vec![],
+            portal_enabled: false,
+            audit_retention_days: 90,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ArcanumConfig {
     pub global: GlobalConfig,
+    pub ingestion: IngestionConfig,
+    pub embedding: EmbeddingConfig,
+    pub enrichment: EnrichmentConfig,
     pub storage: StorageConfig,
     pub retrieval: RetrievalConfig,
+    pub eval: EvalConfig,
+    pub admin: AdminConfig,
 }
 
 impl ArcanumConfig {
@@ -94,6 +185,25 @@ impl ArcanumConfig {
                 "enterprise" => RuntimeMode::Enterprise,
                 _ => RuntimeMode::Development,
             };
+        }
+        if let Ok(v) = std::env::var("ARCANUM_INGESTION_WORKER_POOL_SIZE") {
+            if let Ok(n) = v.parse() {
+                cfg.ingestion.worker_pool_size = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ARCANUM_INGESTION_QUEUE_CAPACITY") {
+            if let Ok(n) = v.parse() {
+                cfg.ingestion.queue_capacity = n;
+            }
+        }
+        if let Ok(v) = std::env::var("ARCANUM_EMBEDDING_PROVIDER") {
+            cfg.embedding.provider = v;
+        }
+        if let Ok(v) = std::env::var("ARCANUM_EMBEDDING_MODEL_ID") {
+            cfg.embedding.model_id = v;
+        }
+        if let Ok(v) = std::env::var("ARCANUM_EVAL_ENABLED") {
+            cfg.eval.enabled = v == "true" || v == "1";
         }
         cfg
     }
@@ -136,5 +246,23 @@ mod tests {
         cfg.global.runtime_mode = RuntimeMode::Production;
         cfg.storage.metadata_backend = MetadataBackend::Sqlite;
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_new_config_sections_have_defaults() {
+        let cfg = ArcanumConfig::default();
+        assert_eq!(cfg.ingestion.worker_pool_size, 4);
+        assert_eq!(cfg.ingestion.queue_capacity, 10_000);
+        assert_eq!(cfg.embedding.provider, "ollama");
+        assert!(!cfg.eval.enabled);
+        assert!(!cfg.admin.portal_enabled);
+    }
+
+    #[test]
+    fn test_from_env_ingestion_queue() {
+        std::env::set_var("ARCANUM_INGESTION_QUEUE_CAPACITY", "500");
+        let cfg = ArcanumConfig::from_env();
+        assert_eq!(cfg.ingestion.queue_capacity, 500);
+        std::env::remove_var("ARCANUM_INGESTION_QUEUE_CAPACITY");
     }
 }
