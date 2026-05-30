@@ -12,7 +12,7 @@ pub use loaders::{
     DatabaseLoader, CloudStorageLoader, GitLoader, ConnectorLoader,
     LoaderRegistry,
 };
-pub use preprocessors::{HtmlCleaner, PdfParser, EpubParser};
+pub use preprocessors::{HtmlCleaner, PdfParser, EpubParser, PreprocessorRegistry};
 pub use chunkers::{FixedSizeChunker, SemanticChunker, PropositionalChunker};
 pub use enrichment::{ContextEnricher, EntityExtractor};
 pub use metadata::DocumentHashTracker;
