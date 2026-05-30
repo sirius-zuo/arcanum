@@ -4,11 +4,20 @@ use crate::Result;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
+pub enum CloudProvider { S3, Gcs, AzureBlob }
+
+#[derive(Debug, Clone)]
+pub enum ConnectorKind { GoogleDrive, Notion, Confluence }
+
+#[derive(Debug, Clone)]
 pub enum Source {
     File(PathBuf),
     Url(String),
     Database { connection_string: String, query: String, display_uri: String },
-    Raw { content: Vec<u8>, mime_type: String, uri: String },
+    Raw { content: Vec<u8>, mime_hint: Option<String>, uri: String },
+    CloudStorage { provider: CloudProvider, bucket: String, key: String },
+    Git { repo_url: String, branch: String, path_glob: Option<String> },
+    Connector { provider: ConnectorKind, resource_id: String },
 }
 
 impl Source {
@@ -18,7 +27,52 @@ impl Source {
             Source::Url(u) => u,
             Source::Database { display_uri, .. } => display_uri,
             Source::Raw { uri, .. } => uri,
+            Source::CloudStorage { .. } => "cloud://",
+            Source::Git { repo_url, .. } => repo_url,
+            Source::Connector { .. } => "connector://",
         }
+    }
+
+    pub fn display_uri(&self) -> String {
+        match self {
+            Source::CloudStorage { provider, bucket, key } => match provider {
+                CloudProvider::S3 => format!("s3://{}/{}", bucket, key),
+                CloudProvider::Gcs => format!("gs://{}/{}", bucket, key),
+                CloudProvider::AzureBlob => format!("az://{}/{}", bucket, key),
+            },
+            Source::Connector { provider, resource_id } => match provider {
+                ConnectorKind::GoogleDrive => format!("gdrive://{}", resource_id),
+                ConnectorKind::Notion => format!("notion://{}", resource_id),
+                ConnectorKind::Confluence => format!("confluence://{}", resource_id),
+            },
+            other => other.uri().to_string(),
+        }
+    }
+
+    pub fn from_uri(uri: &str) -> Result<Self> {
+        if uri.starts_with("http://") || uri.starts_with("https://") {
+            return Ok(Source::Url(uri.to_string()));
+        }
+        if let Some(rest) = uri.strip_prefix("s3://") {
+            let (bucket, key) = split_bucket_key(rest);
+            return Ok(Source::CloudStorage { provider: CloudProvider::S3, bucket, key });
+        }
+        if let Some(rest) = uri.strip_prefix("gs://") {
+            let (bucket, key) = split_bucket_key(rest);
+            return Ok(Source::CloudStorage { provider: CloudProvider::Gcs, bucket, key });
+        }
+        if let Some(rest) = uri.strip_prefix("az://") {
+            let (bucket, key) = split_bucket_key(rest);
+            return Ok(Source::CloudStorage { provider: CloudProvider::AzureBlob, bucket, key });
+        }
+        Ok(Source::File(PathBuf::from(uri)))
+    }
+}
+
+fn split_bucket_key(rest: &str) -> (String, String) {
+    match rest.find('/') {
+        Some(idx) => (rest[..idx].to_string(), rest[idx + 1..].to_string()),
+        None => (rest.to_string(), String::new()),
     }
 }
 
@@ -80,5 +134,37 @@ mod tests {
         assert!(loader.supports(&source));
         let doc = loader.load(&source).await.unwrap();
         assert_eq!(doc.content, b"hello");
+    }
+
+    #[test]
+    fn test_source_from_uri_http() {
+        let s = Source::from_uri("https://example.com/doc.pdf").unwrap();
+        assert!(matches!(s, Source::Url(_)));
+    }
+
+    #[test]
+    fn test_source_from_uri_file() {
+        let s = Source::from_uri("/tmp/doc.pdf").unwrap();
+        assert!(matches!(s, Source::File(_)));
+    }
+
+    #[test]
+    fn test_source_from_uri_s3() {
+        let s = Source::from_uri("s3://my-bucket/path/doc.pdf").unwrap();
+        assert!(matches!(s, Source::CloudStorage { provider: CloudProvider::S3, .. }));
+    }
+
+    #[test]
+    fn test_cloud_storage_uri_display() {
+        let s = Source::CloudStorage {
+            provider: CloudProvider::Gcs, bucket: "b".into(), key: "k/doc.pdf".into(),
+        };
+        assert_eq!(s.display_uri(), "gs://b/k/doc.pdf");
+    }
+
+    #[test]
+    fn test_raw_mime_hint_optional() {
+        let s = Source::Raw { content: b"data".to_vec(), mime_hint: None, uri: "raw://1".into() };
+        assert_eq!(s.uri(), "raw://1");
     }
 }
