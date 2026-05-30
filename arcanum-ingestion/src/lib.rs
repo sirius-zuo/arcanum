@@ -7,7 +7,7 @@ pub mod enrichment;
 pub mod chunkers;
 pub mod metadata;
 
-pub use loaders::{FileLoader, LoaderRegistry};
+pub use loaders::{FileLoader, RawLoader, LoaderRegistry};
 pub use preprocessors::{HtmlCleaner, PdfParser, EpubParser};
 pub use chunkers::{FixedSizeChunker, SemanticChunker, PropositionalChunker};
 pub use enrichment::{ContextEnricher, EntityExtractor};
