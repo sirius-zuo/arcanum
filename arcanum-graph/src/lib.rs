@@ -6,6 +6,9 @@ use tokio::sync::RwLock;
 pub mod query_planner;
 pub use query_planner::GraphQueryPlanner;
 
+pub mod neo4j_store;
+pub use neo4j_store::Neo4jStore;
+
 #[derive(Debug, Clone)]
 pub struct GraphTraversalPlan {
     pub seed_entities: Vec<String>,
