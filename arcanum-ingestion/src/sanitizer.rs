@@ -26,17 +26,19 @@ pub fn sanitize_for_enrichment(text: &str) -> String {
             !lower.starts_with("user:")
         })
         .collect();
-    let mut result = cleaned_lines.join("\n");
+    let after_roles = cleaned_lines.join("\n");
 
-    for pattern in INJECTION_PATTERNS {
-        let lower = result.to_lowercase();
-        if let Some(pos) = lower.find(pattern) {
-            let end = result[pos..].find('\n').map(|n| pos + n).unwrap_or(result.len());
-            result.replace_range(pos..end, "");
-        }
-    }
+    // Second pass: remove any line containing an injection pattern (case-insensitive)
+    // Line-level removal avoids all byte-offset/unicode issues
+    let result_lines: Vec<&str> = after_roles
+        .lines()
+        .filter(|line| {
+            let lower = line.to_lowercase();
+            !INJECTION_PATTERNS.iter().any(|p| lower.contains(p))
+        })
+        .collect();
 
-    result.trim().to_string()
+    result_lines.join("\n").trim().to_string()
 }
 
 #[cfg(test)]

@@ -7,17 +7,19 @@ impl HierarchicalChunker {
     pub fn new() -> Self { Self }
 }
 
-fn build_chunk(text: String, doc: &RawDocument, index: usize, title: String) -> Chunk {
+fn build_chunk(text: String, doc: &RawDocument, index: usize, title: String, source_text: &str) -> Chunk {
     let mut metadata = std::collections::HashMap::new();
     if !title.is_empty() {
         metadata.insert("section_title".to_string(), serde_json::Value::String(title));
     }
+    let start = source_text.find(&text).unwrap_or(0);
+    let end = start + text.len();
     Chunk {
         id: ChunkId::new(),
         text,
         document_id: doc.id.clone(),
         collection_id: CollectionId("default".into()),
-        position: ChunkPosition { start: 0, end: 0, index },
+        position: ChunkPosition { start, end, index },
         metadata: ChunkMetadata(metadata),
     }
 }
@@ -46,7 +48,7 @@ impl Chunker for HierarchicalChunker {
         }
 
         if sections.is_empty() {
-            sections.push(("".to_string(), text));
+            sections.push(("".to_string(), text.clone()));
         }
 
         let chunks = sections
@@ -57,7 +59,7 @@ impl Chunker for HierarchicalChunker {
                 if body_trimmed.is_empty() && title.is_empty() {
                     None
                 } else {
-                    Some(build_chunk(body_trimmed, doc, i, title))
+                    Some(build_chunk(body_trimmed, doc, i, title, &text))
                 }
             })
             .collect();

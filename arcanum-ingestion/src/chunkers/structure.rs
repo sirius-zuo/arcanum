@@ -9,13 +9,16 @@ impl StructureAwareChunker {
     pub fn new(max_chunk_chars: usize) -> Self { Self { max_chunk_chars } }
 }
 
-fn build_chunk(text: String, doc: &RawDocument, index: usize) -> Chunk {
+fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str) -> Chunk {
+    let t = text.trim().to_string();
+    let start = source_text.find(&t).unwrap_or(0);
+    let end = start + t.len();
     Chunk {
         id: ChunkId::new(),
-        text,
+        text: t,
         document_id: doc.id.clone(),
         collection_id: CollectionId("default".into()),
-        position: ChunkPosition { start: 0, end: 0, index },
+        position: ChunkPosition { start, end, index },
         metadata: ChunkMetadata::default(),
     }
 }
@@ -61,17 +64,17 @@ impl Chunker for StructureAwareChunker {
             let is_atomic = block.starts_with("```") || block.trim_start().starts_with('|');
             if is_atomic {
                 if !current.trim().is_empty() {
-                    chunks.push(build_chunk(current.trim().to_string(), doc, idx));
+                    chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
                     idx += 1;
                     current = String::new();
                 }
-                chunks.push(build_chunk(block.trim().to_string(), doc, idx));
+                chunks.push(build_chunk(block.trim().to_string(), doc, idx, &text));
                 idx += 1;
             } else {
                 // Split prose block into lines and accumulate up to max_chunk_chars
                 for line in block.lines() {
                     if !current.is_empty() && current.len() + line.len() + 1 > self.max_chunk_chars {
-                        chunks.push(build_chunk(current.trim().to_string(), doc, idx));
+                        chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
                         idx += 1;
                         current = String::new();
                     }
@@ -81,10 +84,10 @@ impl Chunker for StructureAwareChunker {
             }
         }
         if !current.trim().is_empty() {
-            chunks.push(build_chunk(current.trim().to_string(), doc, idx));
+            chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
         }
         if chunks.is_empty() {
-            chunks.push(build_chunk(text.trim().to_string(), doc, 0));
+            chunks.push(build_chunk(text.trim().to_string(), doc, 0, &text));
         }
         Ok(chunks)
     }
