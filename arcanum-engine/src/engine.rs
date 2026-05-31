@@ -173,14 +173,21 @@ impl ArcanumEngineBuilder {
         let auth = Arc::new(AuthMiddleware::new(&secret));
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
+        let embedding_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
+        let vector_store_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
         let ingestion = Arc::new(IngestionService::new(events.clone(), audit.clone()));
-        let retrieval = Arc::new(RetrievalService::new(self.config.clone(), audit.clone(), auth.clone()));
+        let retrieval = Arc::new(RetrievalService::new(
+            Arc::new(arcanum_retrieval::RetrievalOrchestrator::new(
+                arcanum_retrieval::OrchestratorMode::QueryClassified
+            )),
+            auth.clone(),
+            audit.clone(),
+            vector_store_cb.clone(),
+        ));
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
         let eval = Arc::new(EvalService::new());
         let source = Arc::new(IngestionSourceService::new());
         let admin = Arc::new(AdminService::new(audit.clone()));
-        let embedding_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
-        let vector_store_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
 
         Ok(Arc::new(ArcanumEngine {
             config: self.config,
