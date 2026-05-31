@@ -173,7 +173,7 @@ impl ArcanumEngineBuilder {
         let auth = Arc::new(AuthMiddleware::new(&secret));
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
-        let ingestion = Arc::new(IngestionService::new(self.config.clone(), events.clone(), audit.clone()));
+        let ingestion = Arc::new(IngestionService::new(events.clone(), audit.clone()));
         let retrieval = Arc::new(RetrievalService::new(self.config.clone(), audit.clone(), auth.clone()));
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
         let eval = Arc::new(EvalService::new());
