@@ -61,6 +61,21 @@ impl ArcanumEngine {
     pub fn record_embedding_failure(&self) {
         self.embedding_cb.record_failure();
     }
+
+    /// Allow request through vector store circuit breaker.
+    pub fn check_vector_store_circuit(&self) -> bool {
+        self.vector_store_cb.allow_request()
+    }
+
+    /// Record a successful vector store call.
+    pub fn record_vector_store_success(&self) {
+        self.vector_store_cb.record_success();
+    }
+
+    /// Record a failed vector store call.
+    pub fn record_vector_store_failure(&self) {
+        self.vector_store_cb.record_failure();
+    }
 }
 
 pub struct ArcanumEngineBuilder {
