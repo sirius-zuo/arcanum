@@ -1,3 +1,4 @@
+pub mod portal;
 pub mod routes {
     pub mod admin;
     pub mod api;

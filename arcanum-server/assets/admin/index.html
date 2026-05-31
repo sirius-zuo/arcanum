@@ -1,0 +1,196 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Arcanum Admin Portal</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #0f1117; color: #e2e8f0; margin: 0; padding: 24px; }
+  h1 { color: #a78bfa; margin-bottom: 8px; }
+  nav { display: flex; gap: 12px; margin: 16px 0; }
+  nav button { background: #1e1b4b; border: 1px solid #4c1d95; color: #c4b5fd; padding: 8px 16px;
+               border-radius: 6px; cursor: pointer; font-size: 14px; }
+  nav button:hover, nav button.active { background: #4c1d95; color: #fff; }
+  #panel { background: #1a1a2e; border: 1px solid #2d2d5e; border-radius: 8px; padding: 20px; min-height: 300px; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 8px 12px; background: #16213e; color: #a78bfa; font-size: 13px; }
+  td { padding: 8px 12px; border-bottom: 1px solid #1e1b4b; font-size: 13px; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; }
+  .badge-ok { background: #064e3b; color: #6ee7b7; }
+  .badge-warn { background: #451a03; color: #fbbf24; }
+  #status { color: #94a3b8; font-size: 13px; margin-top: 12px; }
+  input[type=text] { background: #1e1b4b; border: 1px solid #4c1d95; color: #e2e8f0;
+                     padding: 6px 12px; border-radius: 6px; font-size: 13px; }
+  #token-form { margin-bottom: 16px; display: flex; gap: 8px; align-items: center; }
+  #token-form label { font-size: 13px; color: #94a3b8; }
+</style>
+</head>
+<body>
+<h1>Arcanum Admin Portal</h1>
+
+<div id="token-form">
+  <label for="token">Bearer Token:</label>
+  <input type="text" id="token" placeholder="Paste your admin JWT..." size="60">
+</div>
+
+<nav>
+  <button class="active" onclick="showPanel('health')">Health</button>
+  <button onclick="showPanel('collections')">Collections</button>
+  <button onclick="showPanel('sources')">Sources</button>
+  <button onclick="showPanel('audit')">Audit Logs</button>
+</nav>
+
+<div id="panel">
+  <p style="color:#94a3b8">Select a panel above to load data.</p>
+</div>
+<div id="status"></div>
+
+<script>
+const BASE = '';
+
+// Escape a value to a safe text string before inserting into the DOM.
+function esc(v) {
+  return String(v == null ? '' : v);
+}
+
+// Create a text node — the only safe way to put untrusted strings into the DOM.
+function text(v) { return document.createTextNode(esc(v)); }
+
+// Append children (Element | Text | string) to a parent element.
+function append(parent, ...children) {
+  for (const child of children) {
+    parent.appendChild(typeof child === 'string' ? text(child) : child);
+  }
+  return parent;
+}
+
+// Create an element, optionally setting className and appending children.
+function el(tag, cls, ...children) {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  append(node, ...children);
+  return node;
+}
+
+// Build a <tr> from an array of cell values (text only).
+function tr(...cells) {
+  const row = document.createElement('tr');
+  for (const c of cells) row.appendChild(el('td', null, c));
+  return row;
+}
+
+// Build a <thead> from an array of header strings (static, not user data).
+function thead(...headers) {
+  const row = document.createElement('tr');
+  for (const h of headers) row.appendChild(el('th', null, h));
+  return el('thead', null, row);
+}
+
+function token() { return document.getElementById('token').value.trim(); }
+
+function setStatus(msg, isErr) {
+  const node = document.getElementById('status');
+  node.style.color = isErr ? '#f87171' : '#94a3b8';
+  node.textContent = msg;
+}
+
+function clearPanel(msg) {
+  const panel = document.getElementById('panel');
+  panel.textContent = '';
+  if (msg) panel.appendChild(el('p', null, msg));
+  return panel;
+}
+
+function showPanel(name) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  clearPanel('Loading…');
+  setStatus('');
+
+  const headers = { 'Content-Type': 'application/json' };
+  if (token()) headers['Authorization'] = 'Bearer ' + token();
+
+  const endpoints = {
+    health:      '/admin/health',
+    collections: '/admin/collections',
+    sources:     '/admin/sources',
+    audit:       '/admin/audit',
+  };
+
+  fetch(BASE + endpoints[name], { headers })
+    .then(r => r.json().then(data => ({ ok: r.ok, status: r.status, data })))
+    .then(({ ok, status, data }) => {
+      if (!ok) {
+        const panel = clearPanel();
+        const p = el('p', null, 'Error ' + status + ': ' + JSON.stringify(data));
+        p.style.color = '#f87171';
+        panel.appendChild(p);
+        return;
+      }
+      renderPanel(name, data);
+    })
+    .catch(e => {
+      const panel = clearPanel();
+      const p = el('p', null, 'Fetch error: ' + e);
+      p.style.color = '#f87171';
+      panel.appendChild(p);
+    });
+}
+
+function renderPanel(name, data) {
+  const panel = clearPanel();
+
+  if (name === 'health') {
+    const tbody = document.createElement('tbody');
+    for (const [k, v] of Object.entries(data)) {
+      const badge = el('span', 'badge badge-ok', v);
+      const row = document.createElement('tr');
+      row.appendChild(el('td', null, k));
+      row.appendChild(el('td', null, badge));
+      tbody.appendChild(row);
+    }
+    const table = el('table', null, thead('Component', 'Status'), tbody);
+    panel.appendChild(table);
+
+  } else if (name === 'collections') {
+    const list = data.collections || [];
+    if (!list.length) { panel.appendChild(el('p', null, 'No collections found.')); return; }
+    const tbody = document.createElement('tbody');
+    for (const c of list) {
+      tbody.appendChild(tr(c.id?.id ?? c.id, c.description ?? '', String(c.chunk_count ?? 0)));
+    }
+    panel.appendChild(el('table', null, thead('ID', 'Description', 'Chunks'), tbody));
+
+  } else if (name === 'sources') {
+    const list = data.sources || [];
+    if (!list.length) { panel.appendChild(el('p', null, 'No ingestion sources.')); return; }
+    const tbody = document.createElement('tbody');
+    for (const s of list) {
+      tbody.appendChild(tr(s.id, s.uri, s.collection_id, s.pipeline_template ?? 'standard'));
+    }
+    panel.appendChild(el('table', null, thead('ID', 'URI', 'Collection', 'Pipeline'), tbody));
+
+  } else if (name === 'audit') {
+    const list = data.logs || [];
+    if (!list.length) { panel.appendChild(el('p', null, 'No audit entries.')); return; }
+    const tbody = document.createElement('tbody');
+    for (const l of list) {
+      const badge = el('span', 'badge badge-ok', l.entry.result);
+      const row = document.createElement('tr');
+      for (const v of [l.timestamp, l.entry.operation, l.entry.user_id, l.entry.collection_id]) {
+        row.appendChild(el('td', null, v));
+      }
+      row.appendChild(el('td', null, badge));
+      tbody.appendChild(row);
+    }
+    panel.appendChild(el('table', null, thead('Timestamp', 'Operation', 'User', 'Collection', 'Result'), tbody));
+
+  } else {
+    const pre = document.createElement('pre');
+    pre.textContent = JSON.stringify(data, null, 2);
+    panel.appendChild(pre);
+  }
+}
+</script>
+</body>
+</html>
