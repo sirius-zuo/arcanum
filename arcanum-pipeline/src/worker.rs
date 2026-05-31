@@ -63,6 +63,13 @@ pub async fn run_task(
 
     let started_at = std::time::Instant::now();
 
+    let already_seen = deps.hash_tracker.ever_seen(&source_uri).await;
+    if force || already_seen {
+        deps.cache_invalidator
+            .invalidate_document(&source_uri, &collection_id)
+            .await;
+    }
+
     let source = Source::from_uri(&source_uri)?;
     let state  = Arc::new(Mutex::new(IngestionState::new(source, collection_id.clone())));
     let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;
