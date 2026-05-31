@@ -66,6 +66,7 @@ async fn test_worker_processes_task_to_completion() {
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
         attempt: 0,
+        force: false,
     };
 
     let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
@@ -99,6 +100,7 @@ async fn test_worker_skips_unchanged_document() {
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
         attempt: 0,
+        force: false,
     };
 
     let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;

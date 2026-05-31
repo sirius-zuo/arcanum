@@ -72,6 +72,7 @@ impl IngestionService {
             collection_id: req.collection_id.clone(),
             pipeline_template: req.pipeline_template.unwrap_or("standard".into()),
             attempt: 0,
+            force: req.force,
         };
         self.queue.push(task).await?;
         self.audit.log(AuditEntry {

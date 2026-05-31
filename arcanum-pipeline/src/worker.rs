@@ -59,6 +59,7 @@ pub async fn run_task(
     let source_uri         = task.source_uri.clone();
     let collection_id      = task.collection_id.clone();
     let pipeline_template  = task.pipeline_template.clone();
+    let force              = task.force;
 
     let started_at = std::time::Instant::now();
 
@@ -105,6 +106,7 @@ pub async fn run_task(
                     collection_id:     collection_id.clone(),
                     pipeline_template: pipeline_template.clone(),
                     attempt:           task_attempt + 1,
+                    force:             force,
                 };
                 let _ = queue.push(retry_task).await;
             }
