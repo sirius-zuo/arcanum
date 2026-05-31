@@ -25,8 +25,8 @@ pub fn builder() -> TemplateBuilder {
             None => "chunk",
         };
 
-        dag = dag.add_stage(make_embed_stage_after(embed_dep, state.clone(), deps.embedder.clone()));
-        dag = dag.add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone()));
+        dag = dag.add_stage(make_embed_stage_after(embed_dep, state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()));
+        dag = dag.add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone()));
 
         if let (Some(ext), Some(gs)) = (&deps.entity_extractor, &deps.graph_store) {
             dag = dag.add_stage(make_entity_extract_stage(state.clone(), ext.clone(), gs.clone()));
