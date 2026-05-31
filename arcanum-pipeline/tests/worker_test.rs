@@ -39,6 +39,9 @@ fn stub_deps() -> Arc<PipelineDeps> {
         tree_store: None,
         hash_tracker: Arc::new(DocumentHashTracker::new()),
         retry_policy: arcanum_middleware::RetryPolicy::default(),
+        cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(vec![])),
+        embedding_cb:      Arc::new(arcanum_middleware::CircuitBreaker::new(5, std::time::Duration::from_secs(30))),
+        vector_store_cb:   Arc::new(arcanum_middleware::CircuitBreaker::new(5, std::time::Duration::from_secs(30))),
     })
 }
 
