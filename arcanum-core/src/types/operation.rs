@@ -19,6 +19,7 @@ pub struct IngestionTask {
     pub source_uri:        String,
     pub collection_id:     CollectionId,
     pub pipeline_template: String,
+    pub attempt:           u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

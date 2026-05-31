@@ -41,6 +41,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         graph_store: None,
         tree_store: None,
         hash_tracker: Arc::new(DocumentHashTracker::new()),
+        retry_policy: arcanum_middleware::RetryPolicy::default(),
     })
 }
 

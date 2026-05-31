@@ -71,6 +71,7 @@ impl IngestionService {
             source_uri: req.source_uri.clone(),
             collection_id: req.collection_id.clone(),
             pipeline_template: req.pipeline_template.unwrap_or("standard".into()),
+            attempt: 0,
         };
         self.queue.push(task).await?;
         self.audit.log(AuditEntry {

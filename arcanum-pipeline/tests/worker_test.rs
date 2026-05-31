@@ -38,6 +38,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         graph_store: None,
         tree_store: None,
         hash_tracker: Arc::new(DocumentHashTracker::new()),
+        retry_policy: arcanum_middleware::RetryPolicy::default(),
     })
 }
 
@@ -45,7 +46,8 @@ fn stub_deps() -> Arc<PipelineDeps> {
 async fn test_worker_processes_task_to_completion() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task};
     use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::CollectionId;
+    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_middleware::BoundedQueue;
     use std::sync::Arc;
 
     struct NoopEmitter;
@@ -56,15 +58,17 @@ async fn test_worker_processes_task_to_completion() {
 
     let deps = stub_deps();
     let registry = Arc::new(ArcanumPipelineRegistry::default());
+    let queue = Arc::new(BoundedQueue::new(10));
 
-    let result = run_task(
-        "raw://test",
-        CollectionId("col1".into()),
-        "standard",
-        registry,
-        deps,
-        Arc::new(NoopEmitter),
-    ).await;
+    let task = IngestionTask {
+        operation_id: OperationId::new(),
+        source_uri: "raw://test".into(),
+        collection_id: CollectionId("col1".into()),
+        pipeline_template: "standard".into(),
+        attempt: 0,
+    };
+
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
     assert!(result.is_ok(), "worker task failed: {:?}", result.err());
 }
 
@@ -72,7 +76,8 @@ async fn test_worker_processes_task_to_completion() {
 async fn test_worker_skips_unchanged_document() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task};
     use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::CollectionId;
+    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_middleware::BoundedQueue;
     use std::sync::Arc;
 
     struct NoopEmitter;
@@ -86,13 +91,16 @@ async fn test_worker_skips_unchanged_document() {
     deps.hash_tracker.record("raw://test", b"hello world document").await;
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
-    let result = run_task(
-        "raw://test",
-        CollectionId("col1".into()),
-        "standard",
-        registry,
-        deps,
-        Arc::new(NoopEmitter),
-    ).await;
+    let queue = Arc::new(BoundedQueue::new(10));
+
+    let task = IngestionTask {
+        operation_id: OperationId::new(),
+        source_uri: "raw://test".into(),
+        collection_id: CollectionId("col1".into()),
+        pipeline_template: "standard".into(),
+        attempt: 0,
+    };
+
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
     assert!(result.is_ok());
 }
