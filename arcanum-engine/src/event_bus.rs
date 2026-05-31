@@ -1,3 +1,4 @@
+use arcanum_core::traits::ProgressEmitter;
 use serde_json::Value;
 use std::collections::HashMap;
 use tokio::sync::{broadcast, RwLock};
@@ -24,5 +25,12 @@ impl EventBus {
         if let Some(sender) = map.get(topic) {
             let _ = sender.send(payload);
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl ProgressEmitter for EventBus {
+    async fn emit(&self, event: &str, payload: serde_json::Value) {
+        self.publish(event, payload).await;
     }
 }

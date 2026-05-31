@@ -1,9 +1,17 @@
 use arcanum_core::{
     config::ArcanumConfig,
-    traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore},
+    traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
+             CacheInvalidationBroadcaster},
     Result, ArcanumError,
 };
-use arcanum_middleware::CircuitBreaker;
+use arcanum_graph::GraphQueryPlanner;
+use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker,
+                        RawLoader, FixedSizeChunker};
+use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
+use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
+use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
+                        VectorRetriever, GraphRetriever, RaptorRetriever};
+use arcanum_vector::Bm25Index;
 use std::{sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
@@ -87,6 +95,7 @@ pub struct ArcanumEngineBuilder {
     graph_store: Option<Arc<dyn GraphStore>>,
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
+    bm25_index: Option<Arc<Bm25Index>>,
 }
 
 impl Default for ArcanumEngineBuilder {
@@ -100,6 +109,7 @@ impl Default for ArcanumEngineBuilder {
             graph_store: None,
             tree_store: None,
             secret_store: None,
+            bm25_index: None,
         }
     }
 }
@@ -156,10 +166,14 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn bm25_index(mut self, index: Arc<Bm25Index>) -> Self {
+        self.bm25_index = Some(index);
+        self
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
 
-        // Resolve auth secret: explicit > env var > error (no hardcoded fallback).
         let secret = self.auth_secret
             .or_else(|| std::env::var("ARCANUM_AUTH_SECRET").ok())
             .ok_or_else(|| ArcanumError::Config(
@@ -170,24 +184,95 @@ impl ArcanumEngineBuilder {
                 "ARCANUM_AUTH_SECRET must be at least 32 characters".into()
             ));
         }
-        let auth = Arc::new(AuthMiddleware::new(&secret));
+
+        let auth  = Arc::new(AuthMiddleware::new(&secret));
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
-        let embedding_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
+
+        let embedding_cb    = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
         let vector_store_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
-        let ingestion = Arc::new(IngestionService::new(events.clone(), audit.clone()));
+
+        // Shared queue and hash tracker — passed to both IngestionService (push) and workers (pop).
+        let queue        = Arc::new(BoundedQueue::new(self.config.ingestion.queue_capacity));
+        let hash_tracker = Arc::new(DocumentHashTracker::new());
+
+        let ingestion = Arc::new(IngestionService::new_from_parts(
+            queue.clone(),
+            hash_tracker.clone(),
+            events.clone(),
+            audit.clone(),
+        ));
+
+        // Wire pipeline workers if embedder + vector_store are available.
+        if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
+            let deps = Arc::new(PipelineDeps {
+                loaders:           Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
+                preprocessors:     Arc::new(PreprocessorRegistry::new()),
+                chunker:           Arc::new(FixedSizeChunker::new(512, 64)),
+                context_enricher:  self.enricher.clone(),
+                entity_extractor:  self.enricher.clone(),
+                embedder:          embedder.clone(),
+                vector_store:      vector_store.clone(),
+                graph_store:       self.graph_store.clone(),
+                tree_store:        self.tree_store.clone(),
+                hash_tracker:      hash_tracker.clone(),
+                retry_policy:      RetryPolicy::new(
+                    self.config.ingestion.retry_max_attempts,
+                    self.config.ingestion.retry_base_delay_ms,
+                    5_000,
+                ),
+                cache_invalidator: Arc::new(CacheInvalidationBroadcaster::new(vec![])),
+                embedding_cb:      embedding_cb.clone(),
+                vector_store_cb:   vector_store_cb.clone(),
+            });
+            let registry = Arc::new(ArcanumPipelineRegistry::default());
+            let emitter: Arc<dyn arcanum_core::traits::ProgressEmitter> = events.clone();
+            for _ in 0..self.config.ingestion.worker_pool_size {
+                let worker = IngestionWorker::new(
+                    registry.clone(), deps.clone(), emitter.clone(), queue.clone(),
+                );
+                tokio::spawn(async move {
+                    while let Some(_) = worker.process_next().await {}
+                });
+            }
+        } else {
+            tracing::warn!(
+                "arcanum-engine: embedder or vector_store not configured — \
+                 ingestion workers not started; tasks will queue but not execute"
+            );
+        }
+
+        // Build RetrievalOrchestrator with whichever retrievers are available.
+        let mut orchestrator = RetrievalOrchestrator::new(OrchestratorMode::QueryClassified);
+        if let (Some(vs), Some(emb)) = (&self.vector_store, &self.embedder) {
+            orchestrator = orchestrator
+                .add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
+        }
+        let _ = &self.bm25_index; // Bm25Retriever is collection-scoped — wired per-query, not here.
+        if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
+            &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
+        ) {
+            let planner = GraphQueryPlanner::new(enricher.clone(), 2);
+            orchestrator = orchestrator
+                .add_retriever(Arc::new(GraphRetriever::new(
+                    gs.clone(), vs.clone(), planner, emb.clone(),
+                )));
+        }
+        if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {
+            orchestrator = orchestrator
+                .add_retriever(Arc::new(RaptorRetriever::new(ts.clone(), emb.clone(), 3)));
+        }
+
         let retrieval = Arc::new(RetrievalService::new(
-            Arc::new(arcanum_retrieval::RetrievalOrchestrator::new(
-                arcanum_retrieval::OrchestratorMode::QueryClassified
-            )),
+            Arc::new(orchestrator),
             auth.clone(),
             audit.clone(),
             vector_store_cb.clone(),
         ));
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
-        let eval = Arc::new(EvalService::new());
-        let source = Arc::new(IngestionSourceService::new());
-        let admin = Arc::new(AdminService::new(audit.clone()));
+        let eval       = Arc::new(EvalService::new());
+        let source     = Arc::new(IngestionSourceService::new());
+        let admin      = Arc::new(AdminService::new(audit.clone()));
 
         Ok(Arc::new(ArcanumEngine {
             config: self.config,
