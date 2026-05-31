@@ -6,9 +6,14 @@ edition = "2021"
 [dependencies]
 arcanum-core   = { path = "../arcanum-core" }
 arcanum-vector = { path = "../arcanum-vector" }
+arcanum-tree   = { path = "../arcanum-tree" }
+arcanum-graph  = { path = "../arcanum-graph" }
 async-trait    = { workspace = true }
 tokio          = { workspace = true }
 serde          = { workspace = true }
+serde_json     = { workspace = true }
+uuid           = { workspace = true }
+reqwest        = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tokio = { workspace = true }

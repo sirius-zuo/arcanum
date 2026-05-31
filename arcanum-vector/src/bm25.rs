@@ -40,6 +40,23 @@ impl Bm25Index {
         Ok(())
     }
 
+    /// Indexes a single document by id and text.
+    pub fn index_document(&self, id: &str, text: &str) -> Result<()> {
+        self.index_chunks(vec![(id.to_string(), text.to_string())])
+    }
+
+    /// Deletes a document by id.
+    /// Tantivy does not support single-document deletion by field value without a `DeleteQuery`;
+    /// we reopen a writer, delete by term, and commit.
+    pub fn delete_document(&self, id: &str) -> Result<()> {
+        let mut writer: IndexWriter = self.index.writer(50_000_000)
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let term = tantivy::Term::from_field_text(self.id_field, id);
+        writer.delete_term(term);
+        writer.commit().map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
     /// Returns (chunk_id, score) pairs sorted by score descending.
     pub fn search(&self, query_text: &str, top_k: usize) -> Result<Vec<(String, f32)>> {
         let reader = self.index

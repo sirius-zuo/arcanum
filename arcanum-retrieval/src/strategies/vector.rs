@@ -1,15 +1,14 @@
 use arcanum_core::{traits::*, types::*, Result};
-use arcanum_vector::LanceDbStore;
 use async_trait::async_trait;
 use std::sync::Arc;
 
 pub struct VectorRetriever {
-    store: Arc<LanceDbStore>,
+    store: Arc<dyn VectorStore>,
     embedder: Arc<dyn Embedder>,
 }
 
 impl VectorRetriever {
-    pub fn new(store: Arc<LanceDbStore>, embedder: Arc<dyn Embedder>) -> Self {
+    pub fn new(store: Arc<dyn VectorStore>, embedder: Arc<dyn Embedder>) -> Self {
         Self { store, embedder }
     }
 }
@@ -36,4 +35,58 @@ impl Retriever for VectorRetriever {
     }
 
     fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::Vector }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct MockVectorStore(Mutex<HashMap<String, Vec<IndexedChunk>>>);
+
+    #[async_trait::async_trait]
+    impl VectorStore for MockVectorStore {
+        async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
+            self.0.lock().unwrap().entry(collection.to_string()).or_default().extend(chunks);
+            Ok(())
+        }
+        async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
+            let store = self.0.lock().unwrap();
+            let chunks = store.get(collection).cloned().unwrap_or_default();
+            Ok(chunks.into_iter().take(query.top_k).map(|c| ScoredChunk { chunk: c, score: 0.9 }).collect())
+        }
+        async fn delete(&self, _collection: &str, _ids: &[ChunkId]) -> Result<()> { Ok(()) }
+        async fn collection_exists(&self, collection: &str) -> Result<bool> {
+            Ok(self.0.lock().unwrap().contains_key(collection))
+        }
+    }
+
+    struct MockEmbedder;
+    #[async_trait::async_trait]
+    impl Embedder for MockEmbedder {
+        async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+            Ok(texts.iter().map(|_| Vector(vec![0.1, 0.2, 0.3])).collect())
+        }
+        fn dimension(&self) -> usize { 3 }
+    }
+
+    #[tokio::test]
+    async fn test_vector_retriever_accepts_arc_dyn_vector_store() {
+        // This test verifies VectorRetriever accepts Arc<dyn VectorStore>, not LanceDbStore directly.
+        let store: Arc<dyn VectorStore> = Arc::new(MockVectorStore(Mutex::new(HashMap::new())));
+        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+        let retriever = VectorRetriever::new(store, embedder);
+        assert_eq!(retriever.strategy(), RetrievalStrategy::Vector);
+    }
+
+    #[tokio::test]
+    async fn test_vector_retriever_retrieve() {
+        let store: Arc<dyn VectorStore> = Arc::new(MockVectorStore(Mutex::new(HashMap::new())));
+        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+        let retriever = VectorRetriever::new(store, embedder);
+        let query = Query::new("test").with_collection(CollectionId("col".into()));
+        let results = retriever.retrieve(&query).await.unwrap();
+        assert!(results.is_empty()); // empty store
+    }
 }

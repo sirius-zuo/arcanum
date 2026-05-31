@@ -1,8 +1,12 @@
 mod bm25;
 mod collection;
+mod hybrid;
 mod lancedb_store;
 mod metadata;
+pub mod pgvector_store;
 pub use bm25::Bm25Index;
 pub use collection::{CollectionManager, CollectionMeta};
+pub use hybrid::HybridIndexManager;
 pub use lancedb_store::LanceDbStore;
 pub use metadata::SqliteMetadataStore;
+pub use pgvector_store::PgVectorStore;

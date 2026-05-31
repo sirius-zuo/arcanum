@@ -53,7 +53,7 @@ impl Embedder for OllamaProvider {
 #[async_trait]
 impl TextEnricher for OllamaProvider {
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
-        let prompt = build_prompt(&request);
+        let prompt = build_prompt_for_enricher(&request);
         let resp: GenerateResponse = self.client
             .post(format!("{}/api/generate", self.base_url))
             .json(&GenerateRequest { model: self.generate_model.clone(), prompt, stream: false })
@@ -63,7 +63,7 @@ impl TextEnricher for OllamaProvider {
     }
 }
 
-fn build_prompt(req: &EnrichRequest) -> String {
+pub fn build_prompt_for_enricher(req: &EnrichRequest) -> String {
     match &req.intent {
         EnrichIntent::ContextPrefix => format!(
             "Generate a brief context sentence for this chunk that will help with retrieval. \

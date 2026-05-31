@@ -37,3 +37,6 @@ impl TreeStore for InMemoryTreeStore {
 
 pub use raptor::RaptorBuilder;
 mod raptor;
+
+pub mod postgres_store;
+pub use postgres_store::PgTreeStore;

@@ -1,6 +1,10 @@
 mod fixed;
 mod propositional;
 mod semantic;
+mod hierarchical;
+mod structure;
 pub use fixed::FixedSizeChunker;
 pub use propositional::PropositionalChunker;
 pub use semantic::SemanticChunker;
+pub use hierarchical::HierarchicalChunker;
+pub use structure::StructureAwareChunker;

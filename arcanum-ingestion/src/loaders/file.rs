@@ -12,6 +12,8 @@ impl FileLoader {
             Some("html") | Some("htm")    => "text/html",
             Some("txt")                   => "text/plain",
             Some("pdf")                   => "application/pdf",
+            Some("epub")                  => "application/epub+zip",
+            Some("docx")                  => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             _                             => "application/octet-stream",
         }
     }

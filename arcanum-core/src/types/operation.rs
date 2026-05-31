@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
+use super::document::CollectionId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationId(pub Uuid);
@@ -10,6 +11,15 @@ impl OperationId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct IngestionTask {
+    pub operation_id:      OperationId,
+    pub source_uri:        String,
+    pub collection_id:     CollectionId,
+    pub pipeline_template: String,
+    pub attempt:           u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

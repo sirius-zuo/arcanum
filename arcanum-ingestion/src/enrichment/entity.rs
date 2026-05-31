@@ -1,6 +1,7 @@
 use arcanum_core::{traits::TextEnricher, types::*, Result};
 use std::sync::Arc;
 use serde::Deserialize;
+use crate::sanitizer::sanitize_for_enrichment;
 
 pub struct EntityExtractor {
     enricher: Arc<dyn TextEnricher>,
@@ -25,7 +26,7 @@ impl EntityExtractor {
 
     pub async fn extract(&self, chunk: &Chunk) -> Result<(Vec<Entity>, Vec<Relation>)> {
         let raw = self.enricher.enrich(EnrichRequest {
-            text: chunk.text.clone(),
+            text: sanitize_for_enrichment(&chunk.text),
             intent: EnrichIntent::ExtractEntities,
             context: None,
         }).await?;

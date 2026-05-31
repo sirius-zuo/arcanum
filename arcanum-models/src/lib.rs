@@ -1,6 +1,27 @@
 mod dispatcher;
 mod ollama;
 mod router;
+pub mod cache;
+pub mod health;
+pub mod openai;
+pub mod anthropic;
+pub mod huggingface;
+pub mod bge;
+pub mod mistral;
+pub mod llm2vec;
+pub mod gliner;
+pub mod spacy;
+
 pub use dispatcher::EnrichmentDispatcher;
 pub use ollama::OllamaProvider;
 pub use router::EmbeddingParallelismRouter;
+pub use cache::EmbeddingCache;
+pub use health::{ProviderHealthMonitor, ProviderStats};
+pub use openai::OpenAiProvider;
+pub use anthropic::AnthropicProvider;
+pub use huggingface::HuggingFaceTeiProvider;
+pub use bge::BgeProvider;
+pub use mistral::MistralProvider;
+pub use llm2vec::Llm2VecProvider;
+pub use gliner::GlinerProvider;
+pub use spacy::SpacyProvider;

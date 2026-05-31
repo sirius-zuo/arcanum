@@ -4,6 +4,7 @@ use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
 use crate::routes::{api, health, admin};
 use crate::ws::ws_handler;
+use crate::portal::serve_portal;
 
 pub fn build_app(engine: Option<Arc<ArcanumEngine>>) -> Router {
     // In production, configure allowed_origins from ArcanumConfig.
@@ -25,6 +26,10 @@ pub fn build_app(engine: Option<Arc<ArcanumEngine>>) -> Router {
         .route("/admin/collections", get(admin::list_collections))
         .route("/admin/health",      get(admin::get_health))
         .route("/admin/metrics",     get(admin::get_metrics))
+        .route("/admin/sources",     get(admin::list_ingestion_sources))
+        .route("/admin/audit",       get(admin::get_audit_logs))
+        .route("/admin/rotate-keys", post(admin::rotate_keys))
+        .route("/admin/ui",          get(serve_portal))
         .route("/ws/events",         get(ws_handler))
         .layer(TraceLayer::new_for_http())
         .layer(cors)

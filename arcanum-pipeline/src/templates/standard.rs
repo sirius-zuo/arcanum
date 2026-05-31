@@ -1,47 +1,21 @@
-use crate::dag::{PipelineDAG, PipelineStage};
+use crate::{
+    dag::PipelineDAG,
+    deps::PipelineDeps,
+    ingestion_state::IngestionState,
+    registry::TemplateBuilder,
+    stages::*,
+};
 use std::sync::Arc;
+use tokio::sync::Mutex;
 
 /// StandardPipeline: Load → Preprocess → Chunk → Embed → VectorWrite
-pub fn build() -> PipelineDAG {
-    PipelineDAG::new()
-        .add_stage(PipelineStage {
-            id: "load",
-            deps: vec![],
-            run: Arc::new(|ctx| Box::pin(async move {
-                tracing::debug!("stage: load");
-                Ok(ctx)
-            })),
-        })
-        .add_stage(PipelineStage {
-            id: "preprocess",
-            deps: vec!["load"],
-            run: Arc::new(|ctx| Box::pin(async move {
-                tracing::debug!("stage: preprocess");
-                Ok(ctx)
-            })),
-        })
-        .add_stage(PipelineStage {
-            id: "chunk",
-            deps: vec!["preprocess"],
-            run: Arc::new(|ctx| Box::pin(async move {
-                tracing::debug!("stage: chunk");
-                Ok(ctx)
-            })),
-        })
-        .add_stage(PipelineStage {
-            id: "embed",
-            deps: vec!["chunk"],
-            run: Arc::new(|ctx| Box::pin(async move {
-                tracing::debug!("stage: embed");
-                Ok(ctx)
-            })),
-        })
-        .add_stage(PipelineStage {
-            id: "vector_write",
-            deps: vec!["embed"],
-            run: Arc::new(|ctx| Box::pin(async move {
-                tracing::debug!("stage: vector_write");
-                Ok(ctx)
-            })),
-        })
+pub fn builder() -> TemplateBuilder {
+    Arc::new(|state: Arc<Mutex<IngestionState>>, deps: &PipelineDeps| {
+        PipelineDAG::new()
+            .add_stage(make_load_stage(state.clone(), deps.loaders.clone(), deps.hash_tracker.clone()))
+            .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
+            .add_stage(make_chunk_stage(state.clone(), deps.chunker.clone()))
+            .add_stage(make_embed_stage(state.clone(), deps.embedder.clone()))
+            .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone()))
+    })
 }

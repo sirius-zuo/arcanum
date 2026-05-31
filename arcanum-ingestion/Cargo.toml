@@ -13,6 +13,12 @@ anyhow        = { workspace = true }
 sha2          = "0.10"
 hex           = "0.4"
 scraper       = "0.19"
+pdf-extract   = "0.7"
+roxmltree     = "0.20"
+zip           = "2"
+infer         = "0.16"
+whatlang      = "0.16"
+reqwest       = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tokio    = { workspace = true }

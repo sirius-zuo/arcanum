@@ -32,11 +32,10 @@ pub struct RawDocument {
 
 impl RawDocument {
     pub fn content_hash(&self) -> String {
-        use std::hash::{Hash, Hasher};
-        use std::collections::hash_map::DefaultHasher;
-        let mut h = DefaultHasher::new();
-        self.content.hash(&mut h);
-        format!("{:x}", h.finish())
+        use sha2::{Sha256, Digest};
+        let mut hasher = Sha256::new();
+        hasher.update(&self.content);
+        hex::encode(hasher.finalize())
     }
 }
 
@@ -126,5 +125,29 @@ mod tests {
             metadata: Default::default(),
         };
         assert_eq!(doc.content_hash(), doc.content_hash()); // deterministic
+    }
+
+    #[test]
+    fn test_content_hash_is_sha256() {
+        let doc = RawDocument {
+            id: DocumentId::new(),
+            content: b"hello world".to_vec(),
+            mime_type: "text/plain".to_string(),
+            source_uri: "test://x".to_string(),
+            metadata: Default::default(),
+        };
+        // Verify it's 64 hex chars (SHA-256 output length)
+        assert_eq!(doc.content_hash().len(), 64, "SHA-256 hex is 64 chars");
+        // Verify same content produces same hash (deterministic across processes):
+        assert_eq!(doc.content_hash(), doc.content_hash());
+        // Verify different content produces different hash:
+        let doc2 = RawDocument {
+            id: DocumentId::new(),
+            content: b"hello WORLD".to_vec(),
+            mime_type: "text/plain".to_string(),
+            source_uri: "test://y".to_string(),
+            metadata: Default::default(),
+        };
+        assert_ne!(doc.content_hash(), doc2.content_hash());
     }
 }
