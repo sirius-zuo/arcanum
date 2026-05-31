@@ -8,7 +8,10 @@ pub mod services;
 
 pub use engine::{ArcanumEngine, ArcanumEngineBuilder};
 pub use services::{
+    admin::AdminService,
     collection::CollectionService,
+    eval::EvalService,
     ingestion::{IngestionService, IngestRequest},
     retrieval::RetrievalService,
+    source::IngestionSourceService,
 };
