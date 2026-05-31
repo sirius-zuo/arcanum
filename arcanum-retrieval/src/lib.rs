@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod fusion;
 pub mod orchestrator;
+pub mod processor;
 pub mod reranker;
 pub mod transformer;
 pub mod strategies {
@@ -18,5 +19,6 @@ pub use strategies::colbert::ColBertRetriever;
 pub use strategies::graph::GraphRetriever;
 pub use strategies::raptor::RaptorRetriever;
 pub use strategies::vector::VectorRetriever;
+pub use processor::{Citation, CitationGenerator, Deduplicator};
 pub use reranker::{CrossEncoderReranker, LlmReranker, NullReranker, ScoreFusionReranker};
 pub use transformer::{HydeTransformer, MultiQueryTransformer, QueryRewriteTransformer, QueryTransformer};
