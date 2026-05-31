@@ -11,7 +11,7 @@ pub mod strategies {
     pub mod vector;
 }
 pub use cache::QueryCache;
-pub use fusion::RrfFusion;
+pub use fusion::{LearnedFusion, RrfFusion, WeightedFusion};
 pub use orchestrator::{classify_query, OrchestratorMode, RetrievalOrchestrator};
 pub use strategies::bm25::Bm25Retriever;
 pub use strategies::colbert::ColBertRetriever;
