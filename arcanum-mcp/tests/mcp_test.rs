@@ -10,7 +10,7 @@ async fn test_mcp_list_tools_response() {
         "method": "tools/list",
         "params": {}
     });
-    let resp = handler.handle(req).await.unwrap();
+    let resp = handler.handle(req, axum::http::HeaderMap::new()).await.unwrap();
     assert_eq!(resp["jsonrpc"], "2.0");
     assert!(resp["result"]["tools"].is_array());
     let tools: Vec<String> = resp["result"]["tools"]
@@ -26,7 +26,7 @@ async fn test_mcp_list_tools_response() {
 async fn test_mcp_unknown_method_returns_error() {
     let handler = McpJsonRpcHandler::new_test();
     let req = json!({ "jsonrpc": "2.0", "id": 2, "method": "unknown/method", "params": {} });
-    let resp = handler.handle(req).await.unwrap();
+    let resp = handler.handle(req, axum::http::HeaderMap::new()).await.unwrap();
     assert!(resp["error"].is_object());
     assert_eq!(resp["error"]["code"], -32601);
 }

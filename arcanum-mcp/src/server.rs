@@ -1,4 +1,4 @@
-use axum::{routing::{get, post}, Router, Json, extract::State, response::IntoResponse};
+use axum::{routing::{get, post}, Router, Json, extract::State, http::HeaderMap, response::IntoResponse};
 use std::sync::Arc;
 use crate::handlers::McpJsonRpcHandler;
 use serde_json::Value;
@@ -27,9 +27,10 @@ impl McpServer {
 
 async fn handle_jsonrpc(
     State(handler): State<Arc<McpJsonRpcHandler>>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> impl IntoResponse {
-    match handler.handle(body).await {
+    match handler.handle(body, headers).await {
         Ok(resp) => Json(resp),
         Err(e) => Json(serde_json::json!({
             "jsonrpc": "2.0", "id": null,
