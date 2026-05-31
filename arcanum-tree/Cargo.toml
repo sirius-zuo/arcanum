@@ -4,9 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arcanum-core = { path = "../arcanum-core" }
-async-trait  = { workspace = true }
-tokio        = { workspace = true }
-serde        = { workspace = true }
-serde_json   = { workspace = true }
-anyhow       = { workspace = true }
+arcanum-core     = { path = "../arcanum-core" }
+async-trait      = { workspace = true }
+tokio            = { workspace = true }
+serde            = { workspace = true }
+serde_json       = { workspace = true }
+anyhow           = { workspace = true }
+linfa            = "0.7"
+linfa-clustering = "0.7"
+ndarray          = "0.15"
