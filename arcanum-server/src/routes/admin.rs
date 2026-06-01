@@ -131,7 +131,14 @@ pub async fn rotate_keys(
     }
     let eng = engine.as_ref().unwrap();
     match eng.admin.rotate_keys(&claims.sub).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "rotated" }))).into_response(),
+        Ok(()) => {
+            if let Some(store) = &eng.secret_store {
+                if let Err(e) = store.reload().await {
+                    tracing::warn!("SecretStore reload after rotate_keys failed: {}", e);
+                }
+            }
+            (StatusCode::OK, Json(serde_json::json!({ "status": "rotated" }))).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     }

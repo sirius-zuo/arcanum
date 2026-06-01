@@ -40,6 +40,7 @@ pub struct ArcanumEngine {
     pub admin: Arc<AdminService>,
     pub embedding_cb: Arc<CircuitBreaker>,
     pub vector_store_cb: Arc<CircuitBreaker>,
+    pub secret_store: Option<Arc<dyn SecretStore>>,
 }
 
 impl std::fmt::Debug for ArcanumEngine {
@@ -274,6 +275,24 @@ impl ArcanumEngineBuilder {
         let source     = Arc::new(IngestionSourceService::new());
         let admin      = Arc::new(AdminService::new(audit.clone()));
 
+        let secret_store = self.secret_store.clone();
+        if let Some(store) = &secret_store {
+            let store = store.clone();
+            let interval_secs = self.config.admin.secret_store_reload_interval_secs;
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(
+                    Duration::from_secs(interval_secs)
+                );
+                ticker.tick().await; // skip immediate first tick
+                loop {
+                    ticker.tick().await;
+                    if let Err(e) = store.reload().await {
+                        tracing::warn!("SecretStore reload failed: {}", e);
+                    }
+                }
+            });
+        }
+
         Ok(Arc::new(ArcanumEngine {
             config: self.config,
             ingestion,
@@ -287,6 +306,7 @@ impl ArcanumEngineBuilder {
             admin,
             embedding_cb,
             vector_store_cb,
+            secret_store,
         }))
     }
 }
@@ -337,5 +357,35 @@ mod tests {
             .enricher(Arc::new(FakeEnricher))
             .build().await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
+    }
+
+    #[tokio::test]
+    async fn test_secret_store_field_is_stored_and_accessible() {
+        use arcanum_core::traits::SecretStore;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct FakeSecretStore { reload_count: Arc<AtomicUsize> }
+        #[async_trait]
+        impl SecretStore for FakeSecretStore {
+            async fn get(&self, _key: &str) -> AResult<String> { Ok("value".into()) }
+            async fn reload(&self) -> AResult<()> {
+                self.reload_count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let reload_count = Arc::new(AtomicUsize::new(0));
+        let store = Arc::new(FakeSecretStore { reload_count: reload_count.clone() });
+
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .secret_store(store.clone())
+            .build()
+            .await
+            .expect("build should succeed");
+
+        assert!(engine.secret_store.is_some(), "secret_store should be stored in ArcanumEngine");
+        let val = engine.secret_store.as_ref().unwrap().get("any-key").await.unwrap();
+        assert_eq!(val, "value");
     }
 }
