@@ -14,34 +14,41 @@ use std::sync::Arc;
 /// Do NOT use the returned DocumentId/ChunkId as authoritative identifiers
 /// until this is resolved.
 pub struct Bm25Retriever {
-    collection_id: CollectionId,
+    collection_id: Option<CollectionId>,   // None = accept any collection
     index: Arc<dyn LexicalIndex>,
 }
 
 impl Bm25Retriever {
+    /// Collection-scoped: rejects queries for other collections.
     pub fn new(collection_id: CollectionId, index: Arc<dyn LexicalIndex>) -> Self {
-        Self { collection_id, index }
+        Self { collection_id: Some(collection_id), index }
+    }
+
+    /// Global: serves any collection (index is not partitioned by collection).
+    pub fn new_global(index: Arc<dyn LexicalIndex>) -> Self {
+        Self { collection_id: None, index }
     }
 }
 
 #[async_trait]
 impl Retriever for Bm25Retriever {
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
-        match &query.collection_id {
-            None => return Err(ArcanumError::Config(
+        let query_cid = query.collection_id.as_ref()
+            .ok_or_else(|| ArcanumError::Config(
                 "Bm25Retriever requires an explicit collection_id".into()
-            )),
-            Some(cid) if cid.0 != self.collection_id.0 => {
+            ))?;
+
+        if let Some(scope) = &self.collection_id {
+            if scope.0 != query_cid.0 {
                 return Err(ArcanumError::Config(format!(
                     "Bm25Retriever for '{}' cannot serve collection '{}'",
-                    self.collection_id.0, cid.0
+                    scope.0, query_cid.0
                 )));
             }
-            _ => {}
         }
 
-        let raw = self.index.search(&self.collection_id.0, &query.text, query.top_k).await?;
-        let collection_id = self.collection_id.clone();
+        let raw = self.index.search(&query_cid.0, &query.text, query.top_k).await?;
+        let collection_id = query_cid.clone();
         Ok(raw.into_iter().map(|(store_id, score)| RetrievedChunk {
             indexed_chunk: IndexedChunk {
                 chunk: Chunk {

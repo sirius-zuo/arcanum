@@ -1,7 +1,8 @@
 use arcanum_core::{
-    config::ArcanumConfig,
+    config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster},
+             CacheInvalidationBroadcaster, LexicalIndex},
+    types::RetrievalStrategy,
     Result, ArcanumError,
 };
 use arcanum_graph::GraphQueryPlanner;
@@ -10,7 +11,7 @@ use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracke
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
-                        VectorRetriever, GraphRetriever, RaptorRetriever};
+                        VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever};
 use arcanum_vector::Bm25Index;
 use std::{sync::Arc, time::Duration};
 use crate::{
@@ -244,12 +245,27 @@ impl ArcanumEngineBuilder {
         }
 
         // Build RetrievalOrchestrator with whichever retrievers are available.
-        let mut orchestrator = RetrievalOrchestrator::new(OrchestratorMode::QueryClassified);
+        let orch_mode = match self.config.retrieval.orchestration_mode {
+            CfgMode::Static          => OrchestratorMode::Static(vec![
+                RetrievalStrategy::Vector,
+                RetrievalStrategy::Bm25,
+            ]),
+            CfgMode::QueryClassified  => OrchestratorMode::QueryClassified,
+            CfgMode::ParallelFusion   => OrchestratorMode::ParallelFusion,
+        };
+        if matches!(self.config.retrieval.orchestration_mode, CfgMode::Static)
+            && self.bm25_index.is_none()
+        {
+            tracing::warn!(
+                "orchestration_mode=Static includes Bm25 but no bm25_index was provided; \
+                 BM25 strategy will be silently inactive"
+            );
+        }
+        let mut orchestrator = RetrievalOrchestrator::new(orch_mode);
         if let (Some(vs), Some(emb)) = (&self.vector_store, &self.embedder) {
             orchestrator = orchestrator
                 .add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
         }
-        let _ = &self.bm25_index; // Bm25Retriever is collection-scoped — wired per-query, not here.
         if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
             &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
         ) {
@@ -263,6 +279,11 @@ impl ArcanumEngineBuilder {
         if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {
             orchestrator = orchestrator
                 .add_retriever(Arc::new(RaptorRetriever::new(ts.clone(), emb.clone(), 3)));
+        }
+        if let Some(bm25) = &self.bm25_index {
+            orchestrator = orchestrator.add_retriever(Arc::new(
+                Bm25Retriever::new_global(bm25.clone() as Arc<dyn LexicalIndex>)
+            ));
         }
 
         let retrieval = Arc::new(RetrievalService::new(
@@ -388,5 +409,30 @@ mod tests {
         assert!(engine.secret_store.is_some(), "secret_store should be stored in ArcanumEngine");
         let val = engine.secret_store.as_ref().unwrap().get("any-key").await.unwrap();
         assert_eq!(val, "value");
+    }
+}
+
+#[cfg(test)]
+mod builder_tests {
+    use super::*;
+    use arcanum_core::config::{ArcanumConfig, OrchestrationMode};
+
+    async fn build_with_mode(mode: OrchestrationMode) -> bool {
+        let mut config = ArcanumConfig::default();
+        config.retrieval.orchestration_mode = mode;
+        ArcanumEngineBuilder::new(config)
+            .with_auth_secret("a-32-char-test-secret-for-testing!!")
+            .build()
+            .await
+            .is_ok()
+    }
+
+    #[tokio::test]
+    async fn orchestration_mode_from_config_builds() {
+        // Each variant must produce a valid engine — if the match were missing an arm
+        // or were hardcoded, at least one of these would fail to build or panic.
+        assert!(build_with_mode(OrchestrationMode::ParallelFusion).await,  "ParallelFusion must build");
+        assert!(build_with_mode(OrchestrationMode::QueryClassified).await, "QueryClassified must build");
+        assert!(build_with_mode(OrchestrationMode::Static).await,          "Static must build");
     }
 }
