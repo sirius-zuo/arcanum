@@ -1,11 +1,15 @@
 pub mod cache;
+pub mod graph_planner;
 pub mod ingestion;
+pub mod lexical_index;
 pub mod model;
 pub mod progress;
 pub mod retrieval;
 pub mod store;
 pub use cache::*;
+pub use graph_planner::*;
 pub use ingestion::*;
+pub use lexical_index::*;
 pub use model::*;
 pub use progress::*;
 pub use retrieval::*;

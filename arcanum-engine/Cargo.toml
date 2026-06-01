@@ -9,6 +9,7 @@ arcanum-vector     = { path = "../arcanum-vector" }
 arcanum-models     = { path = "../arcanum-models" }
 arcanum-ingestion  = { path = "../arcanum-ingestion" }
 arcanum-retrieval  = { path = "../arcanum-retrieval" }
+arcanum-graph      = { path = "../arcanum-graph" }
 arcanum-eval       = { path = "../arcanum-eval" }
 arcanum-pipeline   = { path = "../arcanum-pipeline" }
 arcanum-middleware = { path = "../arcanum-middleware" }

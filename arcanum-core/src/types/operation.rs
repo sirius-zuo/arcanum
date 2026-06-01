@@ -20,6 +20,7 @@ pub struct IngestionTask {
     pub collection_id:     CollectionId,
     pub pipeline_template: String,
     pub attempt:           u32,
+    pub force:             bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

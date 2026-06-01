@@ -1,4 +1,4 @@
-use arcanum_core::{config::ArcanumConfig, types::*, Result};
+use arcanum_core::{types::*, Result};
 use arcanum_ingestion::DocumentHashTracker;
 use arcanum_middleware::BoundedQueue;
 use std::sync::Arc;
@@ -27,31 +27,32 @@ impl std::fmt::Debug for IngestionService {
 }
 
 impl IngestionService {
-    pub fn new(_config: ArcanumConfig, events: Arc<EventBus>, audit: Arc<AuditLogger>) -> Self {
-        Self::new_with_tracker_inner(
+    pub fn new(events: Arc<EventBus>, audit: Arc<AuditLogger>) -> Self {
+        Self::new_from_parts(
             Arc::new(BoundedQueue::new(10_000)),
+            Arc::new(DocumentHashTracker::new()),
             events,
             audit,
-            Arc::new(DocumentHashTracker::new()),
         )
+    }
+
+    /// Full constructor used by ArcanumEngine::build() to share the queue with workers.
+    pub fn new_from_parts(
+        queue: Arc<BoundedQueue<IngestionTask>>,
+        hash_tracker: Arc<DocumentHashTracker>,
+        events: Arc<EventBus>,
+        audit: Arc<AuditLogger>,
+    ) -> Self {
+        Self { queue, events, audit, hash_tracker }
     }
 
     pub fn new_with_tracker(hash_tracker: Arc<DocumentHashTracker>) -> Self {
-        Self::new_with_tracker_inner(
+        Self::new_from_parts(
             Arc::new(BoundedQueue::new(10_000)),
+            hash_tracker,
             Arc::new(EventBus::new()),
             Arc::new(AuditLogger::new()),
-            hash_tracker,
         )
-    }
-
-    fn new_with_tracker_inner(
-        queue: Arc<BoundedQueue<IngestionTask>>,
-        events: Arc<EventBus>,
-        audit: Arc<AuditLogger>,
-        hash_tracker: Arc<DocumentHashTracker>,
-    ) -> Self {
-        Self { queue, events, audit, hash_tracker }
     }
 
     pub async fn ingest(&self, req: IngestRequest, user_id: &str) -> Result<OperationId> {
@@ -72,6 +73,7 @@ impl IngestionService {
             collection_id: req.collection_id.clone(),
             pipeline_template: req.pipeline_template.unwrap_or("standard".into()),
             attempt: 0,
+            force: req.force,
         };
         self.queue.push(task).await?;
         self.audit.log(AuditEntry {

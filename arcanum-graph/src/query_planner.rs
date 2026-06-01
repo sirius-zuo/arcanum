@@ -40,6 +40,14 @@ impl GraphQueryPlanner {
     }
 }
 
+#[async_trait]
+impl arcanum_core::traits::GraphPlanner for GraphQueryPlanner {
+    async fn plan_entities(&self, query: &str) -> arcanum_core::Result<Vec<String>> {
+        let plan = self.plan(query).await?;
+        Ok(plan.seed_entities)
+    }
+}
+
 fn parse_entity_names(json_str: &str) -> Vec<String> {
     let val: serde_json::Value = serde_json::from_str(json_str).unwrap_or_default();
     val["entities"]

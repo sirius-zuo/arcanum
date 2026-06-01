@@ -155,6 +155,7 @@ pub struct AdminConfig {
     pub ip_allowlist: Vec<String>,
     pub portal_enabled: bool,
     pub audit_retention_days: u32,
+    pub secret_store_reload_interval_secs: u64,
 }
 
 impl Default for AdminConfig {
@@ -164,7 +165,20 @@ impl Default for AdminConfig {
             ip_allowlist: vec![],
             portal_enabled: false,
             audit_retention_days: 90,
+            secret_store_reload_interval_secs: 300,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ServerConfig {
+    /// Origins allowed for CORS. Empty = deny all cross-origin requests (fail-closed).
+    pub cors_allowed_origins: Vec<String>,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self { cors_allowed_origins: vec![] }
     }
 }
 
@@ -186,6 +200,8 @@ pub struct ArcanumConfig {
     pub eval: EvalConfig,
     #[serde(default)]
     pub admin: AdminConfig,
+    #[serde(default)]
+    pub server: ServerConfig,
 }
 
 impl ArcanumConfig {
@@ -216,6 +232,12 @@ impl ArcanumConfig {
         }
         if let Ok(v) = std::env::var("ARCANUM_EVAL_ENABLED") {
             cfg.eval.enabled = v == "true" || v == "1";
+        }
+        if let Ok(v) = std::env::var("ARCANUM_CORS_ALLOWED_ORIGINS") {
+            cfg.server.cors_allowed_origins = v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
         cfg
     }
@@ -260,6 +282,9 @@ impl ArcanumConfig {
         }
         if std::env::var("ARCANUM_EVAL_ENABLED").is_ok() {
             cfg.eval.enabled = from_env.eval.enabled;
+        }
+        if std::env::var("ARCANUM_CORS_ALLOWED_ORIGINS").is_ok() {
+            cfg.server.cors_allowed_origins = from_env.server.cors_allowed_origins;
         }
         Ok(cfg)
     }
@@ -370,5 +395,20 @@ retry_base_delay_ms = 1000
         let live = LiveConfig::new(ArcanumConfig::default());
         live.update(|cfg| cfg.ingestion.worker_pool_size = 99).await;
         assert_eq!(live.get().await.ingestion.worker_pool_size, 99);
+    }
+
+    #[test]
+    fn test_server_config_cors_defaults_empty() {
+        let cfg = ArcanumConfig::default();
+        assert!(cfg.server.cors_allowed_origins.is_empty());
+    }
+
+    #[test]
+    fn test_server_config_cors_from_env() {
+        std::env::set_var("ARCANUM_CORS_ALLOWED_ORIGINS", "https://a.com, https://b.com");
+        let cfg = ArcanumConfig::from_env();
+        assert_eq!(cfg.server.cors_allowed_origins,
+            vec!["https://a.com".to_string(), "https://b.com".to_string()]);
+        std::env::remove_var("ARCANUM_CORS_ALLOWED_ORIGINS");
     }
 }
