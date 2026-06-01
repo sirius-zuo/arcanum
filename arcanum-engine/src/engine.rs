@@ -253,10 +253,11 @@ impl ArcanumEngineBuilder {
         if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
             &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
         ) {
-            let planner = GraphQueryPlanner::new(enricher.clone(), 2);
+            let planner: Arc<dyn arcanum_core::traits::GraphPlanner> =
+                Arc::new(GraphQueryPlanner::new(enricher.clone(), 2));
             orchestrator = orchestrator
                 .add_retriever(Arc::new(GraphRetriever::new(
-                    gs.clone(), vs.clone(), planner, emb.clone(),
+                    gs.clone(), vs.clone(), planner, emb.clone(), 2,
                 )));
         }
         if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {

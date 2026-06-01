@@ -84,3 +84,15 @@ impl Bm25Index {
         Ok(results)
     }
 }
+
+#[async_trait::async_trait]
+impl arcanum_core::traits::LexicalIndex for Bm25Index {
+    async fn search(
+        &self,
+        _collection_id: &str,
+        query: &str,
+        top_k: usize,
+    ) -> arcanum_core::Result<Vec<(String, f32)>> {
+        self.search(query, top_k)
+    }
+}

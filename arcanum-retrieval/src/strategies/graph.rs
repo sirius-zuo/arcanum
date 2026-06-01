@@ -1,26 +1,27 @@
 use arcanum_core::{traits::*, types::*, Result};
-use arcanum_graph::GraphQueryPlanner;
 use async_trait::async_trait;
 use std::sync::Arc;
 
-/// GraphRetriever: uses GraphQueryPlanner to extract entity names from the
+/// GraphRetriever: uses a GraphPlanner to extract entity names from the
 /// query, traverses the knowledge graph to collect source_chunk_ids, then
 /// performs a vector search filtered to those specific chunks.
 pub struct GraphRetriever {
-    graph_store: Arc<dyn GraphStore>,
+    graph_store:  Arc<dyn GraphStore>,
     vector_store: Arc<dyn VectorStore>,
-    planner: GraphQueryPlanner,
-    embedder: Arc<dyn Embedder>,
+    planner:      Arc<dyn GraphPlanner>,
+    embedder:     Arc<dyn Embedder>,
+    max_hops:     u32,
 }
 
 impl GraphRetriever {
     pub fn new(
-        graph_store: Arc<dyn GraphStore>,
+        graph_store:  Arc<dyn GraphStore>,
         vector_store: Arc<dyn VectorStore>,
-        planner: GraphQueryPlanner,
-        embedder: Arc<dyn Embedder>,
+        planner:      Arc<dyn GraphPlanner>,
+        embedder:     Arc<dyn Embedder>,
+        max_hops:     u32,
     ) -> Self {
-        Self { graph_store, vector_store, planner, embedder }
+        Self { graph_store, vector_store, planner, embedder, max_hops }
     }
 }
 
@@ -34,18 +35,18 @@ impl Retriever for GraphRetriever {
         let collection = collection_id.0.as_str();
 
         // Step 1: Plan the traversal — extract seed entities from query.
-        let plan = self.planner.plan(&query.text).await?;
-        if plan.seed_entities.is_empty() {
+        let seed_entities = self.planner.plan_entities(&query.text).await?;
+        if seed_entities.is_empty() {
             return Ok(vec![]);
         }
 
         // Step 2: For each seed entity, query the graph and collect source chunks.
         let mut chunk_ids: Vec<ChunkId> = vec![];
-        for entity_name in &plan.seed_entities {
+        for entity_name in &seed_entities {
             let gq = GraphQuery {
                 entity_name: Some(entity_name.clone()),
                 entity_type: None,
-                max_hops: plan.max_hops as u32,
+                max_hops: self.max_hops,
                 relation_filter: None,
             };
             let entities = self.graph_store.query(&gq).await?;
@@ -83,7 +84,7 @@ impl Retriever for GraphRetriever {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arcanum_graph::InMemoryGraphStore;
+    use arcanum_graph::{GraphQueryPlanner, InMemoryGraphStore};
     use arcanum_core::types::{EnrichedText, EnrichRequest};
     use std::{collections::HashMap, sync::Mutex};
 
@@ -126,9 +127,9 @@ mod tests {
     async fn test_graph_retriever_compiles_and_returns_empty_for_no_entities() {
         let graph_store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
         let vector_store: Arc<dyn VectorStore> = Arc::new(MockVectorStore(Mutex::new(HashMap::new())));
-        let planner = GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2);
+        let planner: Arc<dyn GraphPlanner> = Arc::new(GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2));
         let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = GraphRetriever::new(graph_store, vector_store, planner, embedder);
+        let retriever = GraphRetriever::new(graph_store, vector_store, planner, embedder, 2);
 
         let query = Query::new("who is the CEO?").with_collection(CollectionId("col".into()));
         let results = retriever.retrieve(&query).await.unwrap();
@@ -139,9 +140,9 @@ mod tests {
     async fn test_graph_retriever_strategy() {
         let graph_store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
         let vector_store: Arc<dyn VectorStore> = Arc::new(MockVectorStore(Mutex::new(HashMap::new())));
-        let planner = GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2);
+        let planner: Arc<dyn GraphPlanner> = Arc::new(GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2));
         let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = GraphRetriever::new(graph_store, vector_store, planner, embedder);
+        let retriever = GraphRetriever::new(graph_store, vector_store, planner, embedder, 2);
         assert_eq!(retriever.strategy(), RetrievalStrategy::Graph);
     }
 }
