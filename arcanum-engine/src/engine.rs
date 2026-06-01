@@ -317,7 +317,7 @@ mod tests {
     use super::*;
     use arcanum_core::{
         types::*,
-        traits::{VectorStore, VectorQuery, ScoredChunk, Embedder, TextEnricher, GraphStore, TreeStore, GraphQuery},
+        traits::{VectorStore, VectorQuery, ScoredChunk, Embedder, TextEnricher},
         Result as AResult,
     };
     use async_trait::async_trait;
