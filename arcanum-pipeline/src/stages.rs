@@ -162,6 +162,7 @@ pub fn make_entity_extract_stage(
 pub fn make_embed_stage(
     state: Arc<Mutex<IngestionState>>,
     embedder: Arc<dyn Embedder>,
+    embedding_cb: Arc<arcanum_middleware::CircuitBreaker>,
 ) -> PipelineStage {
     PipelineStage {
         id: "embed",
@@ -169,13 +170,27 @@ pub fn make_embed_stage(
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let embedder = embedder.clone();
+            let cb = embedding_cb.clone();
             Box::pin(async move {
                 if skip(&ctx) { return Ok(ctx); }
+                if !cb.allow_request() {
+                    return Err(arcanum_core::ArcanumError::Embedding(
+                        "circuit open: embedding provider unavailable".into()
+                    ));
+                }
                 let texts: Vec<String> =
                     state.lock().await.chunks.iter().map(|c| c.text.clone()).collect();
-                let vectors = embedder.embed(texts).await?;
-                state.lock().await.vectors = vectors;
-                Ok(ctx)
+                match embedder.embed(texts).await {
+                    Ok(vectors) => {
+                        cb.record_success();
+                        state.lock().await.vectors = vectors;
+                        Ok(ctx)
+                    }
+                    Err(e) => {
+                        cb.record_failure();
+                        Err(e)
+                    }
+                }
             })
         }),
     }
@@ -185,8 +200,9 @@ pub fn make_embed_stage_after(
     dep: &'static str,
     state: Arc<Mutex<IngestionState>>,
     embedder: Arc<dyn Embedder>,
+    embedding_cb: Arc<arcanum_middleware::CircuitBreaker>,
 ) -> PipelineStage {
-    let mut stage = make_embed_stage(state, embedder);
+    let mut stage = make_embed_stage(state, embedder, embedding_cb);
     stage.deps = vec![dep];
     stage
 }
@@ -194,6 +210,7 @@ pub fn make_embed_stage_after(
 pub fn make_vector_write_stage(
     state: Arc<Mutex<IngestionState>>,
     vector_store: Arc<dyn VectorStore>,
+    vector_store_cb: Arc<arcanum_middleware::CircuitBreaker>,
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_write",
@@ -201,8 +218,14 @@ pub fn make_vector_write_stage(
         run: Arc::new(move |mut ctx| {
             let state = state.clone();
             let vs = vector_store.clone();
+            let cb = vector_store_cb.clone();
             Box::pin(async move {
                 if skip(&ctx) { return Ok(ctx); }
+                if !cb.allow_request() {
+                    return Err(arcanum_core::ArcanumError::Storage(
+                        "circuit open: vector store unavailable".into()
+                    ));
+                }
                 let (chunks, vectors, collection_id) = {
                     let g = state.lock().await;
                     (g.chunks.clone(), g.vectors.clone(), g.collection_id.clone())
@@ -217,9 +240,17 @@ pub fn make_vector_write_stage(
                         store_id: String::new(),
                     })
                     .collect();
-                vs.upsert(&collection_id.0, indexed).await?;
-                ctx.insert("vector_write_ok".to_string(), serde_json::json!(true));
-                Ok(ctx)
+                match vs.upsert(&collection_id.0, indexed).await {
+                    Ok(()) => {
+                        cb.record_success();
+                        ctx.insert("vector_write_ok".to_string(), serde_json::json!(true));
+                        Ok(ctx)
+                    }
+                    Err(e) => {
+                        cb.record_failure();
+                        Err(e)
+                    }
+                }
             })
         }),
     }
