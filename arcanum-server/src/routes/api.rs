@@ -37,6 +37,7 @@ pub struct HttpIngestRequest {
     pub source_uri: String,
     pub collection_id: String,
     pub pipeline: Option<String>,
+    pub force: Option<bool>,
 }
 
 pub async fn search(
@@ -90,7 +91,7 @@ pub async fn ingest(
         source_uri: req.source_uri,
         collection_id: CollectionId(req.collection_id),
         pipeline_template: req.pipeline,
-        force: false,
+        force: req.force.unwrap_or(false),
         content: None,
         mime_hint: None,
     };
@@ -110,6 +111,7 @@ pub struct UploadParams {
     pub collection_id: String,
     pub filename: String,
     pub pipeline: Option<String>,
+    pub force: Option<bool>,
 }
 
 /// Best-effort MIME hint from a filename extension.
@@ -148,7 +150,7 @@ pub async fn upload(
         source_uri: params.filename.clone(),
         collection_id: CollectionId(params.collection_id),
         pipeline_template: params.pipeline,
-        force: false,
+        force: params.force.unwrap_or(false),
         content: Some(body.to_vec()),
         mime_hint: Some(mime_from_filename(&params.filename)),
     };
@@ -181,5 +183,26 @@ mod upload_tests {
                 .unwrap()
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn upload_force_param_is_accepted() {
+        use arcanum_engine::ArcanumEngine;
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .build()
+            .await
+            .unwrap();
+        let token = engine.auth.generate_admin_key("tester");
+        let app = crate::build_app(Some(engine));
+        let resp = app.oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/upload?collection_id=c&filename=f.md&force=true")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::from(b"# Hello\nworld".to_vec()))
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::ACCEPTED);
     }
 }

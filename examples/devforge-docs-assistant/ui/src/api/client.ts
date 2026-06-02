@@ -1,7 +1,6 @@
-const apiKey =
-  import.meta.env.VITE_API_KEY ??
-  localStorage.getItem('arcanum_key') ??
-  '';
+import { apiKey } from './auth'
+
+export { apiKey }
 
 export async function arcanumFetch(path: string, init?: RequestInit): Promise<Response> {
   return fetch(path, {
@@ -11,5 +10,5 @@ export async function arcanumFetch(path: string, init?: RequestInit): Promise<Re
       'Content-Type': 'application/json',
       ...init?.headers,
     },
-  });
+  })
 }
