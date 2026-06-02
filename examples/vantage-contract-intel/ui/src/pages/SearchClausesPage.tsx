@@ -19,7 +19,10 @@ function StrategyBars({ scores, dominant }: { scores: Record<string, number>; do
               <span className="text-slate-400">{v.toFixed(2)}</span>
             </div>
             <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
-              <div className={`h-full ${isDom ? 'bg-navy' : 'bg-slate-300'}`} style={{ width: `${pct}%`, backgroundColor: isDom ? '#1e3a5f' : undefined }} />
+              <div
+                className={`h-full ${isDom ? 'bg-navy' : 'bg-slate-300'}`}
+                style={{ width: `${pct}%`, backgroundColor: isDom ? '#1e3a5f' : undefined }}
+              />
             </div>
           </div>
         )
@@ -29,10 +32,12 @@ function StrategyBars({ scores, dominant }: { scores: Record<string, number>; do
 }
 
 export default function SearchClausesPage() {
-  const [query, setQuery] = useState('')
-  const [result, setResult] = useState<SearchResult | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [query, setQuery]       = useState('')
+  const [result, setResult]     = useState<SearchResult | null>(null)
+  const [loading, setLoading]   = useState(false)
+  const [error, setError]       = useState<string | null>(null)
+  // Finding #10: toggles between 400-char excerpt and full clause text.
+  const [showFull, setShowFull] = useState(false)
 
   function dominant(scores: Record<string, number>): string {
     const e = Object.entries(scores).sort((a, b) => b[1] - a[1])
@@ -42,7 +47,7 @@ export default function SearchClausesPage() {
   async function go(e: React.FormEvent) {
     e.preventDefault()
     if (!query.trim()) return
-    setLoading(true); setError(null)
+    setLoading(true); setError(null); setShowFull(false)
     try { setResult(await search(query, COLLECTION)) }
     catch (err) { setError(String(err)) }
     finally { setLoading(false) }
@@ -66,28 +71,54 @@ export default function SearchClausesPage() {
               className="flex-1 bg-transparent text-slate-800 placeholder-slate-400 outline-none text-sm"
             />
           </div>
-          <button type="submit" disabled={loading} className="px-5 py-3 bg-slate-800 hover:bg-slate-900 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors">
+          <button
+            type="submit"
+            disabled={loading}
+            className="px-5 py-3 bg-slate-800 hover:bg-slate-900 disabled:opacity-50 text-white rounded-lg text-sm font-medium transition-colors"
+          >
             {loading ? 'Searching…' : 'Search'}
           </button>
         </div>
       </form>
 
-      {error && <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>}
+      {error && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">{error}</div>
+      )}
+
+      {/* Finding #10: toggle appears when there are results */}
+      {result && result.chunks.length > 0 && (
+        <div className="flex justify-end mb-3">
+          <button
+            onClick={() => setShowFull(f => !f)}
+            className="text-xs text-slate-500 hover:text-slate-800 underline"
+          >
+            {showFull ? 'Show excerpts' : 'Show full text'}
+          </button>
+        </div>
+      )}
 
       {result && (
         <div className="space-y-3">
-          {result.chunks.length === 0 && <p className="text-slate-400 text-sm">No clauses found. Upload sample contracts on the Library page first.</p>}
+          {result.chunks.length === 0 && (
+            <p className="text-slate-400 text-sm">No clauses found. Upload sample contracts on the Library page first.</p>
+          )}
           {result.chunks.map((c, i) => {
-            const lvl = clauseLevel(c)
+            const lvl  = clauseLevel(c)
+            const text = c.indexed_chunk.chunk.text
             return (
               <div key={i} className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex gap-5">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 mb-2">
-                    {lvl && <span className="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">{lvl}</span>}
+                    {lvl && (
+                      <span className="text-xs px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200">
+                        {lvl}
+                      </span>
+                    )}
                     <span className="text-xs text-slate-400">{c.indexed_chunk.chunk.collection_id}</span>
                   </div>
+                  {/* Finding #10: showFull shows complete clause text; default is 400-char excerpt */}
                   <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
-                    {c.indexed_chunk.chunk.text.slice(0, 400)}{c.indexed_chunk.chunk.text.length > 400 ? '…' : ''}
+                    {showFull ? text : text.slice(0, 400) + (text.length > 400 ? '…' : '')}
                   </p>
                 </div>
                 <StrategyBars scores={result.strategy_scores} dominant={dominant(result.strategy_scores)} />

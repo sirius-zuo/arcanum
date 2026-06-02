@@ -3,18 +3,25 @@ import { fetchGraph, GraphView, GraphNode } from '../api/graph'
 import { Users, RefreshCw } from 'lucide-react'
 
 export default function PartiesPage() {
-  const [graph, setGraph] = useState<GraphView>({ nodes: [], edges: [] })
-  const [loading, setLoading] = useState(false)
-  const [selected, setSelected] = useState<GraphNode | null>(null)
+  const [graph, setGraph]           = useState<GraphView>({ nodes: [], edges: [] })
+  const [loading, setLoading]       = useState(false)
+  const [graphError, setGraphError] = useState<string | null>(null)
+  const [selected, setSelected]     = useState<GraphNode | null>(null)
 
   async function load() {
     setLoading(true)
-    try { setGraph(await fetchGraph()) }
-    finally { setLoading(false) }
+    setGraphError(null)
+    try {
+      setGraph(await fetchGraph())
+    } catch (err) {
+      // Finding #3: surface the error instead of letting it become an unhandled rejection.
+      setGraphError(String(err))
+    } finally {
+      setLoading(false)
+    }
   }
   useEffect(() => { load() }, [])
 
-  // Relationships for the selected entity (edges where it is the source).
   const related = selected
     ? graph.edges.filter(e => e.source === selected.id).map(e => {
         const target = graph.nodes.find(n => n.id === e.target)
@@ -34,11 +41,20 @@ export default function PartiesPage() {
         </button>
       </div>
 
-      {graph.nodes.length === 0 ? (
+      {/* Finding #3: error banner for graph API failures */}
+      {graphError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm">
+          {graphError}
+        </div>
+      )}
+
+      {!graphError && graph.nodes.length === 0 && (
         <div className="text-slate-400 text-sm p-8 text-center border border-dashed border-slate-300 rounded-xl">
           No parties yet. Upload contracts on the Library page.
         </div>
-      ) : (
+      )}
+
+      {!graphError && graph.nodes.length > 0 && (
         <div className="flex gap-6">
           <div className="flex-1 bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
             <table className="w-full text-sm">
@@ -50,9 +66,19 @@ export default function PartiesPage() {
               </thead>
               <tbody>
                 {graph.nodes.map(n => (
-                  <tr key={n.id} onClick={() => setSelected(n)} className={`border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 ${selected?.id === n.id ? 'bg-slate-50' : ''}`}>
+                  <tr
+                    key={n.id}
+                    onClick={() => setSelected(n)}
+                    className={`border-b border-slate-100 last:border-0 cursor-pointer hover:bg-slate-50 ${
+                      selected?.id === n.id ? 'bg-slate-50' : ''
+                    }`}
+                  >
                     <td className="px-4 py-3 text-slate-800">{n.name}</td>
-                    <td className="px-4 py-3"><span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">{n.entity_type}</span></td>
+                    <td className="px-4 py-3">
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                        {n.entity_type}
+                      </span>
+                    </td>
                   </tr>
                 ))}
               </tbody>

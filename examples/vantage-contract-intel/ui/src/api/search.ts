@@ -11,7 +11,7 @@ export interface RetrievedChunk {
 
 export interface SearchResult {
   chunks: RetrievedChunk[]
-  citations?: unknown[]   // omitted by the current /api/v1/search response
+  citations?: unknown[]
   strategy_scores: Record<string, number>
   confidence: number
 }
@@ -25,14 +25,18 @@ export async function search(query: string, collectionId: string, topK = 15): Pr
   return res.json()
 }
 
-/// RAPTOR clause-group level label from metadata, when the result came from RAPTOR.
+// Finding #6: returns null (not 'RAPTOR') when level metadata is absent or unrecognized.
+// Returning 'RAPTOR' previously caused a spurious second badge on Raptor result cards.
 export function clauseLevel(chunk: RetrievedChunk): string | null {
   if (chunk.strategy !== 'Raptor') return null
   const lvl = chunk.indexed_chunk.chunk.metadata?.['level']
+  if (lvl === undefined || lvl === null) return null
   if (lvl === 0 || lvl === '0') return 'L0 Clause'
   if (lvl === 1 || lvl === '1') return 'L1 Clause Group'
   if (lvl === 2 || lvl === '2') return 'L2 Contract Summary'
-  return 'RAPTOR'
+  return null
 }
 
-export const ALL_STRATEGIES = ['Bm25', 'Vector', 'Graph', 'Raptor'] as const
+// Finding #4: added 'ColBert' so StrategyBars renders all possible strategy scores
+// and the dominant-strategy highlight is correct when ColBert leads.
+export const ALL_STRATEGIES = ['Bm25', 'Vector', 'Graph', 'Raptor', 'ColBert'] as const
