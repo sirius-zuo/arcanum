@@ -3,6 +3,8 @@ name    = "example-meridian-policy-finder"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+
 [[bin]]
 name = "meridian-policy-finder"
 path = "src/main.rs"
@@ -18,3 +20,4 @@ tracing            = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tower-http         = { version = "0.5", features = ["fs"] }
 anyhow             = "1"
+axum               = "0.7"
