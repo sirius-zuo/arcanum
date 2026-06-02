@@ -53,7 +53,11 @@ async fn main() -> Result<()> {
     // Real admin API key (signed JWT) — a fabricated string would fail validate_api_key.
     let dev_key = engine.auth.generate_admin_key("dev-user");
     std::fs::write(".arcanum-dev-key", &dev_key)?;
-    std::fs::write("ui/.env.development", format!("VITE_API_KEY={}\n", dev_key))?;
+    // Only write .env.development in dev mode (when the pre-built UI is not present).
+    // In production (ui/dist exists), Vite is not running and this file has no reader.
+    if !std::path::Path::new("ui/dist").exists() {
+        std::fs::write("ui/.env.development", format!("VITE_API_KEY={}\n", dev_key))?;
+    }
 
     let mut app: Router = build_app(Some(engine));
     if std::path::Path::new("ui/dist").exists() {

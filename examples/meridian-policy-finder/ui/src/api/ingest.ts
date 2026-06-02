@@ -1,9 +1,11 @@
-import { apiKey } from './client'
+import { apiKey, arcanumFetch } from './client'
 
 export interface IngestResponse {
   operation_id: string
 }
 
+/// Upload raw file bytes to POST /api/v1/upload.
+/// Must use raw fetch (not arcanumFetch) because the body is binary, not JSON.
 export async function uploadFile(
   file: File,
   collectionId: string,
@@ -23,17 +25,14 @@ export async function uploadFile(
   return res.json()
 }
 
+/// Ingest a server-side file by path (the bundled samples/ dir).
 export async function ingestSample(
   serverPath: string,
   collectionId: string,
   pipeline?: string,
 ): Promise<IngestResponse> {
-  const res = await fetch('/api/v1/ingest', {
+  const res = await arcanumFetch('/api/v1/ingest', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
     body: JSON.stringify({
       source_uri: serverPath,
       collection_id: collectionId,
@@ -43,4 +42,3 @@ export async function ingestSample(
   if (!res.ok) throw new Error(`Ingest failed: ${res.status}`)
   return res.json()
 }
-
