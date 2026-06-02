@@ -1,0 +1,23 @@
+[global]
+runtime_mode = "development"
+
+[retrieval]
+orchestration_mode = "QueryClassified"
+top_k              = 12
+
+[embedding]
+provider = "ollama"
+model_id  = "nomic-embed-text"
+
+[storage]
+graph_enabled = true
+tree_enabled  = true
+
+[ingestion]
+pipeline         = "full"
+worker_pool_size = 2
+queue_capacity   = 100
+
+[tree]
+raptor_max_depth    = 3
+raptor_cluster_size = 8
