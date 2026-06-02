@@ -1,30 +1,26 @@
 import { useEffect, useState } from 'react'
+import { readHistory, clearHistory, HistoryEntry } from '../store/history'
 import { Trash2, Hash, Sparkles } from 'lucide-react'
-
-interface HistoryEntry {
-  question: string
-  strategy: string
-  topTitle: string
-  ts: number
-}
 
 function StrategyTag({ strategy }: { strategy: string }) {
   if (strategy === 'Bm25')
     return <span className="inline-flex items-center gap-1 text-xs text-orange-700"><Hash size={11} /> BM25</span>
   if (strategy === 'Vector')
     return <span className="inline-flex items-center gap-1 text-xs text-blue-700"><Sparkles size={11} /> Semantic</span>
-  return <span className="text-xs text-slate-500">Combined</span>
+  if (strategy === 'unknown')
+    return <span className="text-xs text-slate-400 italic">—</span>
+  return <span className="text-xs text-slate-500">{strategy}</span>
 }
 
 export default function RecentQuestionsPage() {
   const [history, setHistory] = useState<HistoryEntry[]>([])
 
   useEffect(() => {
-    setHistory(JSON.parse(localStorage.getItem('meridian_history') ?? '[]'))
+    setHistory(readHistory())
   }, [])
 
   function clear() {
-    localStorage.removeItem('meridian_history')
+    clearHistory()
     setHistory([])
   }
 

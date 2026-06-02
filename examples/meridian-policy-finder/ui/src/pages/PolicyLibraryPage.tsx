@@ -6,7 +6,16 @@ const COLLECTION = 'meridian'
 const CATEGORIES = ['HR', 'IT', 'Benefits', 'Finance', 'Legal'] as const
 const SAMPLE_FILES = ['pto-policy.md', 'parental-leave.md', '401k-benefits.md', 'performance-review.md']
 
+// Natural categories for each bundled sample — used by loadSamples regardless of the dropdown selection.
+const SAMPLE_CATEGORIES: Record<string, string> = {
+  'pto-policy.md':        'HR',
+  'parental-leave.md':    'HR',
+  '401k-benefits.md':     'Benefits',
+  'performance-review.md':'HR',
+}
+
 interface PolicyDoc {
+  key: string       // unique per entry: `${name}-${Date.now()}` prevents cross-file status collisions
   name: string
   category: string
   status: 'indexing' | 'ready' | 'error'
@@ -18,26 +27,31 @@ export default function PolicyLibraryPage() {
   const [activeFilter, setActiveFilter] = useState<string>('All')
 
   async function processFile(file: File) {
-    setDocs(prev => [...prev, { name: file.name, category, status: 'indexing' }])
+    const key = `${file.name}-${Date.now()}`
+    setDocs(prev => [...prev, { key, name: file.name, category, status: 'indexing' }])
     try {
       await uploadFile(file, COLLECTION)
-      setDocs(prev => prev.map(d => d.name === file.name ? { ...d, status: 'ready' } : d))
+      setDocs(prev => prev.map(d => d.key === key ? { ...d, status: 'ready' } : d))
     } catch {
-      setDocs(prev => prev.map(d => d.name === file.name ? { ...d, status: 'error' } : d))
+      setDocs(prev => prev.map(d => d.key === key ? { ...d, status: 'error' } : d))
     }
   }
 
-  // Bundled samples → POST /api/v1/ingest by server path (FileLoader reads them).
   async function loadSamples() {
-    for (const name of SAMPLE_FILES) {
-      setDocs(prev => [...prev, { name, category, status: 'indexing' }])
+    const entries = SAMPLE_FILES.map(name => ({
+      key: `${name}-${Date.now()}`,
+      name,
+      category: SAMPLE_CATEGORIES[name] ?? 'HR',
+    }))
+    setDocs(prev => [...prev, ...entries.map(e => ({ ...e, status: 'indexing' as const }))])
+    await Promise.all(entries.map(async ({ key, name }) => {
       try {
         await ingestSample(`samples/${name}`, COLLECTION)
-        setDocs(prev => prev.map(d => d.name === name ? { ...d, status: 'ready' } : d))
+        setDocs(prev => prev.map(d => d.key === key ? { ...d, status: 'ready' } : d))
       } catch {
-        setDocs(prev => prev.map(d => d.name === name ? { ...d, status: 'error' } : d))
+        setDocs(prev => prev.map(d => d.key === key ? { ...d, status: 'error' } : d))
       }
-    }
+    }))
   }
 
   function onFileInput(e: React.ChangeEvent<HTMLInputElement>) {
@@ -103,8 +117,8 @@ export default function PolicyLibraryPage() {
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3">
-          {visible.map((d, i) => (
-            <div key={i} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex items-start gap-3">
+          {visible.map(d => (
+            <div key={d.key} className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm flex items-start gap-3">
               <FileText size={18} className="text-slate-400 mt-0.5 flex-shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-medium text-slate-800 truncate">{d.name}</div>
