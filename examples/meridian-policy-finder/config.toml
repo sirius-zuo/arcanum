@@ -1,0 +1,14 @@
+[global]
+runtime_mode = "development"
+
+[retrieval]
+orchestration_mode = "QueryClassified"
+top_k              = 6
+
+[embedding]
+provider = "ollama"
+model_id  = "nomic-embed-text"
+
+[ingestion]
+worker_pool_size = 2
+queue_capacity   = 100
