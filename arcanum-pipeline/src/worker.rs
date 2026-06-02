@@ -70,7 +70,14 @@ pub async fn run_task(
             .await;
     }
 
-    let source = Source::from_uri(&source_uri)?;
+    let source = match &task.content {
+        Some(bytes) => Source::Raw {
+            content: bytes.clone(),
+            mime_hint: task.mime_hint.clone(),
+            uri: source_uri.clone(),
+        },
+        None => Source::from_uri(&source_uri)?,
+    };
     let state  = Arc::new(Mutex::new(IngestionState::new(source, collection_id.clone())));
     let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;
 
@@ -114,6 +121,8 @@ pub async fn run_task(
                     pipeline_template: pipeline_template.clone(),
                     attempt:           task_attempt + 1,
                     force:             force,
+                    content:           task.content.clone(),
+                    mime_hint:         task.mime_hint.clone(),
                 };
                 let _ = queue.push(retry_task).await;
             }

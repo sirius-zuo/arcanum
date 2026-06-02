@@ -21,6 +21,11 @@ pub struct IngestionTask {
     pub pipeline_template: String,
     pub attempt:           u32,
     pub force:             bool,
+    /// Inline content for direct uploads. When present, the worker builds
+    /// `Source::Raw` from these bytes instead of resolving `source_uri`.
+    pub content:           Option<Vec<u8>>,
+    /// MIME hint for inline content (derived from the upload filename).
+    pub mime_hint:         Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

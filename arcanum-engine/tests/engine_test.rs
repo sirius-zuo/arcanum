@@ -60,6 +60,8 @@ async fn test_ingest_skips_already_seen_uri() {
         collection_id: CollectionId("col".into()),
         pipeline_template: None,
         force: false,
+        content: None,
+        mime_hint: None,
     };
     let result = svc.ingest(req, "user1").await;
     assert!(result.is_ok());
