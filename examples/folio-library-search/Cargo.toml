@@ -1,0 +1,23 @@
+[package]
+name    = "example-folio-library-search"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "folio-library-search"
+path = "src/main.rs"
+
+[dependencies]
+arcanum-engine     = { path = "../../arcanum-engine" }
+arcanum-server     = { path = "../../arcanum-server" }
+arcanum-core       = { path = "../../arcanum-core" }
+arcanum-vector     = { path = "../../arcanum-vector" }
+arcanum-models     = { path = "../../arcanum-models" }
+arcanum-graph      = { path = "../../arcanum-graph" }
+arcanum-tree       = { path = "../../arcanum-tree" }
+tokio              = { version = "1", features = ["full"] }
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tower-http         = { version = "0.5", features = ["fs"] }
+axum               = "0.7"
+anyhow             = "1"
