@@ -1,3 +1,5 @@
+import { arcanumFetch } from './client'
+
 export interface RetrievedChunk {
   indexed_chunk: {
     chunk: { id: string; text: string; collection_id: string; metadata: Record<string, unknown> }
@@ -9,15 +11,20 @@ export interface RetrievedChunk {
 
 export interface SearchResult {
   chunks: RetrievedChunk[]
-  citations?: unknown[]
+  citations?: unknown[]   // omitted by the current /api/v1/search response
   strategy_scores: Record<string, number>
   confidence: number
 }
 
 export async function search(
-  _query: string,
-  _collectionId: string,
-  _topK = 8,
+  query: string,
+  collectionId: string,
+  topK = 8,
 ): Promise<SearchResult> {
-  return { chunks: [], strategy_scores: {}, confidence: 0 }
+  const res = await arcanumFetch('/api/v1/search', {
+    method: 'POST',
+    body: JSON.stringify({ query, collection_id: collectionId, top_k: topK }),
+  })
+  if (!res.ok) throw new Error(`Search failed: ${res.status}`)
+  return res.json()
 }
