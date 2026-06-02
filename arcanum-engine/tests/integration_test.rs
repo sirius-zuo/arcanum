@@ -48,6 +48,8 @@ async fn test_ingest_task_executes_and_writes_to_vector_store() {
         collection_id: CollectionId("test-col".into()),
         pipeline_template: None,
         force: false,
+        content: None,
+        mime_hint: None,
     };
     let op_id = engine.ingestion.ingest(req, "test-user").await
         .expect("ingest should queue successfully");

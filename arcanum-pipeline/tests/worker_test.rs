@@ -70,6 +70,8 @@ async fn test_worker_processes_task_to_completion() {
         pipeline_template: "standard".into(),
         attempt: 0,
         force: false,
+        content: None,
+        mime_hint: None,
     };
 
     let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
@@ -105,6 +107,8 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
         pipeline_template: "standard".into(),
         attempt: 0,
         force: false,
+        content: None,
+        mime_hint: None,
     };
 
     let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
@@ -190,6 +194,8 @@ async fn test_worker_invalidates_cache_on_re_ingest() {
         pipeline_template: "standard".into(),
         attempt: 0,
         force: false,
+        content: None,
+        mime_hint: None,
     };
 
     run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await.unwrap();
@@ -225,6 +231,8 @@ async fn test_worker_skips_unchanged_document() {
         pipeline_template: "standard".into(),
         attempt: 0,
         force: false,
+        content: None,
+        mime_hint: None,
     };
 
     let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;

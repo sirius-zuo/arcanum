@@ -11,6 +11,8 @@ pub struct IngestRequest {
     pub collection_id: CollectionId,
     pub pipeline_template: Option<String>,
     pub force: bool,
+    pub content: Option<Vec<u8>>,
+    pub mime_hint: Option<String>,
 }
 
 pub struct IngestionService {
@@ -74,6 +76,8 @@ impl IngestionService {
             pipeline_template: req.pipeline_template.unwrap_or("standard".into()),
             attempt: 0,
             force: req.force,
+            content: req.content.clone(),
+            mime_hint: req.mime_hint.clone(),
         };
         self.queue.push(task).await?;
         self.audit.log(AuditEntry {

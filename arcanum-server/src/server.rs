@@ -31,6 +31,7 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/ready",  get(health::readiness))
         .route("/api/v1/search", post(api::search))
         .route("/api/v1/ingest", post(api::ingest))
+        .route("/api/v1/upload", post(api::upload))
         .route("/admin/collections", get(admin::list_collections))
         .route("/admin/health",      get(admin::get_health))
         .route("/admin/metrics",     get(admin::get_metrics))
