@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { uploadFile, ingestSample } from '../api/ingest'
 import { fetchGraph } from '../api/graph'
 import { Upload, FileText, CheckCircle, AlertCircle, Loader, Users, FolderDown } from 'lucide-react'
@@ -18,11 +19,16 @@ interface ContractDoc {
 
 export default function ContractLibraryPage() {
   const [docs, setDocs] = useState<ContractDoc[]>([])
-  const [partyCount, setPartyCount] = useState<number | null>(null)
+  // Finding #5: renamed from partyCount — this counts all graph entities, not just parties.
+  const [entityCount, setEntityCount] = useState<number | null>(null)
 
-  async function refreshPartyCount() {
-    const g = await fetchGraph()
-    setPartyCount(g.nodes.length)
+  // Finding #2 & #9: has its own try/catch so it never throws to the caller.
+  // A graph API failure silently skips the count update without affecting upload status.
+  async function refreshEntityCount() {
+    try {
+      const g = await fetchGraph()
+      setEntityCount(g.nodes.length)
+    } catch { /* entity count is supplemental — don't surface graph errors here */ }
   }
 
   async function processFile(file: File) {
@@ -30,13 +36,15 @@ export default function ContractLibraryPage() {
     try {
       await uploadFile(file, COLLECTION, 'full')
       setDocs(prev => prev.map(d => d.name === file.name ? { ...d, status: 'ready' } : d))
-      await refreshPartyCount()
     } catch {
       setDocs(prev => prev.map(d => d.name === file.name ? { ...d, status: 'error' } : d))
+      return  // Don't refresh entity count if upload failed.
     }
+    // Finding #2: refreshEntityCount is called AFTER the try/catch — its internal
+    // try/catch means a graph failure cannot flip a successful upload to 'error'.
+    await refreshEntityCount()
   }
 
-  // Bundled samples → POST /api/v1/ingest by server path (FileLoader reads them).
   async function loadSamples() {
     for (const name of SAMPLE_FILES) {
       setDocs(prev => [...prev, { name, status: 'indexing' }])
@@ -47,7 +55,8 @@ export default function ContractLibraryPage() {
         setDocs(prev => prev.map(d => d.name === name ? { ...d, status: 'error' } : d))
       }
     }
-    await refreshPartyCount()
+    // Finding #9: safe to call — refreshEntityCount handles its own errors internally.
+    await refreshEntityCount()
   }
 
   function onFileInput(e: React.ChangeEvent<HTMLInputElement>) {
@@ -78,10 +87,12 @@ export default function ContractLibraryPage() {
         </div>
       </div>
 
-      {partyCount !== null && (
+      {entityCount !== null && (
         <div className="mb-4 flex items-center gap-2 text-sm text-slate-600">
-          <Users size={15} /> {partyCount} parties extracted ·{' '}
-          <a href="/parties" className="underline hover:text-slate-900">view registry</a>
+          {/* Finding #5: label changed from "parties extracted" — the count is all entity types */}
+          <Users size={15} /> {entityCount} entities extracted ·{' '}
+          {/* Finding #7: Link instead of <a> — prevents full page reload */}
+          <Link to="/parties" className="underline hover:text-slate-900">view registry</Link>
         </div>
       )}
 
