@@ -1,7 +1,4 @@
-const apiKey =
-  import.meta.env.VITE_API_KEY ??
-  localStorage.getItem('arcanum_key') ??
-  '';
+import { apiKey } from './client'
 
 export interface IngestResponse {
   operation_id: string
@@ -47,11 +44,3 @@ export async function ingestSample(
   return res.json()
 }
 
-export async function listCollections(): Promise<{ id: string; name: string }[]> {
-  const res = await fetch('/admin/collections', {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  })
-  if (!res.ok) return []
-  const data = await res.json()
-  return Array.isArray(data.collections) ? data.collections : []
-}
