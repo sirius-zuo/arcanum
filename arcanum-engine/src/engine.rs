@@ -7,7 +7,7 @@ use arcanum_core::{
 };
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker,
-                        RawLoader, FixedSizeChunker};
+                        RawLoader, FileLoader, HttpLoader, FixedSizeChunker};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
@@ -208,7 +208,12 @@ impl ArcanumEngineBuilder {
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
             let deps = Arc::new(PipelineDeps {
-                loaders:           Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
+                loaders: Arc::new(
+                    LoaderRegistry::new()
+                        .register(Arc::new(RawLoader::new()))
+                        .register(Arc::new(FileLoader::new()))
+                        .register(Arc::new(HttpLoader::new())),
+                ),
                 preprocessors:     Arc::new(PreprocessorRegistry::new()),
                 chunker:           Arc::new(FixedSizeChunker::new(512, 64)),
                 context_enricher:  self.enricher.clone(),
