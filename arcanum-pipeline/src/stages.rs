@@ -85,8 +85,13 @@ pub fn make_chunk_stage(
                     )
                 };
                 let mut chunks = chunker.chunk(&doc).await?;
+                let source_uri = doc.source_uri.clone();
                 for c in &mut chunks {
                     c.collection_id = collection_id.clone();
+                    c.metadata.0.insert(
+                        "source_uri".to_string(),
+                        serde_json::Value::String(source_uri.clone()),
+                    );
                 }
                 state.lock().await.chunks = chunks;
                 Ok(ctx)
@@ -253,6 +258,49 @@ pub fn make_vector_write_stage(
                 }
             })
         }),
+    }
+}
+
+#[cfg(test)]
+mod test_chunk_source_uri {
+    use super::*;
+    use arcanum_core::types::*;
+    use arcanum_ingestion::FixedSizeChunker;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn chunk_stage_sets_source_uri_in_metadata() {
+        let doc = RawDocument {
+            id: DocumentId::new(),
+            content: b"Hello world. This is a test document.".to_vec(),
+            mime_type: "text/plain".to_string(),
+            source_uri: "samples/api-authentication.md".to_string(),
+            metadata: Default::default(),
+        };
+        let collection = CollectionId("devforge".to_string());
+        let state = Arc::new(Mutex::new(IngestionState {
+            source: arcanum_core::traits::Source::Raw {
+                content: doc.content.clone(),
+                mime_hint: Some("text/plain".to_string()),
+                uri: doc.source_uri.clone(),
+            },
+            collection_id: collection.clone(),
+            doc: Some(doc),
+            chunks: vec![],
+            vectors: vec![],
+        }));
+        let chunker = Arc::new(FixedSizeChunker::new(512, 0));
+        let stage = make_chunk_stage(state.clone(), chunker);
+        (stage.run)(Default::default()).await.unwrap();
+        let chunks = state.lock().await.chunks.clone();
+        assert!(!chunks.is_empty(), "expected at least one chunk");
+        for chunk in &chunks {
+            let uri = chunk.metadata.0.get("source_uri")
+                .and_then(|v| v.as_str());
+            assert_eq!(uri, Some("samples/api-authentication.md"),
+                "chunk metadata must contain source_uri");
+        }
     }
 }
 
