@@ -121,6 +121,8 @@ impl McpJsonRpcHandler {
                         collection_id: CollectionId(collection_id),
                         pipeline_template: pipeline,
                         force: false,
+                        content: None,
+                        mime_hint: None,
                     };
                     let op_id = engine.ingestion.ingest(req, &claims.user_id).await?;
                     Ok(json!({
