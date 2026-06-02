@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom'
 import SearchClausesPage from './pages/SearchClausesPage'
 import ContractLibraryPage from './pages/ContractLibraryPage'
 import PartiesPage from './pages/PartiesPage'
@@ -14,14 +14,13 @@ export default function App() {
           </div>
           <div className="text-xs text-slate-400 mb-6 px-2">Contract Intelligence</div>
           {[
-            { to: '/', icon: Search, label: 'Search Clauses' },
             { to: '/library', icon: FileText, label: 'Contract Library' },
-            { to: '/parties', icon: Users, label: 'Parties' },
+            { to: '/search',  icon: Search,   label: 'Search Clauses'   },
+            { to: '/parties', icon: Users,    label: 'Parties'          },
           ].map(({ to, icon: Icon, label }) => (
             <NavLink
               key={to}
               to={to}
-              end={to === '/'}
               className={({ isActive }) =>
                 `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
                   isActive ? 'bg-slate-100 text-slate-900 font-medium' : 'text-slate-600 hover:bg-slate-100'
@@ -34,9 +33,11 @@ export default function App() {
         </nav>
         <main className="flex-1 overflow-auto p-8">
           <Routes>
-            <Route path="/" element={<SearchClausesPage />} />
-            <Route path="/library" element={<ContractLibraryPage />} />
-            <Route path="/parties" element={<PartiesPage />} />
+            {/* Finding #8: / redirects to /library (the spec's default landing page) */}
+            <Route path="/"        element={<Navigate to="/library" replace />} />
+            <Route path="/library" element={<ContractLibraryPage />}            />
+            <Route path="/search"  element={<SearchClausesPage />}              />
+            <Route path="/parties" element={<PartiesPage />}                    />
           </Routes>
         </main>
       </div>
