@@ -1,18 +1,11 @@
 import { useState } from 'react'
 import { search, dominantStrategy, SearchResult } from '../api/search'
+import { prependHistory } from '../store/history'
 import { Search, Sparkles, Hash } from 'lucide-react'
 
 const COLLECTION = 'meridian'
 
-interface HistoryEntry {
-  question: string
-  strategy: string
-  topTitle: string
-  ts: number
-}
-
 function RoutingPill({ strategy }: { strategy: string }) {
-  // BM25 → keyword lookup (orange); Vector → semantic (blue); both → combined (slate)
   if (strategy === 'Bm25') {
     return (
       <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200">
@@ -27,9 +20,10 @@ function RoutingPill({ strategy }: { strategy: string }) {
       </span>
     )
   }
+  // Show the actual strategy name for Graph, Raptor, ColBert, etc.
   return (
     <span className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 border border-slate-200">
-      Combined search
+      {strategy}
     </span>
   )
 }
@@ -51,15 +45,12 @@ export default function AskPage() {
       setResult(r)
       const strat = dominantStrategy(r.strategy_scores)
       setRoutedTo(strat)
-      // Record to history (localStorage)
-      const entry: HistoryEntry = {
+      prependHistory({
         question,
         strategy: strat ?? 'unknown',
         topTitle: r.chunks[0]?.indexed_chunk.chunk.text.slice(0, 60) ?? '(no result)',
         ts: Date.now(),
-      }
-      const prev: HistoryEntry[] = JSON.parse(localStorage.getItem('meridian_history') ?? '[]')
-      localStorage.setItem('meridian_history', JSON.stringify([entry, ...prev].slice(0, 50)))
+      })
     } catch (err) {
       setError(String(err))
     } finally {
@@ -112,7 +103,7 @@ export default function AskPage() {
             <p className="text-slate-500 text-sm">No matching policy found. Try ingesting the sample files first.</p>
           )}
           {result.chunks.map((c, i) => (
-            <div key={i} className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+            <div key={c.indexed_chunk.chunk.id ?? i} className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
               {i === 0 && <div className="text-xs font-medium text-blue-600 mb-2 uppercase tracking-wide">Best answer</div>}
               <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">
                 {c.indexed_chunk.chunk.text.slice(0, 500)}
