@@ -3,7 +3,7 @@ use arcanum_core::config::ArcanumConfig;
 use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
 use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
-use crate::routes::{api, health, admin};
+use crate::routes::{api, health, admin, graph};
 use crate::ws::ws_handler;
 use crate::portal::serve_portal;
 
@@ -31,6 +31,7 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/ready",  get(health::readiness))
         .route("/api/v1/search", post(api::search))
         .route("/api/v1/ingest", post(api::ingest))
+        .route("/api/v1/graph",  get(graph::get_graph))
         .route("/api/v1/upload", post(api::upload))
         .route("/admin/collections", get(admin::list_collections))
         .route("/admin/health",      get(admin::get_health))

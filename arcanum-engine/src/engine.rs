@@ -42,6 +42,8 @@ pub struct ArcanumEngine {
     pub embedding_cb: Arc<CircuitBreaker>,
     pub vector_store_cb: Arc<CircuitBreaker>,
     pub secret_store: Option<Arc<dyn SecretStore>>,
+    /// Optional knowledge graph store, exposed for the /api/v1/graph endpoint.
+    pub graph_store: Option<Arc<dyn GraphStore>>,
 }
 
 impl std::fmt::Debug for ArcanumEngine {
@@ -334,6 +336,7 @@ impl ArcanumEngineBuilder {
             embedding_cb,
             vector_store_cb,
             secret_store,
+            graph_store: self.graph_store.clone(),
         }))
     }
 }
