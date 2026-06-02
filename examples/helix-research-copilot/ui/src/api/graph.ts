@@ -17,8 +17,9 @@ export interface GraphView {
   edges: GraphEdge[]
 }
 
+// Finding #1: throws on non-ok so callers can distinguish failure from empty corpus.
 export async function fetchGraph(): Promise<GraphView> {
   const res = await arcanumFetch('/api/v1/graph')
-  if (!res.ok) return { nodes: [], edges: [] }
+  if (!res.ok) throw new Error(`Graph API error: ${res.status}`)
   return res.json()
 }

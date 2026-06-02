@@ -11,7 +11,7 @@ export interface RetrievedChunk {
 
 export interface SearchResult {
   chunks: RetrievedChunk[]
-  citations?: unknown[]   // omitted by the current /api/v1/search response
+  citations?: unknown[]
   strategy_scores: Record<string, number>
   confidence: number
 }
@@ -25,18 +25,21 @@ export async function search(query: string, collectionId: string, topK = 12): Pr
   return res.json()
 }
 
-/// Human-readable RAPTOR level label from chunk metadata, if present.
-/// TreeNode.level is surfaced in chunk metadata as "level" when the result came from RAPTOR.
+// Finding #4: returns null (not the string 'RAPTOR') when level metadata is absent.
+// The string 'RAPTOR' was previously returned as a fallback, producing a redundant badge.
 export function raptorLevel(chunk: RetrievedChunk): string | null {
   if (chunk.strategy !== 'Raptor') return null
   const lvl = chunk.indexed_chunk.chunk.metadata?.['level']
+  if (lvl === undefined || lvl === null) return null
   if (lvl === 0 || lvl === '0') return 'L0 Passage'
   if (lvl === 1 || lvl === '1') return 'L1 Chapter Summary'
   if (lvl === 2 || lvl === '2') return 'L2 Study Summary'
-  return 'RAPTOR'
+  return null
 }
 
-export function dominantStrategy(scores: Record<string, number>): string | null {
+// Finding #8: guards against null/undefined scores before calling Object.entries().
+export function dominantStrategy(scores: Record<string, number> | null | undefined): string | null {
+  if (!scores) return null
   const entries = Object.entries(scores)
   if (entries.length === 0) return null
   entries.sort((a, b) => b[1] - a[1])
