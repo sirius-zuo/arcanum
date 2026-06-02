@@ -11,7 +11,7 @@ export interface RetrievedChunk {
 
 export interface SearchResult {
   chunks: RetrievedChunk[]
-  citations?: unknown[]   // omitted by the current /api/v1/search response
+  citations?: unknown[]
   strategy_scores: Record<string, number>
   confidence: number
 }
@@ -35,6 +35,9 @@ export function resultType(chunk: RetrievedChunk): ResultType {
     if (lvl === 0 || lvl === '0') return 'Passage'
     if (lvl === 1 || lvl === '1') return 'Chapter Summary'
     if (lvl === 2 || lvl === '2') return 'Book Summary'
+    // Finding #8: any RAPTOR chunk with absent/unknown level is a summary of some kind —
+    // default to Chapter Summary so it surfaces in discovery views rather than as 'Match'.
+    return 'Chapter Summary'
   }
   if (chunk.strategy === 'Vector' || chunk.strategy === 'Bm25') return 'Passage'
   return 'Match'
