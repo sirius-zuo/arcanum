@@ -14,6 +14,7 @@ members = [
     "arcanum-mcp",
     "arcanum-server",
 ]
+exclude = ["examples"]
 resolver = "2"
 
 [workspace.dependencies]
