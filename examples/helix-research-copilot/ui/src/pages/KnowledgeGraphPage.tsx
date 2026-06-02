@@ -2,29 +2,35 @@ import { useEffect, useState } from 'react'
 import { fetchGraph, GraphView, GraphNode } from '../api/graph'
 import { RefreshCw, Network } from 'lucide-react'
 
-// Color by entity type.
 function nodeColor(type: string): string {
   const t = type.toLowerCase()
-  if (t.includes('compound')) return '#60a5fa'   // blue
-  if (t.includes('protein')) return '#34d399'    // green
-  if (t.includes('gene')) return '#a78bfa'       // purple
-  if (t.includes('pathway')) return '#fbbf24'    // yellow
-  return '#94a3b8'                               // slate default
+  if (t.includes('compound')) return '#60a5fa'
+  if (t.includes('protein'))  return '#34d399'
+  if (t.includes('gene'))     return '#a78bfa'
+  if (t.includes('pathway'))  return '#fbbf24'
+  return '#94a3b8'
 }
 
 export default function KnowledgeGraphPage() {
-  const [graph, setGraph] = useState<GraphView>({ nodes: [], edges: [] })
-  const [loading, setLoading] = useState(false)
+  const [graph, setGraph]       = useState<GraphView>({ nodes: [], edges: [] })
+  const [loading, setLoading]   = useState(false)
+  const [graphError, setGraphError] = useState<string | null>(null)
   const [selected, setSelected] = useState<GraphNode | null>(null)
 
   async function load() {
     setLoading(true)
-    try { setGraph(await fetchGraph()) }
-    finally { setLoading(false) }
+    setGraphError(null)
+    try {
+      setGraph(await fetchGraph())
+    } catch (err) {
+      // Task 1 side-effect: fetchGraph now throws on non-ok — surface the error.
+      setGraphError(String(err))
+    } finally {
+      setLoading(false)
+    }
   }
   useEffect(() => { load() }, [])
 
-  // Radial layout: place nodes evenly on a circle.
   const W = 720, H = 520, cx = W / 2, cy = H / 2, R = Math.min(W, H) / 2 - 60
   const n = graph.nodes.length
   const pos = new Map<string, { x: number; y: number }>()
@@ -47,14 +53,19 @@ export default function KnowledgeGraphPage() {
         </button>
       </div>
 
-      {graph.nodes.length === 0 ? (
+      {graphError && (
+        <div className="mb-4 p-3 bg-red-900/30 border border-red-700/50 rounded text-red-300 text-sm">
+          {graphError}
+        </div>
+      )}
+
+      {!graphError && graph.nodes.length === 0 ? (
         <div className="text-slate-500 text-sm p-8 text-center border border-dashed border-slate-700 rounded-xl">
           No entities yet. Ingest research papers on the Corpus page to populate the graph.
         </div>
-      ) : (
+      ) : !graphError && (
         <div className="flex gap-6">
           <svg width={W} height={H} className="bg-[#0f0f16] border border-slate-800 rounded-xl flex-shrink-0">
-            {/* Edges */}
             {graph.edges.map((e, i) => {
               const a = pos.get(e.source), b = pos.get(e.target)
               if (!a || !b) return null
@@ -65,7 +76,6 @@ export default function KnowledgeGraphPage() {
                 </g>
               )
             })}
-            {/* Nodes */}
             {graph.nodes.map(node => {
               const p = pos.get(node.id)!
               return (
