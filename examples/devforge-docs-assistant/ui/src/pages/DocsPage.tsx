@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { uploadFile, ingestSample, listCollections } from '../api/ingest'
 import { apiKey } from '../api/auth'
 import { upsertCollection, addCollection, getCollections } from '../store/collections'
@@ -22,6 +23,7 @@ interface IngestedFile {
 }
 
 export default function DocsPage() {
+  const [searchParams] = useSearchParams()
   const [collection, setCollection] = useState('devforge')
   const [files, setFiles] = useState<IngestedFile[]>([])
   const [dragging, setDragging] = useState(false)
@@ -31,6 +33,11 @@ export default function DocsPage() {
 
   const wsRef = useRef<WebSocket | null>(null)
   const pendingOps = useRef<Map<string, string>>(new Map())
+
+  useEffect(() => {
+    const col = searchParams.get('collection')
+    if (col) setCollection(col)
+  }, []) // intentional: read once on mount
 
   useEffect(() => {
     const stored = getCollections().map(c => c.id)
@@ -85,6 +92,8 @@ export default function DocsPage() {
     ws.onclose = () => { wsRef.current = null }
     wsRef.current = ws
   }
+
+  useEffect(() => () => { wsRef.current?.close() }, [])
 
   function markError(name: string, error: string) {
     setFiles(prev => prev.map(f => f.name === name ? { ...f, status: 'error', error } : f))
