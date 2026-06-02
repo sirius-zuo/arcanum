@@ -59,7 +59,7 @@ let vector_store = Arc::new(LanceDbStore::new("data/canopy.lance").await?);
 let embedder = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "nomic-embed-text"));
 
 // ADD:
-let db_url  = std::env::var("DATABASE_URL").expect("DATABASE_URL required");
+let db_url  = std::env::var("ARCANUM_DATABASE_URL").expect("ARCANUM_DATABASE_URL required");
 let tei_url = std::env::var("TEI_URL").expect("TEI_URL required");
 let vector_store = Arc::new(PgVectorStore::new(&db_url, 768).await?);
 let embedder = Arc::new(HuggingFaceTeiProvider::new(&tei_url, "nomic-embed-text", 768));
@@ -78,7 +78,7 @@ use arcanum_models::HuggingFaceTeiProvider;
 | Variable | Required | Description |
 |---|---|---|
 | `ARCANUM_AUTH_SECRET` | Yes | 32+ character secret |
-| `DATABASE_URL` | Yes | `postgres://arcanum:password@localhost/arcanum` |
+| `ARCANUM_DATABASE_URL` | Yes | `postgres://arcanum:password@localhost/arcanum` |
 | `TEI_URL` | Yes | `http://localhost:8081` |
 | `REDIS_URL` | No | `redis://localhost:6379` (enables query cache) |
 | `PORT` | No | Default: 8080 |
@@ -89,7 +89,7 @@ use arcanum_models::HuggingFaceTeiProvider;
 
 ```bash
 ARCANUM_AUTH_SECRET=your-secret \
-DATABASE_URL=postgres://arcanum:changeme@localhost/arcanum \
+ARCANUM_DATABASE_URL=postgres://arcanum:changeme@localhost/arcanum \
 TEI_URL=http://localhost:8081 \
 ./target/release/canopy-product-search
 ```
