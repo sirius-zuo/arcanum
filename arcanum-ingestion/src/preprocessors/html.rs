@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Preprocessor, types::*, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
+use tracing::instrument;
 
 pub struct HtmlCleaner;
 
@@ -28,6 +29,7 @@ fn collect_text_recursive(el: scraper::ElementRef<'_>, parts: &mut Vec<String>) 
 
 #[async_trait]
 impl Preprocessor for HtmlCleaner {
+    #[instrument(skip(self, doc), fields(preprocessor = "html", content_len = doc.content.len()), err)]
     async fn process(&self, mut doc: RawDocument) -> Result<RawDocument> {
         if doc.mime_type != "text/html" && doc.mime_type != "application/xhtml+xml" {
             return Ok(doc);

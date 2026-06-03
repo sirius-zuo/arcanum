@@ -2,6 +2,7 @@ use arcanum_core::{traits::GraphStore, traits::store::GraphQuery, types::*, Arca
 use async_trait::async_trait;
 use neo4rs::{query, Graph};
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Neo4j-backed GraphStore for production deployments.
 pub struct Neo4jStore {
@@ -18,6 +19,7 @@ impl Neo4jStore {
 
 #[async_trait]
 impl GraphStore for Neo4jStore {
+    #[instrument(skip(self, entities), fields(store = "neo4j", entity_count = entities.len()), err)]
     async fn upsert_entities(&self, entities: Vec<Entity>) -> Result<()> {
         for entity in entities {
             let id = entity.id.0.to_string();
@@ -38,6 +40,7 @@ impl GraphStore for Neo4jStore {
         Ok(())
     }
 
+    #[instrument(skip(self, relations), fields(store = "neo4j", relation_count = relations.len()), err)]
     async fn upsert_relations(&self, relations: Vec<Relation>) -> Result<()> {
         for rel in relations {
             let source_id = rel.source.0.to_string();
@@ -58,6 +61,7 @@ impl GraphStore for Neo4jStore {
         Ok(())
     }
 
+    #[instrument(skip(self, q), fields(store = "neo4j"), err)]
     async fn query(&self, q: &GraphQuery) -> Result<Vec<Entity>> {
         let name_pattern = q.entity_name.clone().unwrap_or_default();
         let entity_type = q.entity_type.clone().unwrap_or_default();
@@ -105,6 +109,7 @@ impl GraphStore for Neo4jStore {
         Ok(entities)
     }
 
+    #[instrument(skip(self, entity_id), fields(store = "neo4j", entity_id = %entity_id.0), err)]
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
         let id_str = entity_id.0.to_string();
 

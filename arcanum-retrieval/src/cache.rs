@@ -16,23 +16,30 @@ impl QueryCache {
     }
 
     pub fn get(&self, key: &str) -> Option<RetrievalResult> {
-        let store = self.store.read().unwrap();
-        let entry = store.get(key)?;
-        if entry.inserted.elapsed() > self.ttl { return None; }
-        Some(entry.result.clone())
+        let result = {
+            let store = self.store.read().unwrap();
+            let entry = store.get(key)?;
+            if entry.inserted.elapsed() > self.ttl { return None; }
+            Some(entry.result.clone())
+        };
+        tracing::debug!(cache_hit = result.is_some(), key, "query cache lookup");
+        result
     }
 
     pub fn insert(&self, key: String, result: RetrievalResult) {
-        let mut store = self.store.write().unwrap();
-        if store.len() >= self.max_size {
-            if let Some(oldest) = store.iter()
-                .min_by_key(|(_, v)| v.inserted)
-                .map(|(k, _)| k.clone())
-            {
-                store.remove(&oldest);
+        {
+            let mut store = self.store.write().unwrap();
+            if store.len() >= self.max_size {
+                if let Some(oldest) = store.iter()
+                    .min_by_key(|(_, v)| v.inserted)
+                    .map(|(k, _)| k.clone())
+                {
+                    store.remove(&oldest);
+                }
             }
+            store.insert(key.clone(), CacheEntry { result, inserted: Instant::now() });
         }
-        store.insert(key, CacheEntry { result, inserted: Instant::now() });
+        tracing::debug!(key, "query cache insert");
     }
 
     pub fn cache_key(query: &Query) -> String {

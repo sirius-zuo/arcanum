@@ -4,6 +4,7 @@ use linfa::DatasetBase;
 use linfa::traits::{Fit, Predict};
 use linfa_clustering::KMeans;
 use ndarray::Array2;
+use tracing::instrument;
 
 pub struct RaptorBuilder<S: TreeStore + ?Sized> {
     store: Arc<S>,
@@ -15,6 +16,7 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
         Self { store, max_depth }
     }
 
+    #[instrument(skip(self, leaf_chunks), fields(collection, input_chunk_count = leaf_chunks.len(), max_depth = self.max_depth), err)]
     pub async fn build(&self, collection: &str, leaf_chunks: Vec<(String, Vector)>) -> Result<()> {
         for (text, vector) in &leaf_chunks {
             let node = TreeNode {

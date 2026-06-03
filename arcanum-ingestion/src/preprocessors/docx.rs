@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Preprocessor, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use std::io::Read;
+use tracing::instrument;
 
 pub struct DocxPreprocessor;
 
@@ -12,6 +13,7 @@ const DOCX_MIME: &str = "application/vnd.openxmlformats-officedocument.wordproce
 
 #[async_trait]
 impl Preprocessor for DocxPreprocessor {
+    #[instrument(skip(self, doc), fields(preprocessor = "docx", content_len = doc.content.len()), err)]
     async fn process(&self, mut doc: RawDocument) -> Result<RawDocument> {
         if doc.mime_type != DOCX_MIME {
             return Ok(doc);

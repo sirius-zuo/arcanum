@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// ColBERT-style retriever: coarse ANN pass, then MaxSim token re-scoring.
 ///
@@ -41,6 +42,7 @@ impl ColBertRetriever {
 
 #[async_trait]
 impl Retriever for ColBertRetriever {
+    #[instrument(skip(self), fields(strategy = "colbert", top_k = ?query.top_k), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let collection_id = query.collection_id.as_ref()
             .ok_or_else(|| arcanum_core::ArcanumError::Config(

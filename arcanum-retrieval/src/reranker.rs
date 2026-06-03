@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 // ---------------------------------------------------------------------------
 // NullReranker — passthrough
@@ -12,6 +13,7 @@ pub struct NullReranker;
 
 #[async_trait]
 impl Reranker for NullReranker {
+    #[instrument(skip(self, chunks), fields(input_count = chunks.len()))]
     async fn rerank(&self, _query: &Query, chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
         Ok(chunks)
     }
@@ -28,6 +30,7 @@ pub struct ScoreFusionReranker;
 
 #[async_trait]
 impl Reranker for ScoreFusionReranker {
+    #[instrument(skip(self, chunks), fields(input_count = chunks.len()))]
     async fn rerank(&self, _query: &Query, mut chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
         chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
         Ok(chunks)
@@ -54,6 +57,7 @@ impl LlmReranker {
 
 #[async_trait]
 impl Reranker for LlmReranker {
+    #[instrument(skip(self, chunks), fields(input_count = chunks.len(), output_count), err)]
     async fn rerank(&self, query: &Query, chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
         let mut scored = Vec::with_capacity(chunks.len());
         for mut chunk in chunks {
@@ -74,6 +78,7 @@ impl Reranker for LlmReranker {
             scored.push(chunk);
         }
         scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        tracing::Span::current().record("output_count", scored.len());
         Ok(scored)
     }
 }
@@ -101,6 +106,7 @@ impl CrossEncoderReranker {
 
 #[async_trait]
 impl Reranker for CrossEncoderReranker {
+    #[instrument(skip(self, chunks), fields(input_count = chunks.len(), output_count), err)]
     async fn rerank(&self, query: &Query, mut chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
         if chunks.is_empty() { return Ok(chunks); }
 
@@ -127,6 +133,7 @@ impl Reranker for CrossEncoderReranker {
             chunk.score = *score;
         }
         chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        tracing::Span::current().record("output_count", chunks.len());
         Ok(chunks)
     }
 }

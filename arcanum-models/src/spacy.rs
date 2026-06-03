@@ -1,5 +1,6 @@
 use arcanum_core::{traits::TextEnricher, types::*, Result, ArcanumError};
 use async_trait::async_trait;
+use tracing::instrument;
 
 /// spaCy NLP pipeline via a local HTTP server.
 /// Implements TextEnricher for ExtractEntities intent only.
@@ -19,6 +20,7 @@ impl SpacyProvider {
 
 #[async_trait]
 impl TextEnricher for SpacyProvider {
+    #[instrument(skip(self, request), fields(provider = "spacy", intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         if !matches!(request.intent, EnrichIntent::ExtractEntities) {
             return Err(ArcanumError::Enrichment(

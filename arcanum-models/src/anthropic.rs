@@ -1,6 +1,7 @@
 use arcanum_core::{traits::TextEnricher, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -43,6 +44,7 @@ struct AnthropicContent {
 
 #[async_trait]
 impl TextEnricher for AnthropicProvider {
+    #[instrument(skip(self, request), fields(model = %self.model, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
         let resp: AnthropicResponse = self.client

@@ -2,6 +2,7 @@ use arcanum_core::{traits::TextEnricher, types::*, Result};
 use std::sync::Arc;
 use serde::Deserialize;
 use crate::sanitizer::sanitize_for_enrichment;
+use tracing::instrument;
 
 pub struct EntityExtractor {
     enricher: Arc<dyn TextEnricher>,
@@ -24,6 +25,7 @@ struct ExtractedRelation { source: String, relation: String, target: String }
 impl EntityExtractor {
     pub fn new(enricher: Arc<dyn TextEnricher>) -> Self { Self { enricher } }
 
+    #[instrument(skip(self, chunk), fields(chunk_id = ?chunk.id, entity_count, relation_count), err)]
     pub async fn extract(&self, chunk: &Chunk) -> Result<(Vec<Entity>, Vec<Relation>)> {
         let raw = self.enricher.enrich(EnrichRequest {
             text: sanitize_for_enrichment(&chunk.text),
@@ -49,6 +51,8 @@ impl EntityExtractor {
                             confidence: 0.9, source_chunk: chunk.id.clone() })
         }).collect();
 
+        tracing::Span::current().record("entity_count", entities.len());
+        tracing::Span::current().record("relation_count", relations.len());
         Ok((entities, relations))
     }
 }

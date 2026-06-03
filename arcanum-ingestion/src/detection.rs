@@ -1,3 +1,5 @@
+use tracing::debug;
+
 pub struct MimeDetector;
 
 impl MimeDetector {
@@ -9,8 +11,10 @@ impl MimeDetector {
             }
             return magic.to_string();
         }
-        hint.map(str::to_string)
-            .unwrap_or_else(|| "application/octet-stream".to_string())
+        let result = hint.map(str::to_string)
+            .unwrap_or_else(|| "application/octet-stream".to_string());
+        debug!(content_len = content.len(), hint = ?hint, detected_mime = %result, "MIME detected");
+        result
     }
 
     fn disambiguate_zip(content: &[u8]) -> String {

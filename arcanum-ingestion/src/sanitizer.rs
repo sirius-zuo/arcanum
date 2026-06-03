@@ -15,6 +15,9 @@ static INJECTION_PATTERNS: &[&str] = &[
     "[/inst]",
 ];
 
+use tracing::instrument;
+
+#[instrument(fields(input_len = text.len(), output_len))]
 pub fn sanitize_for_enrichment(text: &str) -> String {
     let cleaned_lines: Vec<&str> = text
         .lines()
@@ -40,6 +43,8 @@ pub fn sanitize_for_enrichment(text: &str) -> String {
 
     result_lines.join("\n").trim().to_string()
 }
+
+#[cfg(test)]
 
 #[cfg(test)]
 mod tests {

@@ -31,11 +31,17 @@ impl ProviderHealthMonitor {
     pub fn record_success(&self, latency: Duration) {
         self.total_calls.fetch_add(1, Ordering::Relaxed);
         self.total_latency_ms.fetch_add(latency.as_millis() as u64, Ordering::Relaxed);
+        tracing::debug!(
+            provider_id = %self.provider_id,
+            latency_ms = latency.as_millis(),
+            "model provider success"
+        );
     }
 
     pub fn record_error(&self) {
         self.total_calls.fetch_add(1, Ordering::Relaxed);
         self.error_count.fetch_add(1, Ordering::Relaxed);
+        tracing::warn!(provider_id = %self.provider_id, "model provider error recorded");
     }
 
     pub fn stats(&self) -> ProviderStats {

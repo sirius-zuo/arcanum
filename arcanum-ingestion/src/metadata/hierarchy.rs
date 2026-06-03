@@ -1,6 +1,8 @@
 use arcanum_core::types::RawDocument;
 use std::collections::HashMap;
+use tracing::instrument;
 
+#[instrument(skip(doc), fields(doc_uri = %doc.source_uri))]
 pub fn extract_hierarchy(doc: &RawDocument) -> HashMap<String, String> {
     let text = String::from_utf8_lossy(&doc.content);
     let mut headings: Vec<String> = Vec::new();

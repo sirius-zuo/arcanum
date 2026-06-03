@@ -2,6 +2,7 @@ use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+use tracing::instrument;
 
 pub mod query_planner;
 pub use query_planner::GraphQueryPlanner;
@@ -34,25 +35,31 @@ impl InMemoryGraphStore {
 
 #[async_trait]
 impl GraphStore for InMemoryGraphStore {
+    #[instrument(skip(self, entities), fields(store = "in_memory_graph", entity_count = entities.len()), err)]
     async fn upsert_entities(&self, entities: Vec<Entity>) -> Result<()> {
         let mut map = self.entities.write().await;
         for e in entities { map.insert(e.id.0.to_string(), e); }
         Ok(())
     }
 
+    #[instrument(skip(self, relations), fields(store = "in_memory_graph", relation_count = relations.len()), err)]
     async fn upsert_relations(&self, relations: Vec<Relation>) -> Result<()> {
         self.relations.write().await.extend(relations);
         Ok(())
     }
 
+    #[instrument(skip(self, q), fields(store = "in_memory_graph", result_count), err)]
     async fn query(&self, q: &GraphQuery) -> Result<Vec<Entity>> {
         let map = self.entities.read().await;
-        Ok(map.values().filter(|e| {
+        let results: Vec<Entity> = map.values().filter(|e| {
             q.entity_name.as_deref().map(|n| e.name.contains(n)).unwrap_or(true)
             && q.entity_type.as_deref().map(|t| e.entity_type == t).unwrap_or(true)
-        }).cloned().collect())
+        }).cloned().collect();
+        tracing::Span::current().record("result_count", results.len());
+        Ok(results)
     }
 
+    #[instrument(skip(self, entity_id), fields(store = "in_memory_graph", entity_id = %entity_id.0), err)]
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
         Ok(self.relations.read().await.iter()
             .filter(|r| r.source.0 == entity_id.0)

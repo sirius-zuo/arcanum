@@ -11,6 +11,7 @@ use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct LanceDbStore {
     uri: String,
@@ -73,6 +74,7 @@ impl LanceDbStore {
 
 #[async_trait]
 impl VectorStore for LanceDbStore {
+    #[instrument(skip(self, chunks), fields(store = "lancedb", collection_id = collection, chunk_count = chunks.len()), err)]
     async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
         if chunks.is_empty() {
             return Ok(());
@@ -106,6 +108,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
+    #[instrument(skip(self, query), fields(store = "lancedb", collection_id = collection, top_k = query.top_k), err)]
     async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
         let conn = lancedb::connect(&self.uri)
             .execute()
@@ -152,6 +155,7 @@ impl VectorStore for LanceDbStore {
         Ok(scored)
     }
 
+    #[instrument(skip(self, ids), fields(store = "lancedb", collection_id = collection), err)]
     async fn delete(&self, collection: &str, ids: &[ChunkId]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
@@ -176,6 +180,7 @@ impl VectorStore for LanceDbStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(store = "lancedb", collection_id = collection), err)]
     async fn collection_exists(&self, collection: &str) -> Result<bool> {
         let conn = lancedb::connect(&self.uri)
             .execute()

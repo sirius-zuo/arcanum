@@ -6,6 +6,7 @@ use tantivy::{
     ReloadPolicy,
 };
 use arcanum_core::{Result, ArcanumError};
+use tracing::instrument;
 
 pub struct Bm25Index {
     index: Index,
@@ -87,6 +88,7 @@ impl Bm25Index {
 
 #[async_trait::async_trait]
 impl arcanum_core::traits::LexicalIndex for Bm25Index {
+    #[instrument(skip(self), fields(index = "bm25"), err)]
     async fn search(
         &self,
         _collection_id: &str,

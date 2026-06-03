@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// RAPTOR retriever: queries hierarchical tree levels (coarse→fine), scoring
 /// each node with cosine similarity to the query vector, weighted by level
@@ -31,6 +32,7 @@ impl RaptorRetriever {
 
 #[async_trait]
 impl Retriever for RaptorRetriever {
+    #[instrument(skip(self), fields(strategy = "raptor", max_depth = self.max_depth), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let collection_id = query.collection_id.as_ref()
             .ok_or_else(|| arcanum_core::ArcanumError::Config(

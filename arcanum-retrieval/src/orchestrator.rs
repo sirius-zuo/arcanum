@@ -2,6 +2,7 @@ use arcanum_core::{traits::*, types::*, Result};
 use crate::fusion::RrfFusion;
 use std::{sync::Arc, time::Duration};
 use tokio::time::timeout;
+use tracing::{instrument, Instrument};
 
 pub enum OrchestratorMode {
     Static(Vec<RetrievalStrategy>),
@@ -25,20 +26,37 @@ impl RetrievalOrchestrator {
         self
     }
 
+    #[instrument(skip(self), fields(mode = ?self.mode_name(), retriever_count = self.retrievers.len()), err)]
     pub async fn retrieve(&self, query: &Query) -> Result<RetrievalResult> {
         let active = self.active_retrievers(query);
         let tasks: Vec<_> = active.iter().map(|r| {
             let r = r.clone();
             let q = query.clone();
             let t = self.strategy_timeout;
+            // Capture a child span for each retriever task so it appears under
+            // the parent `retrieve` span even after tokio::spawn breaks the context.
+            let span = tracing::info_span!(
+                "retrieval.strategy",
+                strategy = ?r.strategy(),
+            );
             tokio::spawn(async move {
-                let result = timeout(t, r.retrieve(&q)).await;
+                let result = tokio::time::timeout(t, r.retrieve(&q)).await;
                 let strategy = r.strategy();
                 match result {
-                    Ok(Ok(chunks)) => Some((strategy, chunks)),
-                    _ => None,
+                    Ok(Ok(chunks)) => {
+                        tracing::debug!(strategy = ?strategy, chunk_count = chunks.len(), "strategy succeeded");
+                        Some((strategy, chunks))
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(strategy = ?strategy, err = ?e, "strategy failed");
+                        None
+                    }
+                    Err(_) => {
+                        tracing::warn!(strategy = ?strategy, "strategy timed out");
+                        None
+                    }
                 }
-            })
+            }.instrument(span))
         }).collect();
 
         let mut strategy_results = vec![];
@@ -56,6 +74,14 @@ impl RetrievalOrchestrator {
             strategy_scores,
             confidence: 0.8,
         })
+    }
+
+    fn mode_name(&self) -> &'static str {
+        match &self.mode {
+            OrchestratorMode::Static(_)     => "static",
+            OrchestratorMode::ParallelFusion => "parallel_fusion",
+            OrchestratorMode::QueryClassified => "query_classified",
+        }
     }
 
     fn active_retrievers(&self, query: &Query) -> Vec<Arc<dyn Retriever>> {

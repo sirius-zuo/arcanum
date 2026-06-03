@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use tracing::instrument;
 
 pub struct EmbeddingParallelismRouter {
     providers: Vec<Arc<dyn Embedder>>,
@@ -16,6 +17,7 @@ impl EmbeddingParallelismRouter {
 
 #[async_trait]
 impl Embedder for EmbeddingParallelismRouter {
+    #[instrument(skip(self, texts), fields(provider_count = self.providers.len(), text_count = texts.len()), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let idx = self.counter.fetch_add(1, Ordering::Relaxed) % self.providers.len();
         self.providers[idx].embed(texts).await

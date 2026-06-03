@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// Transform a single query into one or more queries for multi-strategy retrieval.
 #[async_trait]
@@ -26,6 +27,7 @@ impl HydeTransformer {
 
 #[async_trait]
 impl QueryTransformer for HydeTransformer {
+    #[instrument(skip(self, query), fields(query_text_len = query.text.len()), err)]
     async fn transform(&self, query: Query) -> Result<Vec<Query>> {
         let req = EnrichRequest {
             text: query.text.clone(),
@@ -62,6 +64,7 @@ impl MultiQueryTransformer {
 
 #[async_trait]
 impl QueryTransformer for MultiQueryTransformer {
+    #[instrument(skip(self, query), fields(n_variants = self.n_variants, query_text_len = query.text.len()), err)]
     async fn transform(&self, query: Query) -> Result<Vec<Query>> {
         let mut variants = Vec::with_capacity(self.n_variants);
         for i in 0..self.n_variants {
@@ -100,6 +103,7 @@ impl QueryRewriteTransformer {
 
 #[async_trait]
 impl QueryTransformer for QueryRewriteTransformer {
+    #[instrument(skip(self, query), fields(query_text_len = query.text.len()), err)]
     async fn transform(&self, query: Query) -> Result<Vec<Query>> {
         let req = EnrichRequest {
             text: query.text.clone(),

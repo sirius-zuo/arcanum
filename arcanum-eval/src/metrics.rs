@@ -4,13 +4,16 @@ use arcanum_core::traits::TextEnricher;
 use arcanum_core::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
+use tracing::instrument;
 
+#[instrument(skip(retrieved, relevant))]
 pub fn compute_hit_rate_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
     let top_k: HashSet<_> = retrieved.iter().take(k).map(|c| &c.0).collect();
     let hit = relevant.iter().any(|r| top_k.contains(&r.0));
     if hit { 1.0 } else { 0.0 }
 }
 
+#[instrument(skip(retrieved, relevant))]
 pub fn compute_mrr(retrieved: &[ChunkId], relevant: &[ChunkId]) -> f32 {
     let rel_set: HashSet<_> = relevant.iter().map(|r| &r.0).collect();
     retrieved.iter().enumerate()
@@ -19,6 +22,7 @@ pub fn compute_mrr(retrieved: &[ChunkId], relevant: &[ChunkId]) -> f32 {
         .unwrap_or(0.0)
 }
 
+#[instrument(skip(retrieved, relevant))]
 pub fn compute_ndcg_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
     let rel_set: HashSet<_> = relevant.iter().map(|r| &r.0).collect();
     let dcg: f32 = retrieved.iter().take(k).enumerate()
@@ -31,6 +35,7 @@ pub fn compute_ndcg_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) 
     if ideal_dcg == 0.0 { 0.0 } else { dcg / ideal_dcg }
 }
 
+#[instrument(skip(retrieved, relevant))]
 pub fn compute_precision_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
     if k == 0 { return 0.0; }
     let n = k.min(retrieved.len());
@@ -41,6 +46,7 @@ pub fn compute_precision_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: us
     hits as f32 / n as f32
 }
 
+#[instrument(skip(retrieved, relevant))]
 pub fn compute_recall_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
     if relevant.is_empty() { return 1.0; }
     let top_k: HashSet<_> = retrieved.iter().take(k).map(|c| &c.0).collect();
@@ -49,7 +55,8 @@ pub fn compute_recall_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize
     hits as f32 / relevant.len() as f32
 }
 
-pub async fn compute_context_precision(
+    #[instrument(skip(question, contexts, enricher), fields(question_len = question.len(), context_count = contexts.len()), err)]
+    async fn compute_context_precision(
     question: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
@@ -71,7 +78,8 @@ pub async fn compute_context_precision(
     Ok(relevant_count as f32 / contexts.len() as f32)
 }
 
-pub async fn compute_context_recall(
+    #[instrument(skip(ground_truth_answer, contexts, enricher), fields(context_count = contexts.len()), err)]
+    pub async fn compute_context_recall(
     ground_truth_answer: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
@@ -89,7 +97,8 @@ pub async fn compute_context_recall(
     Ok(score.clamp(0.0, 1.0))
 }
 
-pub async fn compute_faithfulness(
+    #[instrument(skip(generated_answer, contexts, enricher), fields(context_count = contexts.len()), err)]
+    pub async fn compute_faithfulness(
     generated_answer: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
@@ -107,7 +116,8 @@ pub async fn compute_faithfulness(
     Ok(score.clamp(0.0, 1.0))
 }
 
-pub async fn compute_answer_relevance(
+    #[instrument(skip(question, generated_answer, enricher), fields(question_len = question.len()), err)]
+    pub async fn compute_answer_relevance(
     question: &str,
     generated_answer: &str,
     enricher: Arc<dyn TextEnricher>,

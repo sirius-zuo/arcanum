@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Embedder, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::Serialize;
+use tracing::instrument;
 
 pub struct HuggingFaceTeiProvider {
     pub base_url: String,
@@ -27,6 +28,7 @@ struct TeiEmbedRequest<'a> {
 
 #[async_trait]
 impl Embedder for HuggingFaceTeiProvider {
+    #[instrument(skip(self, texts), fields(model = %self.model_id, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let mut results = Vec::new();
         for text in &texts {
@@ -39,6 +41,7 @@ impl Embedder for HuggingFaceTeiProvider {
                 results.push(Vector(v));
             }
         }
+        tracing::Span::current().record("dimension", self.dim);
         Ok(results)
     }
 

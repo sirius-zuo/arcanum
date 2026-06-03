@@ -6,6 +6,7 @@ use arcanum_core::{
 use crate::GraphTraversalPlan;
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct GraphQueryPlanner {
     enricher: Arc<dyn TextEnricher>,
@@ -17,6 +18,7 @@ impl GraphQueryPlanner {
         Self { enricher, default_max_hops }
     }
 
+    #[instrument(skip(self), fields(query_len = query.len()), err)]
     pub async fn plan(&self, query: &str) -> Result<GraphTraversalPlan> {
         if query.trim().is_empty() {
             return Ok(GraphTraversalPlan {
@@ -42,6 +44,7 @@ impl GraphQueryPlanner {
 
 #[async_trait]
 impl arcanum_core::traits::GraphPlanner for GraphQueryPlanner {
+    #[instrument(skip(self), fields(query_len = query.len()), err)]
     async fn plan_entities(&self, query: &str) -> arcanum_core::Result<Vec<String>> {
         let plan = self.plan(query).await?;
         Ok(plan.seed_entities)

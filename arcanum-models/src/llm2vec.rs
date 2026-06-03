@@ -1,5 +1,6 @@
 use arcanum_core::{traits::*, types::*, Result, ArcanumError};
 use async_trait::async_trait;
+use tracing::instrument;
 
 /// LLM2Vec: decoder LLM repurposed for embeddings and text enrichment via a local server.
 pub struct Llm2VecProvider {
@@ -20,6 +21,7 @@ impl Llm2VecProvider {
 
 #[async_trait]
 impl Embedder for Llm2VecProvider {
+    #[instrument(skip(self, texts), fields(model = %self.base_url, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let mut results = Vec::new();
         for text in &texts {
@@ -32,6 +34,7 @@ impl Embedder for Llm2VecProvider {
                 results.push(Vector(v));
             }
         }
+        tracing::Span::current().record("dimension", self.dim);
         Ok(results)
     }
 
@@ -42,6 +45,7 @@ impl Embedder for Llm2VecProvider {
 
 #[async_trait]
 impl TextEnricher for Llm2VecProvider {
+    #[instrument(skip(self, request), fields(model = %self.base_url, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
         let resp: serde_json::Value = self.client

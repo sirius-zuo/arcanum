@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// GraphRetriever: uses a GraphPlanner to extract entity names from the
 /// query, traverses the knowledge graph to collect source_chunk_ids, then
@@ -27,6 +28,7 @@ impl GraphRetriever {
 
 #[async_trait]
 impl Retriever for GraphRetriever {
+    #[instrument(skip(self), fields(strategy = "graph", max_hops = self.max_hops), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let collection_id = query.collection_id.as_ref()
             .ok_or_else(|| arcanum_core::ArcanumError::Config(

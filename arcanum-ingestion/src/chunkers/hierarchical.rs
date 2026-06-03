@@ -1,5 +1,6 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
+use tracing::instrument;
 
 pub struct HierarchicalChunker;
 
@@ -26,6 +27,7 @@ fn build_chunk(text: String, doc: &RawDocument, index: usize, title: String, sou
 
 #[async_trait]
 impl Chunker for HierarchicalChunker {
+    #[instrument(skip(self, doc), fields(chunker = "hierarchical", input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content).to_string();
         let mut sections: Vec<(String, String)> = Vec::new();
@@ -51,7 +53,7 @@ impl Chunker for HierarchicalChunker {
             sections.push(("".to_string(), text.clone()));
         }
 
-        let chunks = sections
+        let chunks: Vec<Chunk> = sections
             .into_iter()
             .enumerate()
             .filter_map(|(i, (title, body))| {
@@ -63,6 +65,7 @@ impl Chunker for HierarchicalChunker {
                 }
             })
             .collect();
+        tracing::Span::current().record("chunk_count", chunks.len());
         Ok(chunks)
     }
 }

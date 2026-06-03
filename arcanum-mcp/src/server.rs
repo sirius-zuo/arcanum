@@ -2,6 +2,7 @@ use axum::{routing::{get, post}, Router, Json, extract::State, http::HeaderMap, 
 use std::sync::Arc;
 use crate::handlers::McpJsonRpcHandler;
 use serde_json::Value;
+use tracing::debug;
 
 pub struct McpServer {
     handler: Arc<McpJsonRpcHandler>,
@@ -14,6 +15,7 @@ impl McpServer {
     }
 
     pub async fn start(self) -> Result<(), Box<dyn std::error::Error>> {
+        debug!(port = self.port, "MCP server starting");
         let handler = self.handler.clone();
         let app = Router::new()
             .route("/mcp", post(handle_jsonrpc))
@@ -21,6 +23,7 @@ impl McpServer {
             .with_state(handler);
         let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", self.port)).await?;
         axum::serve(listener, app).await?;
+        debug!(port = self.port, "MCP server stopped");
         Ok(())
     }
 }

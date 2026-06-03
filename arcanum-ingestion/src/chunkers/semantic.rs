@@ -1,5 +1,6 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
+use tracing::instrument;
 
 pub struct SemanticChunker { max_chars: usize }
 
@@ -7,6 +8,7 @@ impl SemanticChunker { pub fn new(max_chars: usize) -> Self { Self { max_chars }
 
 #[async_trait]
 impl Chunker for SemanticChunker {
+    #[instrument(skip(self, doc), fields(chunker = "semantic", max_chars = self.max_chars, input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content);
         let sentences: Vec<&str> = text.split_inclusive(|c| matches!(c, '.' | '!' | '?')).collect();
@@ -42,6 +44,7 @@ impl Chunker for SemanticChunker {
                 metadata: ChunkMetadata::default(),
             });
         }
+        tracing::Span::current().record("chunk_count", chunks.len());
         Ok(chunks)
     }
 }

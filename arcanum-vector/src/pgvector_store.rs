@@ -6,6 +6,7 @@ use arcanum_core::{
 use async_trait::async_trait;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
+use tracing::instrument;
 
 pub struct PgVectorStore {
     pool: PgPool,
@@ -74,6 +75,7 @@ impl PgVectorStore {
 
 #[async_trait]
 impl VectorStore for PgVectorStore {
+    #[instrument(skip(self, chunks), fields(store = "pgvector", collection_id = collection, chunk_count = chunks.len()), err)]
     async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
         for chunk in &chunks {
             let id = chunk.chunk.id.0.to_string();
@@ -99,6 +101,7 @@ impl VectorStore for PgVectorStore {
         Ok(())
     }
 
+    #[instrument(skip(self, query), fields(store = "pgvector", collection_id = collection, top_k = query.top_k), err)]
     async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
         let vec_literal = Self::vector_to_pg_literal(&query.vector);
 
@@ -136,6 +139,7 @@ impl VectorStore for PgVectorStore {
         Ok(results)
     }
 
+    #[instrument(skip(self, ids), fields(store = "pgvector", collection_id = collection), err)]
     async fn delete(&self, collection: &str, ids: &[ChunkId]) -> Result<()> {
         for id in ids {
             sqlx::query(
@@ -150,6 +154,7 @@ impl VectorStore for PgVectorStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(store = "pgvector", collection_id = collection), err)]
     async fn collection_exists(&self, collection: &str) -> Result<bool> {
         use sqlx::Row;
         let row = sqlx::query(
