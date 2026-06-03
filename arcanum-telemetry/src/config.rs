@@ -34,7 +34,7 @@ impl TelemetryConfig {
             service_name: env::var("OTEL_SERVICE_NAME")
                 .unwrap_or_else(|_| "arcanum".into()),
             metrics_enabled: env::var("ARCANUM_METRICS_ENABLED")
-                .map(|v| v != "false")
+                .map(|v| !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off"))
                 .unwrap_or(true),
             metrics_otlp: env::var("ARCANUM_METRICS_OTLP")
                 .map(|v| v == "true")
@@ -128,6 +128,38 @@ mod tests {
         env::set_var("ARCANUM_METRICS_OTLP", "true");
         let cfg = TelemetryConfig::from_env();
         assert!(cfg.metrics_otlp);
+    }
+
+    #[test]
+    #[serial]
+    fn metrics_disabled_for_uppercase_false() {
+        clear_telemetry_env();
+        env::set_var("ARCANUM_METRICS_ENABLED", "FALSE");
+        assert!(!TelemetryConfig::from_env().metrics_enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn metrics_disabled_for_zero() {
+        clear_telemetry_env();
+        env::set_var("ARCANUM_METRICS_ENABLED", "0");
+        assert!(!TelemetryConfig::from_env().metrics_enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn metrics_disabled_for_no() {
+        clear_telemetry_env();
+        env::set_var("ARCANUM_METRICS_ENABLED", "no");
+        assert!(!TelemetryConfig::from_env().metrics_enabled);
+    }
+
+    #[test]
+    #[serial]
+    fn metrics_disabled_for_off() {
+        clear_telemetry_env();
+        env::set_var("ARCANUM_METRICS_ENABLED", "off");
+        assert!(!TelemetryConfig::from_env().metrics_enabled);
     }
 
     #[test]
