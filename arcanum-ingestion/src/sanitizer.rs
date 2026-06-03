@@ -41,10 +41,10 @@ pub fn sanitize_for_enrichment(text: &str) -> String {
         })
         .collect();
 
-    result_lines.join("\n").trim().to_string()
+    let result = result_lines.join("\n").trim().to_string();
+    tracing::Span::current().record("output_len", result.len());
+    result
 }
-
-#[cfg(test)]
 
 #[cfg(test)]
 mod tests {
