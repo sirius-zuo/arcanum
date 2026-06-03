@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
 use tracing::instrument;
+use metrics;
 
 pub struct FixedSizeChunker { chunk_size: usize, overlap: usize }
 
@@ -40,6 +41,7 @@ impl Chunker for FixedSizeChunker {
             start += step;
         }
         tracing::Span::current().record("chunk_count", chunks.len());
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "fixed").record(chunks.len() as f64);
         Ok(chunks)
     }
 }

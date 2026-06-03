@@ -4,6 +4,7 @@ use arcanum_core::{Result, types::{Query, CollectionId}};
 use arcanum_engine::{ArcanumEngine, IngestRequest, auth::ApiKeyClaims};
 use std::sync::Arc;
 use tracing::instrument;
+use metrics;
 
 pub struct McpJsonRpcHandler {
     engine: Option<Arc<ArcanumEngine>>,
@@ -37,10 +38,11 @@ impl McpJsonRpcHandler {
 
     #[instrument(skip(self, request, headers), fields(method = extract_method(&request)))]
     pub async fn handle(&self, request: Value, headers: HeaderMap) -> Result<Value> {
+        let start = std::time::Instant::now();
         let id     = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request["method"].as_str().unwrap_or("");
+        let method = extract_method(&request);
 
-        match method {
+        let result = match method {
             "initialize" => Ok(json!({
                 "jsonrpc": "2.0", "id": id,
                 "result": {
@@ -101,7 +103,12 @@ impl McpJsonRpcHandler {
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32601, "message": "Method not found" }
             })),
-        }
+        };
+        let elapsed = start.elapsed().as_secs_f64();
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_mcp_requests_total", "method" => method.to_string(), "status" => status).increment(1);
+        metrics::histogram!("arcanum_mcp_request_duration_seconds").record(elapsed);
+        result
     }
 
     async fn dispatch_tool(
