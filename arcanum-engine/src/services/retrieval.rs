@@ -2,6 +2,7 @@ use arcanum_core::{types::*, Result, ArcanumError};
 use arcanum_middleware::CircuitBreaker;
 use arcanum_retrieval::{RetrievalOrchestrator, QueryCache};
 use std::sync::Arc;
+use tracing::instrument;
 use crate::audit::{AuditLogger, AuditEntry};
 use crate::auth::{AuthMiddleware, ApiKeyClaims};
 
@@ -34,6 +35,7 @@ impl RetrievalService {
         self
     }
 
+    #[instrument(skip(self, claims), fields(collection_id = ?query.collection_id, top_k = ?query.top_k), err)]
     pub async fn search(&self, query: Query, claims: &ApiKeyClaims) -> Result<RetrievalResult> {
         let collection_id = query.collection_id.as_ref()
             .ok_or_else(|| ArcanumError::Config("search requires an explicit collection_id".into()))?;

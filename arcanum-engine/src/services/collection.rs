@@ -1,6 +1,7 @@
 use arcanum_core::{config::ArcanumConfig, types::*, Result, ArcanumError};
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
+use tracing::instrument;
 use crate::audit::{AuditLogger, AuditEntry};
 use crate::auth::{AuthMiddleware, ApiKeyClaims};
 
@@ -23,6 +24,7 @@ impl CollectionService {
         Self { collections: Arc::new(RwLock::new(HashMap::new())), audit, auth }
     }
 
+    #[instrument(skip(self, claims), fields(collection_id = ?id), err)]
     pub async fn create(&self, id: CollectionId, description: String, claims: &ApiKeyClaims) -> Result<()> {
         // Only admins may create collections.
         if !claims.is_admin {
@@ -41,6 +43,7 @@ impl CollectionService {
     }
 
     /// Returns only collections the caller is permitted to see.
+    #[instrument(skip(self, claims))]
     pub async fn list(&self, claims: &ApiKeyClaims) -> Vec<CollectionInfo> {
         let all = self.collections.read().await;
         all.values()
@@ -49,6 +52,7 @@ impl CollectionService {
             .collect()
     }
 
+    #[instrument(skip(self, claims), fields(collection_id = id), err)]
     pub async fn delete(&self, id: &str, claims: &ApiKeyClaims) -> Result<()> {
         if !self.auth.can_access_collection(claims, id) {
             return Err(ArcanumError::Auth(format!("not authorised to delete collection '{}'", id)));

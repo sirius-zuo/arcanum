@@ -1,5 +1,6 @@
 use arcanum_core::{Result, ArcanumError};
 use tokio::sync::mpsc;
+use tracing::instrument;
 
 pub struct BoundedQueue<T> {
     tx: mpsc::Sender<T>,
@@ -12,10 +13,12 @@ impl<T: Send + 'static> BoundedQueue<T> {
         Self { tx, rx: tokio::sync::Mutex::new(rx) }
     }
 
+    #[instrument(skip(self, item), err)]
     pub async fn push(&self, item: T) -> Result<()> {
         self.tx.try_send(item).map_err(|_| ArcanumError::QueueFull)
     }
 
+    #[instrument(skip(self))]
     pub async fn pop(&self) -> Option<T> {
         self.rx.lock().await.recv().await
     }

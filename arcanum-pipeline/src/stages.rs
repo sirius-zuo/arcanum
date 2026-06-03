@@ -177,6 +177,7 @@ pub fn make_embed_stage(
             let embedder = embedder.clone();
             let cb = embedding_cb.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "embed", "executing embed stage");
                 if skip(&ctx) { return Ok(ctx); }
                 if !cb.allow_request() {
                     return Err(arcanum_core::ArcanumError::Embedding(
@@ -225,6 +226,7 @@ pub fn make_vector_write_stage(
             let vs = vector_store.clone();
             let cb = vector_store_cb.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "vector_write", "executing vector_write stage");
                 if skip(&ctx) { return Ok(ctx); }
                 if !cb.allow_request() {
                     return Err(arcanum_core::ArcanumError::Storage(

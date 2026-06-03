@@ -2,6 +2,7 @@ use arcanum_core::{Result, ArcanumError};
 use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
 use serde::{Deserialize, Serialize};
 use chrono::Utc;
+use tracing::instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKeyClaims {
@@ -55,6 +56,7 @@ impl AuthMiddleware {
         self
     }
 
+    #[instrument(skip(self, token), err)]
     pub fn validate_admin_jwt(&self, token: &str) -> Result<AdminClaims> {
         let pem = self.rs256_public_key_pem.as_deref()
             .ok_or_else(|| ArcanumError::Auth("RS256 public key not configured".to_string()))?;
@@ -67,10 +69,12 @@ impl AuthMiddleware {
             .map_err(|e| ArcanumError::Auth(format!("admin JWT invalid: {}", e)))
     }
 
+    #[instrument(skip(self), fields(user_id, collection_count = collections.len()))]
     pub fn generate_api_key(&self, user_id: &str, collections: Vec<String>) -> String {
         self.generate_api_key_with_opts(user_id, collections, false)
     }
 
+    #[instrument(skip(self), fields(user_id))]
     pub fn generate_admin_key(&self, user_id: &str) -> String {
         self.generate_api_key_with_opts(user_id, vec![], true)
     }
@@ -85,12 +89,14 @@ impl AuthMiddleware {
         encode(&Header::default(), &claims, &self.encoding_key).unwrap_or_default()
     }
 
+    #[instrument(skip(self, token), err)]
     pub fn validate_api_key(&self, token: &str) -> Result<ApiKeyClaims> {
         decode::<ApiKeyClaims>(token, &self.decoding_key, &Validation::default())
             .map(|data| data.claims)
             .map_err(|e| ArcanumError::Auth(e.to_string()))
     }
 
+    #[instrument(skip(self, claims), fields(collection))]
     pub fn can_access_collection(&self, claims: &ApiKeyClaims, collection: &str) -> bool {
         // Explicit admin flag grants all access. Empty allowed_collections is NOT a wildcard.
         claims.is_admin || claims.allowed_collections.iter().any(|c| c == collection)
