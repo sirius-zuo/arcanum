@@ -26,7 +26,7 @@ use tower_http::services::{ServeDir, ServeFile};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = arcanum_telemetry::init(arcanum_telemetry::TelemetryConfig::from_env());
 
     let port   = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
     let secret = std::env::var("ARCANUM_AUTH_SECRET")

@@ -13,6 +13,7 @@ members = [
     "arcanum-engine",
     "arcanum-mcp",
     "arcanum-server",
+    "arcanum-telemetry",
 ]
 exclude = ["examples"]
 resolver = "2"

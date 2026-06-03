@@ -1,0 +1,19 @@
+[package]
+name    = "arcanum-telemetry"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tracing               = "0.1"
+tracing-subscriber    = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.28"
+opentelemetry         = "0.27"
+opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp    = { version = "0.27", features = ["grpc-tonic", "http-proto"] }
+metrics               = "0.23"
+metrics-exporter-prometheus = "0.15"
+tokio                 = { version = "1", features = ["rt"] }
+
+[dev-dependencies]
+serial_test = "3"
+tokio         = { version = "1", features = ["rt-multi-thread"] }
