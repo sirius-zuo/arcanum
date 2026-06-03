@@ -1,5 +1,6 @@
 use sqlx::{SqlitePool, Row};
 use arcanum_core::{types::*, Result, ArcanumError};
+use tracing::instrument;
 
 pub struct SqliteMetadataStore {
     pool: SqlitePool,
@@ -31,6 +32,7 @@ impl SqliteMetadataStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(doc_id = %id.0, collection_id = collection), err)]
     pub async fn record_document(
         &self, id: &DocumentId, uri: &str, hash: &str, collection: &str,
     ) -> Result<()> {
@@ -46,6 +48,7 @@ impl SqliteMetadataStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(doc_id = %id.0))]
     pub async fn get_document_hash(&self, id: &DocumentId) -> Result<Option<String>> {
         let row = sqlx::query("SELECT content_hash FROM documents WHERE id = ?")
             .bind(id.0.to_string())
@@ -54,6 +57,7 @@ impl SqliteMetadataStore {
         Ok(row.map(|r| r.get("content_hash")))
     }
 
+    #[instrument(skip(self), fields(doc_id = %id.0))]
     pub async fn is_document_changed(&self, id: &DocumentId, new_hash: &str) -> Result<bool> {
         match self.get_document_hash(id).await? {
             Some(stored) => Ok(stored != new_hash),
