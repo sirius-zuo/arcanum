@@ -1,5 +1,6 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
+use tracing::instrument;
 
 pub struct StructureAwareChunker {
     max_chunk_chars: usize,
@@ -52,6 +53,7 @@ fn split_into_blocks(text: &str) -> Vec<String> {
 
 #[async_trait]
 impl Chunker for StructureAwareChunker {
+    #[instrument(skip(self, doc), fields(chunker = "structure", max_chunk_chars = self.max_chunk_chars, input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content).to_string();
         let blocks = split_into_blocks(&text);
@@ -89,6 +91,7 @@ impl Chunker for StructureAwareChunker {
         if chunks.is_empty() {
             chunks.push(build_chunk(text.trim().to_string(), doc, 0, &text));
         }
+        tracing::Span::current().record("chunk_count", chunks.len());
         Ok(chunks)
     }
 }
