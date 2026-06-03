@@ -1,5 +1,6 @@
 use arcanum_core::types::RawDocument;
 use std::collections::{HashMap, HashSet};
+use tracing::instrument;
 
 static STOP_WORDS: &[&str] = &[
     "a","an","the","is","are","was","were","be","been","have","has","had",
@@ -7,6 +8,7 @@ static STOP_WORDS: &[&str] = &[
     "of","in","on","at","by","for","with","as","from","this","that","it","its",
 ];
 
+#[instrument(skip(doc), fields(doc_uri = %doc.source_uri, keyword_count))]
 pub fn extract_keywords(doc: &RawDocument) -> HashMap<String, String> {
     let text = String::from_utf8_lossy(&doc.content).to_lowercase();
     let stops: HashSet<&str> = STOP_WORDS.iter().copied().collect();
@@ -22,6 +24,7 @@ pub fn extract_keywords(doc: &RawDocument) -> HashMap<String, String> {
     if keywords.is_empty() { return HashMap::new(); }
     let mut meta = HashMap::new();
     meta.insert("keywords".to_string(), keywords.join(","));
+    tracing::Span::current().record("keyword_count", keywords.len());
     meta
 }
 

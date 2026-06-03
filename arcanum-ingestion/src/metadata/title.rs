@@ -1,7 +1,9 @@
 use arcanum_core::types::RawDocument;
 use std::collections::HashMap;
 use scraper::{Html, Selector};
+use tracing::instrument;
 
+#[instrument(skip(doc))]
 pub fn extract_title(doc: &RawDocument) -> HashMap<String, String> {
     let text = String::from_utf8_lossy(&doc.content);
     let mut meta = HashMap::new();
