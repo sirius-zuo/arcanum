@@ -35,10 +35,11 @@ impl RetrievalService {
         self
     }
 
-    #[instrument(skip(self, claims), fields(collection_id = ?query.collection_id, top_k = ?query.top_k), err)]
+    #[instrument(skip(self, claims), fields(collection_id, top_k = query.top_k), err)]
     pub async fn search(&self, query: Query, claims: &ApiKeyClaims) -> Result<RetrievalResult> {
         let collection_id = query.collection_id.as_ref()
             .ok_or_else(|| ArcanumError::Config("search requires an explicit collection_id".into()))?;
+        tracing::Span::current().record("collection_id", &collection_id.0 as &str);
         if !self.auth.can_access_collection(claims, &collection_id.0) {
             return Err(ArcanumError::Auth(format!(
                 "not authorised to search collection '{}'", collection_id.0

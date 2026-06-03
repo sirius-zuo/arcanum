@@ -58,7 +58,7 @@ impl IngestionService {
         )
     }
 
-    #[instrument(skip(self, req), fields(user_id, source_uri = %req.source_uri, collection_id = ?req.collection_id), err)]
+    #[instrument(skip(self, req), fields(user_id, source = %req.source_uri, collection_id = %req.collection_id.0), err)]
     pub async fn ingest(&self, req: IngestRequest, user_id: &str) -> Result<OperationId> {
         if !req.force && self.hash_tracker.ever_seen(&req.source_uri).await {
             let op_id = OperationId::new();
