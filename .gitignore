@@ -1,4 +1,7 @@
 docs/
 
+# macOS
+.DS_Store
+
 # Worktree directories
 .worktrees/
