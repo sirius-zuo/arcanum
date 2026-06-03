@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::debug;
 
 pub struct EvalScheduler {
     pub interval_secs: u64,
@@ -14,6 +15,7 @@ impl EvalScheduler {
         F: Fn() -> Fut + Send + 'static,
         Fut: std::future::Future<Output = ()> + Send,
     {
+        debug!(interval_secs = self.interval_secs, "EvalScheduler starting");
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(self.interval_secs));
             loop {

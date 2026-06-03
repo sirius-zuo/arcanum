@@ -1,6 +1,7 @@
 use arcanum_core::types::*;
 use crate::metrics::*;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoldenSample {
@@ -28,6 +29,7 @@ pub struct EvalRunner { pub k: usize }
 impl EvalRunner {
     pub fn new(k: usize) -> Self { Self { k } }
 
+    #[instrument(skip(self, results, ground_truths), fields(k = self.k, num_results = results.len()))]
     pub fn evaluate(&self, results: &[Vec<ChunkId>], ground_truths: &[GoldenSample]) -> EvalReport {
         assert_eq!(results.len(), ground_truths.len());
         let n = results.len() as f32;

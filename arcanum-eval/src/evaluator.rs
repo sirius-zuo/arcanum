@@ -6,6 +6,7 @@ use arcanum_core::{
 use async_trait::async_trait;
 use std::sync::Arc;
 use crate::metrics::{compute_hit_rate_at_k, compute_mrr, compute_ndcg_at_k};
+use tracing::instrument;
 
 pub struct StandardEvaluator {
     pub enricher: Arc<dyn TextEnricher>,
@@ -20,6 +21,7 @@ impl StandardEvaluator {
 
 #[async_trait]
 impl Evaluator for StandardEvaluator {
+    #[instrument(skip(self, results, ground_truths), fields(num_results = results.len(), ground_truth_count = ground_truths.len(), k = self.k), err)]
     async fn evaluate(
         &self,
         results: &[(Query, Vec<RetrievedChunk>)],
