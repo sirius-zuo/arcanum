@@ -1,4 +1,5 @@
-use crate::config::{LogFormat, TelemetryConfig};
+use crate::config::{LogFormat, OtlpProtocol, TelemetryConfig};
+use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::trace::TracerProvider;
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
@@ -84,8 +85,33 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
     TelemetryGuard { tracer_provider, prometheus_handle }
 }
 
-fn build_tracer_provider(_config: &TelemetryConfig) -> TracerProvider {
-    todo!()
+fn build_tracer_provider(config: &TelemetryConfig) -> TracerProvider {
+    use opentelemetry_sdk::resource::Resource;
+    use opentelemetry::KeyValue;
+
+    let resource = Resource::new(vec![KeyValue::new(
+        "service.name",
+        config.service_name.clone(),
+    )]);
+
+    // The OTel SDK also reads OTEL_EXPORTER_OTLP_ENDPOINT from env
+    // automatically, so we don't pass the endpoint explicitly — the env
+    // var set by the caller is the source of truth.
+    let exporter = match config.otlp_protocol {
+        OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
+            .with_tonic()
+            .build()
+            .expect("arcanum-telemetry: failed to build OTLP gRPC span exporter"),
+        OtlpProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
+            .with_http()
+            .build()
+            .expect("arcanum-telemetry: failed to build OTLP HTTP span exporter"),
+    };
+
+    TracerProvider::builder()
+        .with_resource(resource)
+        .with_batch_exporter(exporter, Tokio)
+        .build()
 }
 
 #[cfg(test)]
@@ -128,5 +154,26 @@ mod tests {
     fn guard_drops_cleanly_in_local_mode() {
         let guard = init(silent_local_config());
         drop(guard); // must not panic
+    }
+
+    #[test]
+    fn init_with_fake_otlp_endpoint_does_not_panic() {
+        // Sets a non-reachable endpoint. No spans are exported (batch exporter
+        // will silently drop them), but provider setup must not panic.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _enter = rt.enter();
+        let guard = init(TelemetryConfig {
+            log_filter:    "off".into(),
+            log_format:    LogFormat::Pretty,
+            otlp_endpoint: Some("http://127.0.0.1:14317".into()), // nothing listening here
+            otlp_protocol: OtlpProtocol::Grpc,
+            service_name:  "test-otlp".into(),
+            metrics_enabled: false,
+            metrics_otlp:    false,
+            metrics_token:   None,
+        });
+        assert!(guard.tracer_provider.is_some(),
+            "OTLP endpoint set → tracer_provider must be Some");
+        drop(guard); // shutdown must not panic
     }
 }
