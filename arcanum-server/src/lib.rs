@@ -5,6 +5,7 @@ pub mod routes {
     pub mod api;
     pub mod graph;
     pub mod health;
+    pub mod metrics;
 }
 pub mod server;
 pub mod ws;
