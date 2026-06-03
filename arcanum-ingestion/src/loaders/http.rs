@@ -1,5 +1,6 @@
 use arcanum_core::{traits::{DocumentLoader, Source}, types::*, Result, ArcanumError};
 use async_trait::async_trait;
+use tracing::instrument;
 
 pub struct HttpLoader {
     client: reqwest::Client,
@@ -18,6 +19,7 @@ impl HttpLoader {
 
 #[async_trait]
 impl DocumentLoader for HttpLoader {
+    #[instrument(skip(self), fields(source_uri = %source.uri(), loader = "http"), err)]
     async fn load(&self, source: &Source) -> Result<RawDocument> {
         let Source::Url(url) = source else {
             return Err(ArcanumError::Ingestion("HttpLoader only handles Source::Url".into()));

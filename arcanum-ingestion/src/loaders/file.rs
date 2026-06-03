@@ -1,5 +1,6 @@
 use arcanum_core::{traits::{DocumentLoader, Source}, types::*, Result, ArcanumError};
 use async_trait::async_trait;
+use tracing::instrument;
 
 pub struct FileLoader;
 
@@ -21,6 +22,7 @@ impl FileLoader {
 
 #[async_trait]
 impl DocumentLoader for FileLoader {
+    #[instrument(skip(self), fields(source_uri = %source.uri(), loader = "file"), err)]
     async fn load(&self, source: &Source) -> Result<RawDocument> {
         let Source::File(path) = source else {
             return Err(ArcanumError::Ingestion("FileLoader only handles Source::File".into()));
