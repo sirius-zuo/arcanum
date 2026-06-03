@@ -1,4 +1,5 @@
 use std::{collections::HashMap, sync::Mutex, time::{Duration, Instant}};
+use tracing::instrument;
 
 struct WindowEntry {
     count: usize,
@@ -20,6 +21,7 @@ impl RateLimiter {
         Self { max_per_window, window_duration, entries: Mutex::new(HashMap::new()) }
     }
 
+    #[instrument(skip(self), fields(key, allowed))]
     pub fn check_and_record(&self, key: &str) -> bool {
         let mut map = self.entries.lock().unwrap();
         let now = Instant::now();
@@ -32,9 +34,10 @@ impl RateLimiter {
             entry.count = 0;
             entry.window_start = now;
         }
-        if entry.count >= self.max_per_window { return false; }
-        entry.count += 1;
-        true
+        let allowed = entry.count < self.max_per_window;
+        if allowed { entry.count += 1; }
+        tracing::debug!(key, allowed, "rate limit check");
+        allowed
     }
 
     // Not public — clearing rate-limit state is an admin operation that must go
