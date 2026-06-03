@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 use chrono::Utc;
+use tracing::instrument;
 
 #[derive(Debug, Clone)]
 pub struct McpSession {
@@ -33,16 +34,21 @@ impl SessionManager {
         Self { sessions: Arc::new(RwLock::new(HashMap::new())) }
     }
 
+    #[instrument(skip(self, client_info))]
     pub async fn create(&self, client_info: impl Into<String>) -> McpSession {
-        let session = McpSession::new(client_info);
+        let info = client_info.into();
+        let session = McpSession::new(info);
         self.sessions.write().await.insert(session.id.clone(), session.clone());
+        tracing::Span::current().record("client", &session.client_info);
         session
     }
 
+    #[instrument(skip(self), fields(session_id = id))]
     pub async fn get(&self, id: &str) -> Option<McpSession> {
         self.sessions.read().await.get(id).cloned()
     }
 
+    #[instrument(skip(self), fields(session_id = id))]
     pub async fn close(&self, id: &str) -> bool {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(id) {
@@ -53,6 +59,7 @@ impl SessionManager {
         }
     }
 
+    #[instrument(skip(self))]
     pub async fn active_count(&self) -> usize {
         self.sessions.read().await.values().filter(|s| !s.closed).count()
     }

@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 use arcanum_core::{Result, types::{Query, CollectionId}};
 use arcanum_engine::{ArcanumEngine, IngestRequest, auth::ApiKeyClaims};
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct McpJsonRpcHandler {
     engine: Option<Arc<ArcanumEngine>>,
@@ -34,6 +35,7 @@ impl McpJsonRpcHandler {
         }))
     }
 
+    #[instrument(skip(self, request, headers), fields(method = extract_method(&request)))]
     pub async fn handle(&self, request: Value, headers: HeaderMap) -> Result<Value> {
         let id     = request.get("id").cloned().unwrap_or(Value::Null);
         let method = request["method"].as_str().unwrap_or("");
@@ -170,6 +172,10 @@ impl McpJsonRpcHandler {
             })),
         }
     }
+}
+
+fn extract_method(request: &Value) -> &str {
+    request.get("method").and_then(|v| v.as_str()).unwrap_or("unknown")
 }
 
 #[cfg(test)]

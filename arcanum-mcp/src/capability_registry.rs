@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::RwLock;
 use serde_json::Value;
+use tracing::instrument;
 
 #[derive(Debug, Clone)]
 pub struct ToolDefinition {
@@ -29,6 +30,7 @@ impl CapabilityRegistry {
         Self { tools: RwLock::new(HashMap::new()) }
     }
 
+    #[instrument(skip(self, tool), fields(tool_name = %tool.name))]
     pub fn register(&self, tool: ToolDefinition) {
         self.tools.write().unwrap().insert(tool.name.clone(), tool);
     }
@@ -40,10 +42,12 @@ impl CapabilityRegistry {
         list
     }
 
+    #[instrument(skip(self), fields(tool_name = name))]
     pub fn get(&self, name: &str) -> Option<ToolDefinition> {
         self.tools.read().unwrap().get(name).cloned()
     }
 
+    #[instrument(skip(self), fields(tool_name = name))]
     pub fn unregister(&self, name: &str) -> bool {
         self.tools.write().unwrap().remove(name).is_some()
     }
