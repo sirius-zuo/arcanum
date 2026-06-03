@@ -12,6 +12,7 @@ use arcanum_core::{
 use arcanum_middleware::BoundedQueue;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::instrument;
 
 pub struct IngestionWorker {
     registry: Arc<ArcanumPipelineRegistry>,
@@ -31,6 +32,7 @@ impl IngestionWorker {
     }
 
     /// Pop one task off the queue and run it. Returns `None` when the queue is closed.
+    #[instrument(skip(self))]
     pub async fn process_next(&self) -> Option<Result<()>> {
         let task = self.queue.pop().await?;
         Some(
@@ -47,6 +49,7 @@ impl IngestionWorker {
 }
 
 /// Free function for running a single ingestion task without a full queue.
+#[instrument(skip(task, registry, deps, emitter, queue), fields(source_uri = %task.source_uri), err)]
 pub async fn run_task(
     task:      IngestionTask,
     registry:  Arc<ArcanumPipelineRegistry>,
