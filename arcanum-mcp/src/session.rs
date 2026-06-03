@@ -34,7 +34,7 @@ impl SessionManager {
         Self { sessions: Arc::new(RwLock::new(HashMap::new())) }
     }
 
-    #[instrument(skip(self, client_info))]
+    #[instrument(skip(self, client_info), fields(client = tracing::field::Empty))]
     pub async fn create(&self, client_info: impl Into<String>) -> McpSession {
         let info = client_info.into();
         let session = McpSession::new(info);

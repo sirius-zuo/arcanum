@@ -1,19 +1,22 @@
-use tracing::debug;
+use tracing::instrument;
 
 pub struct MimeDetector;
 
 impl MimeDetector {
+    #[instrument(skip(content), fields(content_len = content.len(), hint = ?hint, detected_mime), ret)]
     pub fn detect(content: &[u8], hint: Option<&str>) -> String {
-        if let Some(kind) = infer::get(content) {
+        let result = if let Some(kind) = infer::get(content) {
             let magic = kind.mime_type();
             if magic == "application/zip" {
-                return Self::disambiguate_zip(content);
+                Self::disambiguate_zip(content)
+            } else {
+                magic.to_string()
             }
-            return magic.to_string();
-        }
-        let result = hint.map(str::to_string)
-            .unwrap_or_else(|| "application/octet-stream".to_string());
-        debug!(content_len = content.len(), hint = ?hint, detected_mime = %result, "MIME detected");
+        } else {
+            hint.map(str::to_string)
+                .unwrap_or_else(|| "application/octet-stream".to_string())
+        };
+        tracing::Span::current().record("detected_mime", &result as &str);
         result
     }
 

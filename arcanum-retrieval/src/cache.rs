@@ -1,6 +1,7 @@
 use arcanum_core::{traits::CacheInvalidator, types::*};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::RwLock, time::{Duration, Instant}};
+use tracing::instrument;
 
 struct CacheEntry { result: RetrievalResult, inserted: Instant }
 
@@ -15,15 +16,24 @@ impl QueryCache {
         Self { store: RwLock::new(HashMap::new()), ttl, max_size }
     }
 
+    #[instrument(skip(self), fields(cache_hit))]
     pub fn get(&self, key: &str) -> Option<RetrievalResult> {
-        let result = {
-            let store = self.store.read().unwrap();
-            let entry = store.get(key)?;
-            if entry.inserted.elapsed() > self.ttl { return None; }
-            Some(entry.result.clone())
-        };
-        tracing::debug!(cache_hit = result.is_some(), key, "query cache lookup");
-        result
+        let store = self.store.read().unwrap();
+        match store.get(key) {
+            None => {
+                tracing::Span::current().record("cache_hit", false);
+                None
+            }
+            Some(entry) if entry.inserted.elapsed() > self.ttl => {
+                tracing::Span::current().record("cache_hit", false);
+                None
+            }
+            Some(entry) => {
+                let result = entry.result.clone();
+                tracing::Span::current().record("cache_hit", true);
+                Some(result)
+            }
+        }
     }
 
     pub fn insert(&self, key: String, result: RetrievalResult) {
