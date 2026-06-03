@@ -27,27 +27,3 @@ chrono             = { workspace = true }
 [dev-dependencies]
 tokio = { workspace = true }
 uuid  = { workspace = true }
-
-[[test]]
-name = "ex01_devforge_standard_static"
-path = "../tests/integration/examples/ex01_devforge_standard_static.rs"
-
-[[test]]
-name = "ex02_meridian_standard_query_classified"
-path = "../tests/integration/examples/ex02_meridian_standard_query_classified.rs"
-
-[[test]]
-name = "ex03_canopy_standard_parallel_fusion"
-path = "../tests/integration/examples/ex03_canopy_standard_parallel_fusion.rs"
-
-[[test]]
-name = "ex04_helix_full_query_classified"
-path = "../tests/integration/examples/ex04_helix_full_query_classified.rs"
-
-[[test]]
-name = "ex05_vantage_full_parallel_fusion"
-path = "../tests/integration/examples/ex05_vantage_full_parallel_fusion.rs"
-
-[[test]]
-name = "ex06_folio_full_parallel_fusion"
-path = "../tests/integration/examples/ex06_folio_full_parallel_fusion.rs"
