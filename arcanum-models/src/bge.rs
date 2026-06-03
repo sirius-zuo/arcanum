@@ -25,21 +25,25 @@ impl Embedder for BgeProvider {
     #[instrument(skip(self, texts), fields(model = %self.base_url, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let start = std::time::Instant::now();
-        let mut results = Vec::new();
-        for text in &texts {
-            let resp: Vec<Vec<f32>> = self.client
-                .post(format!("{}/embed", self.base_url))
-                .json(&serde_json::json!({ "inputs": text }))
-                .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
-            if let Some(v) = resp.into_iter().next() {
-                results.push(Vector(v));
+        let result: Result<Vec<Vector>> = async {
+            let mut results = Vec::new();
+            for text in &texts {
+                let resp: Vec<Vec<f32>> = self.client
+                    .post(format!("{}/embed", self.base_url))
+                    .json(&serde_json::json!({ "inputs": text }))
+                    .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                    .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                if let Some(v) = resp.into_iter().next() {
+                    results.push(Vector(v));
+                }
             }
-        }
-        tracing::Span::current().record("dimension", self.dim);
-        metrics::counter!("arcanum_model_calls_total", "provider" => "bge", "operation" => "embed", "status" => "ok").increment(1);
+            tracing::Span::current().record("dimension", self.dim);
+            Ok(results)
+        }.await;
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_model_calls_total", "provider" => "bge", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "bge", "operation" => "embed").record(start.elapsed().as_secs_f64());
-        Ok(results)
+        result
     }
 
     fn dimension(&self) -> usize {
