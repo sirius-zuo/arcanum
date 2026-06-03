@@ -17,7 +17,7 @@ arcanum-graph      = { path = "../../arcanum-graph" }
 arcanum-tree       = { path = "../../arcanum-tree" }
 tokio              = { version = "1", features = ["full"] }
 tracing            = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+arcanum-telemetry = { path = "../../arcanum-telemetry" }
 tower-http         = { version = "0.5", features = ["fs"] }
 axum               = "0.7"
 anyhow             = "1"
