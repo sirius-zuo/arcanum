@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -65,6 +66,7 @@ struct OaiMessageContent {
 
 #[async_trait]
 impl Embedder for OpenAiProvider {
+    #[instrument(skip(self, texts), fields(model = %self.embed_model, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let mut results = Vec::new();
         for text in &texts {
@@ -78,6 +80,7 @@ impl Embedder for OpenAiProvider {
                 results.push(Vector(d.embedding));
             }
         }
+        tracing::Span::current().record("dimension", self.dimension());
         Ok(results)
     }
 
@@ -92,6 +95,7 @@ impl Embedder for OpenAiProvider {
 
 #[async_trait]
 impl TextEnricher for OpenAiProvider {
+    #[instrument(skip(self, request), fields(model = %self.generate_model, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
         let resp: OaiChatResponse = self.client

@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use tracing::instrument;
 
 pub struct MistralProvider {
     api_key: String,
@@ -65,6 +66,7 @@ struct MistralMsgContent {
 
 #[async_trait]
 impl Embedder for MistralProvider {
+    #[instrument(skip(self, texts), fields(model = %self.embed_model, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let resp: MistralEmbedResponse = self.client
@@ -73,6 +75,7 @@ impl Embedder for MistralProvider {
             .json(&MistralEmbedRequest { input: inputs, model: &self.embed_model })
             .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
             .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+        tracing::Span::current().record("dimension", self.dimension());
         Ok(resp.data.into_iter().map(|d| Vector(d.embedding)).collect())
     }
 
@@ -86,6 +89,7 @@ impl Embedder for MistralProvider {
 
 #[async_trait]
 impl TextEnricher for MistralProvider {
+    #[instrument(skip(self, request), fields(model = %self.generate_model, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
         let resp: MistralChatResponse = self.client
