@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 /// BM25 retriever scoped to a single collection.
 ///
@@ -32,6 +33,7 @@ impl Bm25Retriever {
 
 #[async_trait]
 impl Retriever for Bm25Retriever {
+    #[instrument(skip(self), fields(strategy = "bm25"), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let query_cid = query.collection_id.as_ref()
             .ok_or_else(|| ArcanumError::Config(

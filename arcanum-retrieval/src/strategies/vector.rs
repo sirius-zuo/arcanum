@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct VectorRetriever {
     store: Arc<dyn VectorStore>,
@@ -15,6 +16,7 @@ impl VectorRetriever {
 
 #[async_trait]
 impl Retriever for VectorRetriever {
+    #[instrument(skip(self), fields(strategy = "vector", collection_id = ?query.collection_id, top_k = ?query.top_k), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let vectors = self.embedder.embed(vec![query.text.clone()]).await?;
         // Require explicit collection_id — fail-open fallback would allow cross-collection access.
