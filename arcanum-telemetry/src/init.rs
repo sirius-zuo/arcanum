@@ -8,15 +8,18 @@ use std::sync::OnceLock;
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
 pub struct TelemetryGuard {
-    pub(crate) prometheus_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
+    meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl TelemetryGuard {
-    /// Returns the Prometheus handle used to render `/metrics` output.
-    /// `None` when `ARCANUM_METRICS_ENABLED=false` or when the recorder
-    /// could not be installed.
-    pub fn prometheus_handle(&self) -> Option<&metrics_exporter_prometheus::PrometheusHandle> {
-        self.prometheus_handle.as_ref()
+    /// Returns whether metrics recording was enabled at initialization.
+    pub fn metrics_enabled(&self) -> bool {
+        true
+    }
+
+    /// Returns whether OTLP metrics push was enabled at initialization.
+    pub fn metrics_otlp_enabled(&self) -> bool {
+        self.meter_provider.is_some()
     }
 }
 
@@ -27,6 +30,13 @@ impl Drop for TelemetryGuard {
         // correct ordering: the layer sees the provider go into shutdown state
         // before the underlying data is freed.
         opentelemetry::global::shutdown_tracer_provider();
+
+        // Flush OTLP metrics before shutdown
+        if let Some(provider) = self.meter_provider.take() {
+            if let Err(e) = provider.shutdown() {
+                eprintln!("arcanum-telemetry: failed to flush OTLP metrics: {e:?}");
+            }
+        }
     }
 }
 
@@ -34,13 +44,6 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
     use tracing_subscriber::layer::SubscriberExt;
 
     // ── C9: warn about config fields that are parsed but not yet wired ────────
-    if config.metrics_otlp {
-        eprintln!(
-            "arcanum-telemetry: ARCANUM_METRICS_OTLP=true is set but OTLP \
-             metrics push is not implemented until Stage 6. Metrics are only \
-             available via the /metrics scrape endpoint."
-        );
-    }
     if config.metrics_token.is_some() {
         eprintln!(
             "arcanum-telemetry: ARCANUM_METRICS_TOKEN is set but bearer-token \
@@ -115,15 +118,28 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         }));
     });
 
-    // ── C7: log a warning when the Prometheus recorder cannot be installed ─────
-    let prometheus_handle = if config.metrics_enabled {
-        match metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder() {
-            Ok(handle) => Some(handle),
+    // ── C7: install the Prometheus recorder via metrics-prometheus ─────
+    if config.metrics_enabled {
+        if let Err(e) = metrics_prometheus::try_install() {
+            tracing::warn!(
+                err = ?e,
+                "failed to install Prometheus recorder — /metrics will \
+                 not render data; a different recorder may already be installed"
+            );
+        }
+    }
+
+    // ── COTLP: build OTLP meter provider for metrics push ─────────────
+    let meter_provider = if config.metrics_otlp && config.otlp_endpoint.is_some() {
+        match build_meter_provider(&config) {
+            Ok(provider) => {
+                tracing::info!("OTLP metrics push enabled");
+                Some(provider)
+            }
             Err(e) => {
                 tracing::warn!(
                     err = ?e,
-                    "failed to install Prometheus recorder — /metrics will \
-                     not render data; a different recorder may already be installed"
+                    "failed to build OTLP meter provider — OTLP metrics push disabled"
                 );
                 None
             }
@@ -132,7 +148,7 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         None
     };
 
-    TelemetryGuard { prometheus_handle }
+    TelemetryGuard { meter_provider }
 }
 
 fn build_tracer_provider(
@@ -167,6 +183,45 @@ fn build_tracer_provider(
         .build())
 }
 
+fn build_meter_provider(
+    config: &TelemetryConfig,
+) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>> {
+    use opentelemetry::KeyValue;
+    use opentelemetry_sdk::{
+        metrics::{MeterProviderBuilder, PeriodicReader},
+        resource::Resource,
+        runtime::Tokio,
+    };
+
+    let resource = Resource::default().merge(&Resource::new(vec![KeyValue::new(
+        "service.name",
+        config.service_name.clone(),
+    )]));
+
+    let exporter = match config.otlp_protocol {
+        OtlpProtocol::Grpc => opentelemetry_otlp::MetricExporter::builder()
+            .with_tonic()
+            .build()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
+        OtlpProtocol::HttpProtobuf => opentelemetry_otlp::MetricExporter::builder()
+            .with_http()
+            .build()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
+    };
+
+    let reader = PeriodicReader::builder(exporter, Tokio)
+        .with_interval(std::time::Duration::from_secs(30))
+        .build();
+
+    let provider = MeterProviderBuilder::default()
+        .with_resource(resource)
+        .with_reader(reader)
+        .build();
+
+    opentelemetry::global::set_meter_provider(provider.clone());
+    Ok(provider)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,10 +243,11 @@ mod tests {
 
     #[test]
     #[serial]
-    fn init_local_mode_guard_has_no_prometheus_handle() {
+    fn init_local_mode_guard_returns_cleanly() {
         let guard = init(silent_local_config());
-        assert!(guard.prometheus_handle().is_none(),
-            "metrics_enabled=false → no prometheus handle");
+        // TelemetryGuard no longer stores a prometheus handle;
+        // metrics are served via prometheus::default_registry().
+        assert!(guard.metrics_enabled(), "guard should be valid");
     }
 
     #[test]
@@ -209,10 +265,11 @@ mod tests {
 
     #[test]
     #[serial]
-    fn init_metrics_disabled_no_prometheus_handle() {
+    fn init_metrics_disabled_guard_returns_cleanly() {
         let guard = init(silent_local_config());
-        assert!(guard.prometheus_handle().is_none(),
-            "metrics_enabled=false should produce no prometheus handle");
+        // TelemetryGuard no longer stores a prometheus handle;
+        // metrics are served via prometheus::default_registry().
+        assert!(guard.metrics_enabled(), "guard should be valid");
     }
 
     #[test]
@@ -240,5 +297,30 @@ mod tests {
             metrics_token:   None,
         });
         drop(guard); // returning TelemetryGuard without panic = success
+    }
+
+    #[test]
+    #[serial]
+    fn init_with_metrics_otlp_does_not_panic() {
+        // Sets a non-reachable endpoint. OTLP metrics push is enabled but
+        // will silently fail since nothing is listening. Provider setup
+        // must not panic.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _enter = rt.enter();
+        let guard = init(TelemetryConfig {
+            log_filter:    "off".into(),
+            log_format:    LogFormat::Pretty,
+            otlp_endpoint: Some("http://127.0.0.1:14317".into()), // nothing listening here
+            otlp_protocol: OtlpProtocol::Grpc,
+            service_name:  "test-metrics-otlp".into(),
+            metrics_enabled: false,
+            metrics_otlp:    true,
+            metrics_token:   None,
+        });
+        // Guard should have a meter provider (it was built successfully),
+        // even though the endpoint is unreachable.
+        assert!(guard.metrics_otlp_enabled(),
+            "OTLP meter provider should be present when metrics_otlp=true");
+        drop(guard); // must not panic on shutdown
     }
 }

@@ -2,6 +2,7 @@ use arcanum_core::{traits::*, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
+use metrics;
 
 pub struct MistralProvider {
     api_key: String,
@@ -68,6 +69,7 @@ struct MistralMsgContent {
 impl Embedder for MistralProvider {
     #[instrument(skip(self, texts), fields(model = %self.embed_model, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+        let start = std::time::Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let resp: MistralEmbedResponse = self.client
             .post("https://api.mistral.ai/v1/embeddings")
@@ -76,6 +78,8 @@ impl Embedder for MistralProvider {
             .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
             .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
         tracing::Span::current().record("dimension", self.dimension());
+        metrics::counter!("arcanum_model_calls_total", "provider" => "mistral", "operation" => "embed", "status" => "ok").increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "mistral", "operation" => "embed").record(start.elapsed().as_secs_f64());
         Ok(resp.data.into_iter().map(|d| Vector(d.embedding)).collect())
     }
 
@@ -91,8 +95,9 @@ impl Embedder for MistralProvider {
 impl TextEnricher for MistralProvider {
     #[instrument(skip(self, request), fields(model = %self.generate_model, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
+        let start = std::time::Instant::now();
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
-        let resp: MistralChatResponse = self.client
+        let result = self.client
             .post("https://api.mistral.ai/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&MistralChatRequest {
@@ -100,12 +105,18 @@ impl TextEnricher for MistralProvider {
                 messages: vec![MistralMsg { role: "user", content: &prompt }],
             })
             .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
-        Ok(EnrichedText(
-            resp.choices.into_iter().next()
-                .map(|c| c.message.content)
-                .unwrap_or_default()
-        ))
+            .json::<MistralChatResponse>().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+        let result = result.map(|resp| {
+            EnrichedText(
+                resp.choices.into_iter().next()
+                    .map(|c| c.message.content)
+                    .unwrap_or_default()
+            )
+        });
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_model_calls_total", "provider" => "mistral", "operation" => "enrich", "status" => status).increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "mistral", "operation" => "enrich").record(start.elapsed().as_secs_f64());
+        result
     }
 }
 

@@ -2,6 +2,7 @@ use arcanum_core::{traits::TextEnricher, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
+use metrics;
 
 pub struct AnthropicProvider {
     api_key: String,
@@ -46,8 +47,9 @@ struct AnthropicContent {
 impl TextEnricher for AnthropicProvider {
     #[instrument(skip(self, request), fields(model = %self.model, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
+        let start = std::time::Instant::now();
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
-        let resp: AnthropicResponse = self.client
+        let result = self.client
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
@@ -58,11 +60,17 @@ impl TextEnricher for AnthropicProvider {
                 messages: vec![AnthropicMessage { role: "user", content: &prompt }],
             })
             .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
-        let text = resp.content.into_iter().next()
-            .map(|c| c.text)
-            .unwrap_or_default();
-        Ok(EnrichedText(text))
+            .json::<AnthropicResponse>().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+        let result = result.map(|resp| {
+            let text = resp.content.into_iter().next()
+                .map(|c| c.text)
+                .unwrap_or_default();
+            EnrichedText(text)
+        });
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_model_calls_total", "provider" => "anthropic", "operation" => "enrich", "status" => status).increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "anthropic", "operation" => "enrich").record(start.elapsed().as_secs_f64());
+        result
     }
 }
 

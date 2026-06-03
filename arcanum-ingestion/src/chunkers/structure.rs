@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
 use tracing::instrument;
+use metrics;
 
 pub struct StructureAwareChunker {
     max_chunk_chars: usize,
@@ -92,6 +93,7 @@ impl Chunker for StructureAwareChunker {
             chunks.push(build_chunk(text.trim().to_string(), doc, 0, &text));
         }
         tracing::Span::current().record("chunk_count", chunks.len());
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "structure").record(chunks.len() as f64);
         Ok(chunks)
     }
 }

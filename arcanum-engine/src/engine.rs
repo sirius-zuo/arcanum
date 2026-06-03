@@ -193,11 +193,11 @@ impl ArcanumEngineBuilder {
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
 
-        let embedding_cb    = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
-        let vector_store_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
+        let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
+        let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
 
         // Shared queue and hash tracker — passed to both IngestionService (push) and workers (pop).
-        let queue        = Arc::new(BoundedQueue::new(self.config.ingestion.queue_capacity));
+        let queue        = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
         let hash_tracker = Arc::new(DocumentHashTracker::new());
 
         let ingestion = Arc::new(IngestionService::new_from_parts(
@@ -269,9 +269,11 @@ impl ArcanumEngineBuilder {
             );
         }
         let mut orchestrator = RetrievalOrchestrator::new(orch_mode);
+        let mut retriever_count = 0;
         if let (Some(vs), Some(emb)) = (&self.vector_store, &self.embedder) {
             orchestrator = orchestrator
                 .add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
+            retriever_count += 1;
         }
         if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
             &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
@@ -282,16 +284,20 @@ impl ArcanumEngineBuilder {
                 .add_retriever(Arc::new(GraphRetriever::new(
                     gs.clone(), vs.clone(), planner, emb.clone(), 2,
                 )));
+            retriever_count += 1;
         }
         if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {
             orchestrator = orchestrator
                 .add_retriever(Arc::new(RaptorRetriever::new(ts.clone(), emb.clone(), 3)));
+            retriever_count += 1;
         }
         if let Some(bm25) = &self.bm25_index {
             orchestrator = orchestrator.add_retriever(Arc::new(
                 Bm25Retriever::new_global(bm25.clone() as Arc<dyn LexicalIndex>)
             ));
+            retriever_count += 1;
         }
+        metrics::gauge!("arcanum_active_retrievers").set(retriever_count as f64);
 
         let retrieval = Arc::new(RetrievalService::new(
             Arc::new(orchestrator),

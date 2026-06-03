@@ -1,8 +1,10 @@
-use axum::{extract::{State, Json}, http::{StatusCode, HeaderMap}, response::IntoResponse};
+use axum::{extract::{State, Json}, http::{StatusCode, HeaderMap}, response::{IntoResponse, Response}};
 use serde::Deserialize;
 use std::sync::Arc;
 use arcanum_core::types::{Query, CollectionId};
 use arcanum_engine::{ArcanumEngine, auth::ApiKeyClaims};
+use metrics::{counter, histogram};
+
 
 /// Extract and validate a Bearer token. Returns 401 if absent or invalid.
 fn validate_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
@@ -45,31 +47,38 @@ pub async fn search(
     State(engine): State<Option<Arc<ArcanumEngine>>>,
     Json(req): Json<SearchRequest>,
 ) -> impl IntoResponse {
-    let claims = match validate_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        let collection = req.collection_id.as_deref().unwrap_or("");
+        if !eng.auth.can_access_collection(&claims, collection) {
+            return (StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
+
+        let query = Query::new(&req.query)
+            .with_collection(CollectionId(collection.to_string()))
+            .with_top_k(req.top_k.unwrap_or(10));
+
+        match eng.retrieval.search(query, &claims).await {
+            Ok(result) => (StatusCode::OK, axum::Json(serde_json::json!({
+                "chunks": result.chunks,
+                "confidence": result.confidence,
+                "strategy_scores": result.strategy_scores,
+            }))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        }
     };
-    let eng = engine.as_ref().unwrap();
-    // Verify collection access.
-    let collection = req.collection_id.as_deref().unwrap_or("");
-    if !eng.auth.can_access_collection(&claims, collection) {
-        return (StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "access denied" }))).into_response();
-    }
-
-    let query = Query::new(&req.query)
-        .with_collection(CollectionId(collection.to_string()))
-        .with_top_k(req.top_k.unwrap_or(10));
-
-    match eng.retrieval.search(query, &claims).await {
-        Ok(result) => (StatusCode::OK, axum::Json(serde_json::json!({
-            "chunks": result.chunks,
-            "confidence": result.confidence,
-            "strategy_scores": result.strategy_scores,
-        }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "search", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "search").record(elapsed);
+    response
 }
 
 pub async fn ingest(
@@ -77,33 +86,41 @@ pub async fn ingest(
     State(engine): State<Option<Arc<ArcanumEngine>>>,
     Json(req): Json<HttpIngestRequest>,
 ) -> impl IntoResponse {
-    let claims = match validate_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-    let eng = engine.as_ref().unwrap();
-    if !eng.auth.can_access_collection(&claims, &req.collection_id) {
-        return (StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "access denied" }))).into_response();
-    }
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        if !eng.auth.can_access_collection(&claims, &req.collection_id) {
+            return (StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
 
-    let ingest_req = arcanum_engine::IngestRequest {
-        source_uri: req.source_uri,
-        collection_id: CollectionId(req.collection_id),
-        pipeline_template: req.pipeline,
-        force: req.force.unwrap_or(false),
-        content: None,
-        mime_hint: None,
-    };
+        let ingest_req = arcanum_engine::IngestRequest {
+            source_uri: req.source_uri,
+            collection_id: CollectionId(req.collection_id),
+            pipeline_template: req.pipeline,
+            force: req.force.unwrap_or(false),
+            content: None,
+            mime_hint: None,
+        };
 
-    match eng.ingestion.ingest(ingest_req, &claims.user_id).await {
-        Ok(op_id) => (StatusCode::ACCEPTED, axum::Json(serde_json::json!({
-            "operation_id": op_id.0,
-            "status": "queued"
-        }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
+        match eng.ingestion.ingest(ingest_req, &claims.user_id).await {
+            Ok(op_id) => (StatusCode::ACCEPTED, axum::Json(serde_json::json!({
+                "operation_id": op_id.0,
+                "status": "queued"
+            }))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::ACCEPTED { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "ingest", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "ingest").record(elapsed);
+    response
 }
 
 #[derive(Deserialize)]
@@ -136,33 +153,41 @@ pub async fn upload(
     axum::extract::Query(params): axum::extract::Query<UploadParams>,
     body: axum::body::Bytes,
 ) -> impl IntoResponse {
-    let claims = match validate_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-    let eng = engine.as_ref().unwrap();
-    if !eng.auth.can_access_collection(&claims, &params.collection_id) {
-        return (StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({ "error": "access denied" }))).into_response();
-    }
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        if !eng.auth.can_access_collection(&claims, &params.collection_id) {
+            return (StatusCode::FORBIDDEN,
+                axum::Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
 
-    let ingest_req = arcanum_engine::IngestRequest {
-        source_uri: params.filename.clone(),
-        collection_id: CollectionId(params.collection_id),
-        pipeline_template: params.pipeline,
-        force: params.force.unwrap_or(false),
-        content: Some(body.to_vec()),
-        mime_hint: Some(mime_from_filename(&params.filename)),
-    };
+        let ingest_req = arcanum_engine::IngestRequest {
+            source_uri: params.filename.clone(),
+            collection_id: CollectionId(params.collection_id),
+            pipeline_template: params.pipeline,
+            force: params.force.unwrap_or(false),
+            content: Some(body.to_vec()),
+            mime_hint: Some(mime_from_filename(&params.filename)),
+        };
 
-    match eng.ingestion.ingest(ingest_req, &claims.user_id).await {
-        Ok(op_id) => (StatusCode::ACCEPTED, axum::Json(serde_json::json!({
-            "operation_id": op_id.0,
-            "status": "queued"
-        }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
+        match eng.ingestion.ingest(ingest_req, &claims.user_id).await {
+            Ok(op_id) => (StatusCode::ACCEPTED, axum::Json(serde_json::json!({
+                "operation_id": op_id.0,
+                "status": "queued"
+            }))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::ACCEPTED { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "upload", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "upload").record(elapsed);
+    response
 }
 
 #[cfg(test)]

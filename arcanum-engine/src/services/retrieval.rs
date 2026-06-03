@@ -132,7 +132,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_with_wired_retriever_returns_results() {
-        let cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
+        let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
         let (svc, auth) = make_service(cb);
         let token = auth.generate_admin_key("test-user");
         let claims = auth.validate_api_key(&token).unwrap();
@@ -144,7 +144,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_blocked_by_open_circuit_breaker() {
-        let cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
+        let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
         for _ in 0..5 { cb.record_failure(); }
 
         let (svc, auth) = make_service(cb);

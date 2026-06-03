@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
 use tracing::instrument;
+use metrics;
 
 pub struct HierarchicalChunker;
 
@@ -66,6 +67,7 @@ impl Chunker for HierarchicalChunker {
             })
             .collect();
         tracing::Span::current().record("chunk_count", chunks.len());
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "hierarchical").record(chunks.len() as f64);
         Ok(chunks)
     }
 }

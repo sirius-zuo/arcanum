@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use std::sync::Arc;
 use crate::metrics::{compute_hit_rate_at_k, compute_mrr, compute_ndcg_at_k};
 use tracing::instrument;
+use metrics;
 
 pub struct StandardEvaluator {
     pub enricher: Arc<dyn TextEnricher>,
@@ -27,9 +28,21 @@ impl Evaluator for StandardEvaluator {
         results: &[(Query, Vec<RetrievedChunk>)],
         ground_truths: &[GroundTruth],
     ) -> Result<EvalMetrics> {
+        let result = do_evaluate(self, results, ground_truths).await;
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_eval_runs_total", "metric" => "standard", "status" => status).increment(1);
+        result
+    }
+}
+
+async fn do_evaluate(
+    state: &StandardEvaluator,
+    results: &[(Query, Vec<RetrievedChunk>)],
+    ground_truths: &[GroundTruth],
+) -> Result<EvalMetrics> {
         let n = results.len() as f32;
         if n == 0.0 {
-            return Ok(EvalMetrics { hit_rate_at_k: 0.0, mrr: 0.0, ndcg_at_k: 0.0, k: self.k });
+            return Ok(EvalMetrics { hit_rate_at_k: 0.0, mrr: 0.0, ndcg_at_k: 0.0, k: state.k });
         }
         let mut hr = 0f32;
         let mut mrr = 0f32;
@@ -38,18 +51,17 @@ impl Evaluator for StandardEvaluator {
             let retrieved_ids: Vec<ChunkId> = chunks.iter()
                 .map(|c| c.indexed_chunk.chunk.id.clone())
                 .collect();
-            hr   += compute_hit_rate_at_k(&retrieved_ids, &gt.relevant_chunk_ids, self.k);
+            hr   += compute_hit_rate_at_k(&retrieved_ids, &gt.relevant_chunk_ids, state.k);
             mrr  += compute_mrr(&retrieved_ids, &gt.relevant_chunk_ids);
-            ndcg += compute_ndcg_at_k(&retrieved_ids, &gt.relevant_chunk_ids, self.k);
+            ndcg += compute_ndcg_at_k(&retrieved_ids, &gt.relevant_chunk_ids, state.k);
         }
         Ok(EvalMetrics {
             hit_rate_at_k: hr / n,
             mrr: mrr / n,
             ndcg_at_k: ndcg / n,
-            k: self.k,
+            k: state.k,
         })
     }
-}
 
 #[cfg(test)]
 mod tests {

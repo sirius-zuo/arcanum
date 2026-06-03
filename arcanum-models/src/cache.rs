@@ -5,6 +5,7 @@ use sha2::{Sha256, Digest};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::instrument;
+use metrics;
 
 pub struct EmbeddingCache {
     client: Arc<Mutex<redis::aio::MultiplexedConnection>>,
@@ -37,6 +38,7 @@ impl EmbeddingCache {
 
     #[instrument(skip(self), fields(cache_hit), err)]
     pub async fn get(&self, text: &str) -> Result<Option<Vector>> {
+        let start = std::time::Instant::now();
         let key = Self::cache_key(text, &self.model_id, self.dimension);
         let mut conn = self.client.lock().await;
         let val: Option<String> = conn.get(&key).await
@@ -49,19 +51,26 @@ impl EmbeddingCache {
                 Ok(Some(Vector(floats)))
             }
         };
-        tracing::Span::current().record("cache_hit", result.as_ref().map_or(false, |v| v.is_some()));
+        let hit = result.as_ref().map_or(false, |v| v.is_some());
+        metrics::counter!("arcanum_cache_ops_total", "op" => "embed_get", "result" => if hit { "hit" } else { "miss" }).increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "redis", "operation" => "embed_cache_get").record(start.elapsed().as_secs_f64());
+        tracing::Span::current().record("cache_hit", hit);
         result
     }
 
     #[instrument(skip(self, vector), err)]
     pub async fn set(&self, text: &str, vector: Vector) -> Result<()> {
+        let start = std::time::Instant::now();
         let key = Self::cache_key(text, &self.model_id, self.dimension);
         let serialized = serde_json::to_string(&vector.0)
             .map_err(|e| ArcanumError::Config(format!("cache serialize error: {}", e)))?;
         let mut conn = self.client.lock().await;
-        let _: () = conn.set_ex(&key, serialized, 3600).await
-            .map_err(|e| ArcanumError::Config(format!("Redis set error: {}", e)))?;
-        Ok(())
+        let result: std::result::Result<(), _> = conn.set_ex(&key, serialized, 3600).await
+            .map_err(|e| ArcanumError::Config(format!("Redis set error: {}", e)));
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_cache_ops_total", "op" => "embed_set", "result" => status).increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "redis", "operation" => "embed_cache_set").record(start.elapsed().as_secs_f64());
+        result.map(|_| ())
     }
 
     pub async fn record_source_association(&self, source_uri: &str, text: &str) -> Result<()> {

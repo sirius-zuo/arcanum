@@ -3,6 +3,8 @@ use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
 use arcanum_engine::auth::{AdminClaims, AdminRole};
 use arcanum_engine::services::admin::AdminService;
+use metrics::counter;
+use crate::metrics as metrics_mod;
 
 /// Validate RS256 admin JWT and return AdminClaims.
 fn validate_admin_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
@@ -42,106 +44,149 @@ pub async fn list_collections(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_admin_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    let start = std::time::Instant::now();
+    let response = {
+        let claims = match validate_admin_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+        (StatusCode::OK, Json(serde_json::json!({ "collections": [] }))).into_response()
     };
-    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
-    (StatusCode::OK, Json(serde_json::json!({ "collections": [] }))).into_response()
+    let _elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "admin/list_collections", "status" => status).increment(1);
+    response
 }
 
 pub async fn get_health(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_admin_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    let start = std::time::Instant::now();
+    let response = {
+        let claims = match validate_admin_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Tester) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+        (StatusCode::OK, Json(serde_json::json!({ "vector_store": "ok" }))).into_response()
     };
-    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Tester) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
-    (StatusCode::OK, Json(serde_json::json!({ "vector_store": "ok" }))).into_response()
+    let _elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_health", "status" => status).increment(1);
+    response
 }
 
 pub async fn get_metrics(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_admin_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    let start = std::time::Instant::now();
+    let response = {
+        let claims = match validate_admin_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Tester) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+        let text = metrics_mod::get_metrics_text();
+        (StatusCode::OK, text).into_response()
     };
-    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Tester) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
-    (StatusCode::OK, Json(serde_json::json!({ "uptime_secs": 0 }))).into_response()
+    let _elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_metrics", "status" => status).increment(1);
+    response
 }
 
 pub async fn list_ingestion_sources(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_admin_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    let start = std::time::Instant::now();
+    let response = {
+        let claims = match validate_admin_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+        let eng = engine.as_ref().unwrap();
+        let sources = eng.source.list().await;
+        (StatusCode::OK, Json(serde_json::json!({ "sources": sources }))).into_response()
     };
-    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
-    let eng = engine.as_ref().unwrap();
-    let sources = eng.source.list().await;
-    (StatusCode::OK, Json(serde_json::json!({ "sources": sources }))).into_response()
+    let _elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "admin/list_ingestion_sources", "status" => status).increment(1);
+    response
 }
 
 pub async fn get_audit_logs(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_admin_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
+    let start = std::time::Instant::now();
+    let response = {
+        let claims = match validate_admin_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+        let eng = engine.as_ref().unwrap();
+        let logs = eng.audit.query(100).await;
+        (StatusCode::OK, Json(serde_json::json!({ "logs": logs }))).into_response()
     };
-    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
-    let eng = engine.as_ref().unwrap();
-    let logs = eng.audit.query(100).await;
-    (StatusCode::OK, Json(serde_json::json!({ "logs": logs }))).into_response()
+    let _elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_audit_logs", "status" => status).increment(1);
+    response
 }
 
 pub async fn rotate_keys(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
-    let claims = match validate_admin_bearer(&headers, &engine) {
-        Ok(c) => c,
-        Err(e) => return e.into_response(),
-    };
-    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Admin) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
-    let eng = engine.as_ref().unwrap();
-    match eng.admin.rotate_keys(&claims.sub).await {
-        Ok(()) => {
-            if let Some(store) = &eng.secret_store {
-                if let Err(e) = store.reload().await {
-                    tracing::warn!("SecretStore reload after rotate_keys failed: {}", e);
-                }
-            }
-            (StatusCode::OK, Json(serde_json::json!({ "status": "rotated" }))).into_response()
+    let start = std::time::Instant::now();
+    let response = {
+        let claims = match validate_admin_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Admin) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
         }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
+        let eng = engine.as_ref().unwrap();
+        match eng.admin.rotate_keys(&claims.sub).await {
+            Ok(()) => {
+                if let Some(store) = &eng.secret_store {
+                    if let Err(e) = store.reload().await {
+                        tracing::warn!("SecretStore reload after rotate_keys failed: {}", e);
+                    }
+                }
+                (StatusCode::OK, Json(serde_json::json!({ "status": "rotated" }))).into_response()
+            }
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        }
+    };
+    let _elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "admin/rotate_keys", "status" => status).increment(1);
+    response
 }
 
 #[cfg(test)]

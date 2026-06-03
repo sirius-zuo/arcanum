@@ -2,6 +2,7 @@ use arcanum_core::{traits::Embedder, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::Serialize;
 use tracing::instrument;
+use metrics;
 
 pub struct HuggingFaceTeiProvider {
     pub base_url: String,
@@ -30,6 +31,7 @@ struct TeiEmbedRequest<'a> {
 impl Embedder for HuggingFaceTeiProvider {
     #[instrument(skip(self, texts), fields(model = %self.model_id, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+        let start = std::time::Instant::now();
         let mut results = Vec::new();
         for text in &texts {
             let resp: Vec<Vec<f32>> = self.client
@@ -42,6 +44,8 @@ impl Embedder for HuggingFaceTeiProvider {
             }
         }
         tracing::Span::current().record("dimension", self.dim);
+        metrics::counter!("arcanum_model_calls_total", "provider" => "huggingface", "operation" => "embed", "status" => "ok").increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "huggingface", "operation" => "embed").record(start.elapsed().as_secs_f64());
         Ok(results)
     }
 

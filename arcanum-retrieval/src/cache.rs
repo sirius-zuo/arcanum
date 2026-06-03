@@ -18,22 +18,18 @@ impl QueryCache {
 
     #[instrument(skip(self), fields(cache_hit))]
     pub fn get(&self, key: &str) -> Option<RetrievalResult> {
-        let store = self.store.read().unwrap();
-        match store.get(key) {
-            None => {
-                tracing::Span::current().record("cache_hit", false);
-                None
+        let result = {
+            let store = self.store.read().unwrap();
+            match store.get(key) {
+                None => None,
+                Some(entry) if entry.inserted.elapsed() > self.ttl => None,
+                Some(entry) => Some(entry.result.clone()),
             }
-            Some(entry) if entry.inserted.elapsed() > self.ttl => {
-                tracing::Span::current().record("cache_hit", false);
-                None
-            }
-            Some(entry) => {
-                let result = entry.result.clone();
-                tracing::Span::current().record("cache_hit", true);
-                Some(result)
-            }
-        }
+        };
+        let hit = if result.is_some() { "hit" } else { "miss" };
+        metrics::counter!("arcanum_cache_ops_total", "op" => "get", "result" => hit).increment(1);
+        tracing::Span::current().record("cache_hit", result.is_some());
+        result
     }
 
     pub fn insert(&self, key: String, result: RetrievalResult) {
@@ -49,6 +45,7 @@ impl QueryCache {
             }
             store.insert(key.clone(), CacheEntry { result, inserted: Instant::now() });
         }
+        metrics::counter!("arcanum_cache_ops_total", "op" => "insert", "result" => "ok").increment(1);
         tracing::debug!(key, "query cache insert");
     }
 

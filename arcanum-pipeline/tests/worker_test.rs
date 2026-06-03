@@ -40,8 +40,8 @@ fn stub_deps() -> Arc<PipelineDeps> {
         hash_tracker: Arc::new(DocumentHashTracker::new()),
         retry_policy: arcanum_middleware::RetryPolicy::default(),
         cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(vec![])),
-        embedding_cb:      Arc::new(arcanum_middleware::CircuitBreaker::new(5, std::time::Duration::from_secs(30))),
-        vector_store_cb:   Arc::new(arcanum_middleware::CircuitBreaker::new(5, std::time::Duration::from_secs(30))),
+        embedding_cb:      Arc::new(arcanum_middleware::CircuitBreaker::new("embedding", 5, std::time::Duration::from_secs(30))),
+        vector_store_cb:   Arc::new(arcanum_middleware::CircuitBreaker::new("embedding", 5, std::time::Duration::from_secs(30))),
     })
 }
 
@@ -61,7 +61,7 @@ async fn test_worker_processes_task_to_completion() {
 
     let deps = stub_deps();
     let registry = Arc::new(ArcanumPipelineRegistry::default());
-    let queue = Arc::new(BoundedQueue::new(10));
+    let queue = Arc::new(BoundedQueue::new("test", 10));
 
     let task = IngestionTask {
         operation_id: OperationId::new(),
@@ -99,7 +99,7 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
     assert!(!deps.embedding_cb.allow_request(), "circuit should be open");
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
-    let queue = Arc::new(BoundedQueue::new(10));
+    let queue = Arc::new(BoundedQueue::new("test", 10));
     let task = IngestionTask {
         operation_id: OperationId::new(),
         source_uri: "raw://test-cb".into(),
@@ -181,12 +181,12 @@ async fn test_worker_invalidates_cache_on_re_ingest() {
         hash_tracker,
         retry_policy:      RetryPolicy::default(),
         cache_invalidator: broadcaster,
-        embedding_cb:      Arc::new(CircuitBreaker::new(5, Duration::from_secs(30))),
-        vector_store_cb:   Arc::new(CircuitBreaker::new(5, Duration::from_secs(30))),
+        embedding_cb:      Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30))),
+        vector_store_cb:   Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30))),
     });
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
-    let queue = Arc::new(BoundedQueue::new(10));
+    let queue = Arc::new(BoundedQueue::new("test", 10));
     let task = IngestionTask {
         operation_id: OperationId::new(),
         source_uri: "raw://test-invalidate".into(),
@@ -222,7 +222,7 @@ async fn test_worker_skips_unchanged_document() {
     deps.hash_tracker.record("raw://test", b"hello world document").await;
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
-    let queue = Arc::new(BoundedQueue::new(10));
+    let queue = Arc::new(BoundedQueue::new("test", 10));
 
     let task = IngestionTask {
         operation_id: OperationId::new(),

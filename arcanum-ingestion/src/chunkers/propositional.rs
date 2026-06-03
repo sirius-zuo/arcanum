@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
 use tracing::instrument;
+use metrics;
 
 pub struct PropositionalChunker;
 impl PropositionalChunker { pub fn new() -> Self { Self } }
@@ -23,6 +24,7 @@ impl Chunker for PropositionalChunker {
             metadata: ChunkMetadata::default(),
         }).collect();
         tracing::Span::current().record("chunk_count", chunks.len());
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "propositional").record(chunks.len() as f64);
         Ok(chunks)
     }
 }

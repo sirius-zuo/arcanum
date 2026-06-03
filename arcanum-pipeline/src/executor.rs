@@ -2,6 +2,7 @@ use crate::dag::{PipelineDAG, StageContext, StageId};
 use arcanum_core::{Result, ArcanumError};
 use std::collections::HashSet;
 use tracing::{instrument, Instrument};
+use metrics;
 
 pub struct DagExecutor;
 
@@ -29,9 +30,17 @@ impl DagExecutor {
             for id in &ready {
                 let stage = dag.stages.iter().find(|s| s.id == *id).unwrap();
                 let span = tracing::info_span!("pipeline.stage", stage_id = %id);
-                let result = (stage.run)(ctx.clone())
+                let stage_start = std::time::Instant::now();
+                let run_result = (stage.run)(ctx.clone())
                     .instrument(span)
-                    .await
+                    .await;
+                let elapsed = stage_start.elapsed().as_secs_f64();
+                let status = if run_result.is_ok() { "ok" } else { "error" };
+                metrics::counter!("arcanum_pipeline_stages_total",
+                    "stage_id" => id.to_string(), "status" => status).increment(1);
+                metrics::histogram!("arcanum_pipeline_stage_duration_seconds",
+                    "stage_id" => id.to_string()).record(elapsed);
+                let result = run_result
                     .map_err(|e| { tracing::error!(stage_id = %id, err = ?e, "pipeline stage failed"); e })?;
                 ctx.extend(result);
                 completed.insert(id);
