@@ -60,17 +60,18 @@ impl IngestionService {
 
     #[instrument(skip(self, req), fields(user_id, source = %req.source_uri, collection_id = %req.collection_id.0), err)]
     pub async fn ingest(&self, req: IngestRequest, user_id: &str) -> Result<OperationId> {
-        if !req.force && self.hash_tracker.ever_seen(&req.source_uri).await {
+        let start = std::time::Instant::now();
+        let source = req.source_uri.clone();
+        let result = if !req.force && self.hash_tracker.ever_seen(&req.source_uri).await {
             let op_id = OperationId::new();
             self.events.publish("ingestion:progress", serde_json::json!({
                 "operation_id": op_id.0,
                 "status": "skipped",
                 "reason": "already_seen"
             })).await;
-            return Ok(op_id);
-        }
-
-        let op_id = OperationId::new();
+            Ok(op_id)
+        } else {
+            let op_id = OperationId::new();
         let task = IngestionTask {
             operation_id: op_id.clone(),
             source_uri: req.source_uri.clone(),
@@ -92,6 +93,12 @@ impl IngestionService {
             "operation_id": op_id.0,
             "status": "queued"
         })).await;
-        Ok(op_id)
+            Ok(op_id)
+        };
+        let elapsed = start.elapsed().as_secs_f64();
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_ingest_docs_total", "source" => source.clone(), "status" => status).increment(1);
+        metrics::histogram!("arcanum_ingest_duration_seconds", "source" => source).record(elapsed);
+        result
     }
 }
