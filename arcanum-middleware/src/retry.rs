@@ -1,4 +1,5 @@
 use std::time::Duration;
+use tracing::instrument;
 
 /// Exponential backoff with full jitter.
 /// delay(attempt) = rand(0, min(max_delay_ms, base_delay_ms * 2^attempt))
@@ -14,8 +15,11 @@ impl RetryPolicy {
         Self { max_attempts, base_delay_ms, max_delay_ms }
     }
 
+    #[instrument(skip(self), fields(attempt, will_retry))]
     pub fn should_retry(&self, attempt: u32) -> bool {
-        attempt < self.max_attempts
+        let result = attempt < self.max_attempts;
+        tracing::debug!(attempt, will_retry = result, "retry policy check");
+        result
     }
 
     /// Returns a jittered delay for the given attempt number.

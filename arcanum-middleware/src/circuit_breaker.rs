@@ -44,10 +44,15 @@ impl CircuitBreaker {
     }
 
     pub fn allow_request(&self) -> bool {
-        !matches!(self.state(), CircuitState::Open)
+        let allowed = !matches!(self.state(), CircuitState::Open);
+        if !allowed {
+            tracing::warn!(circuit_state = ?self.state(), "circuit breaker blocking request");
+        }
+        allowed
     }
 
     pub fn record_failure(&self) {
+        tracing::debug!(circuit_state = ?self.state(), "circuit breaker: failure recorded");
         let f = self.failures.fetch_add(1, Ordering::SeqCst) + 1;
         if f >= self.failure_threshold && self.state.load(Ordering::SeqCst) == 0 {
             self.state.store(1, Ordering::SeqCst);
@@ -56,6 +61,7 @@ impl CircuitBreaker {
     }
 
     pub fn record_success(&self) {
+        tracing::debug!(circuit_state = ?self.state(), "circuit breaker: success recorded");
         self.failures.store(0, Ordering::SeqCst);
         self.state.store(0, Ordering::SeqCst);
         *self.opened_at.lock().unwrap() = None;
