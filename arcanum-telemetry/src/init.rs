@@ -8,13 +8,15 @@ use std::sync::OnceLock;
 static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
 pub struct TelemetryGuard {
+    metrics_enabled: bool,
     meter_provider: Option<opentelemetry_sdk::metrics::SdkMeterProvider>,
 }
 
 impl TelemetryGuard {
-    /// Returns whether metrics recording was enabled at initialization.
+    /// Returns whether the Prometheus recorder was enabled at initialization.
+    /// Reflects `ARCANUM_METRICS_ENABLED` from the config passed to `init()`.
     pub fn metrics_enabled(&self) -> bool {
-        true
+        self.metrics_enabled
     }
 
     /// Returns whether OTLP metrics push was enabled at initialization.
@@ -148,7 +150,7 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         None
     };
 
-    TelemetryGuard { meter_provider }
+    TelemetryGuard { metrics_enabled: config.metrics_enabled, meter_provider }
 }
 
 fn build_tracer_provider(
@@ -245,9 +247,9 @@ mod tests {
     #[serial]
     fn init_local_mode_guard_returns_cleanly() {
         let guard = init(silent_local_config());
-        // TelemetryGuard no longer stores a prometheus handle;
-        // metrics are served via prometheus::default_registry().
-        assert!(guard.metrics_enabled(), "guard should be valid");
+        // silent_local_config has metrics_enabled=false
+        assert!(!guard.metrics_enabled(),
+            "metrics_enabled=false config → guard.metrics_enabled() should be false");
     }
 
     #[test]
@@ -267,9 +269,8 @@ mod tests {
     #[serial]
     fn init_metrics_disabled_guard_returns_cleanly() {
         let guard = init(silent_local_config());
-        // TelemetryGuard no longer stores a prometheus handle;
-        // metrics are served via prometheus::default_registry().
-        assert!(guard.metrics_enabled(), "guard should be valid");
+        assert!(!guard.metrics_enabled(),
+            "metrics_enabled=false → guard.metrics_enabled() should be false");
     }
 
     #[test]
