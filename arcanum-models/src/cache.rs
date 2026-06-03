@@ -4,6 +4,7 @@ use redis::AsyncCommands;
 use sha2::{Sha256, Digest};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::instrument;
 
 pub struct EmbeddingCache {
     client: Arc<Mutex<redis::aio::MultiplexedConnection>>,
@@ -34,21 +35,25 @@ impl EmbeddingCache {
         format!("embed:{}:{}:{}", Self::text_hash(text), model_id, dimension)
     }
 
+    #[instrument(skip(self), fields(cache_hit), err)]
     pub async fn get(&self, text: &str) -> Result<Option<Vector>> {
         let key = Self::cache_key(text, &self.model_id, self.dimension);
         let mut conn = self.client.lock().await;
         let val: Option<String> = conn.get(&key).await
             .map_err(|e| ArcanumError::Config(format!("Redis get error: {}", e)))?;
-        match val {
+        let result = match val {
             None => Ok(None),
             Some(s) => {
                 let floats: Vec<f32> = serde_json::from_str(&s)
                     .map_err(|e| ArcanumError::Config(format!("cache deserialize error: {}", e)))?;
                 Ok(Some(Vector(floats)))
             }
-        }
+        };
+        tracing::Span::current().record("cache_hit", result.as_ref().map_or(false, |v| v.is_some()));
+        result
     }
 
+    #[instrument(skip(self, vector), err)]
     pub async fn set(&self, text: &str, vector: Vector) -> Result<()> {
         let key = Self::cache_key(text, &self.model_id, self.dimension);
         let serialized = serde_json::to_string(&vector.0)

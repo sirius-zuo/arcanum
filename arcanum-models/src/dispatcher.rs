@@ -1,6 +1,7 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
+use tracing::instrument;
 
 pub struct EnrichmentDispatcher {
     default: Arc<dyn TextEnricher>,
@@ -31,6 +32,7 @@ fn intent_key(intent: &EnrichIntent) -> String {
 
 #[async_trait]
 impl TextEnricher for EnrichmentDispatcher {
+    #[instrument(skip(self, request), fields(intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let key = intent_key(&request.intent);
         let provider = self.overrides.get(&key).unwrap_or(&self.default);
