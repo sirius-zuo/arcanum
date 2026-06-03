@@ -2,6 +2,7 @@ use arcanum_core::{traits::TreeStore, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use sqlx::PgPool;
 use uuid::Uuid;
+use tracing::instrument;
 
 /// PostgreSQL-backed TreeStore for production deployments.
 pub struct PgTreeStore {
@@ -45,6 +46,7 @@ impl PgTreeStore {
 
 #[async_trait]
 impl TreeStore for PgTreeStore {
+    #[instrument(skip(self, node), fields(store = "postgres_tree", collection, node_id = %node.id.0), err)]
     async fn insert_node(&self, collection: &str, node: TreeNode) -> Result<()> {
         let id = node.id.0;
         let parent_id = node.parent.as_ref().map(|p| p.0);
@@ -84,6 +86,7 @@ impl TreeStore for PgTreeStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(store = "postgres_tree", collection, level), err)]
     async fn get_level(&self, collection: &str, level: u32) -> Result<Vec<TreeNode>> {
         let rows = sqlx::query_as::<_, PgTreeNodeRow>(
             "SELECT id, level, text, vector, centroid, parent_id, children FROM arcanum_tree_nodes WHERE collection = $1 AND level = $2"
@@ -97,6 +100,7 @@ impl TreeStore for PgTreeStore {
         rows.into_iter().map(row_to_node).collect()
     }
 
+    #[instrument(skip(self, node_id), fields(store = "postgres_tree", node_id = %node_id.0), err)]
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>> {
         let rows = sqlx::query_as::<_, PgTreeNodeRow>(
             "SELECT id, level, text, vector, centroid, parent_id, children FROM arcanum_tree_nodes WHERE parent_id = $1"
@@ -111,6 +115,7 @@ impl TreeStore for PgTreeStore {
 }
 
 impl PgTreeStore {
+    #[instrument(skip(self), fields(store = "postgres_tree", collection), err)]
     pub async fn delete_collection(&self, collection: &str) -> Result<()> {
         sqlx::query("DELETE FROM arcanum_tree_nodes WHERE collection = $1")
             .bind(collection)
