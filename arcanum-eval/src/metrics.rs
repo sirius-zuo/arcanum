@@ -56,7 +56,7 @@ pub fn compute_recall_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize
 }
 
     #[instrument(skip(question, contexts, enricher), fields(question_len = question.len(), context_count = contexts.len()), err)]
-    async fn compute_context_precision(
+    pub async fn compute_context_precision(
     question: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
