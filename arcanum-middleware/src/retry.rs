@@ -18,6 +18,7 @@ impl RetryPolicy {
     #[instrument(skip(self), fields(attempt, will_retry))]
     pub fn should_retry(&self, attempt: u32) -> bool {
         let result = attempt < self.max_attempts;
+        tracing::Span::current().record("will_retry", result);
         tracing::debug!(attempt, will_retry = result, "retry policy check");
         result
     }
