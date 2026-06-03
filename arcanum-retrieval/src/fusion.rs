@@ -1,9 +1,11 @@
 use arcanum_core::types::*;
 use std::collections::HashMap;
+use tracing::instrument;
 
 pub struct RrfFusion;
 
 impl RrfFusion {
+    #[instrument(fields(strategy_count = strategy_results.len(), result_count))]
     pub fn fuse(
         strategy_results: Vec<(RetrievalStrategy, Vec<RetrievedChunk>)>,
         k: f32,
@@ -22,7 +24,9 @@ impl RrfFusion {
         }
         let mut result: Vec<(f32, RetrievedChunk)> = scores.into_values().collect();
         result.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        result.into_iter().map(|(score, mut c)| { c.score = score; c }).collect()
+        let result: Vec<RetrievedChunk> = result.into_iter().map(|(score, mut c)| { c.score = score; c }).collect();
+        tracing::Span::current().record("result_count", result.len());
+        result
     }
 }
 
@@ -39,6 +43,7 @@ impl RrfFusion {
 pub struct WeightedFusion;
 
 impl WeightedFusion {
+    #[instrument(fields(strategy_count = strategy_results.len(), result_count))]
     pub fn fuse(
         strategy_results: Vec<(RetrievalStrategy, Vec<RetrievedChunk>)>,
         weights: &[(String, f32)],
@@ -68,7 +73,9 @@ impl WeightedFusion {
 
         let mut result: Vec<(f32, RetrievedChunk)> = best.into_values().collect();
         result.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
-        result.into_iter().map(|(score, mut c)| { c.score = score; c }).collect()
+        let result: Vec<RetrievedChunk> = result.into_iter().map(|(score, mut c)| { c.score = score; c }).collect();
+        tracing::Span::current().record("result_count", result.len());
+        result
     }
 }
 
@@ -81,11 +88,14 @@ impl WeightedFusion {
 pub struct LearnedFusion;
 
 impl LearnedFusion {
+    #[instrument(fields(strategy_count = strategy_results.len(), result_count))]
     pub fn fuse(
         strategy_results: Vec<(RetrievalStrategy, Vec<RetrievedChunk>)>,
         learned_weights: &[(String, f32)],
     ) -> Vec<RetrievedChunk> {
-        WeightedFusion::fuse(strategy_results, learned_weights)
+        let result = WeightedFusion::fuse(strategy_results, learned_weights);
+        tracing::Span::current().record("result_count", result.len());
+        result
     }
 }
 

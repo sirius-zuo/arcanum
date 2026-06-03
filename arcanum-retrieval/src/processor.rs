@@ -1,4 +1,5 @@
 use arcanum_core::types::*;
+use tracing::instrument;
 
 // ---------------------------------------------------------------------------
 // Deduplicator
@@ -16,6 +17,7 @@ impl Deduplicator {
     ///
     /// Chunks are expected to be in descending score order (best first); the
     /// first chunk encountered for a near-duplicate group is retained.
+    #[instrument(fields(input_count = chunks.len(), output_count, threshold))]
     pub fn deduplicate(chunks: Vec<RetrievedChunk>, threshold: f32) -> Vec<RetrievedChunk> {
         let mut kept: Vec<RetrievedChunk> = Vec::with_capacity(chunks.len());
 
@@ -39,7 +41,9 @@ impl Deduplicator {
             }
             kept.push(candidate);
         }
-        kept
+        let result = kept;
+        tracing::Span::current().record("output_count", result.len());
+        result
     }
 }
 
@@ -74,8 +78,9 @@ pub struct Citation {
 pub struct CitationGenerator;
 
 impl CitationGenerator {
+    #[instrument(fields(chunk_count = chunks.len(), citation_count))]
     pub fn generate(chunks: &[RetrievedChunk]) -> Vec<Citation> {
-        chunks.iter().map(|c| {
+        let result: Vec<Citation> = chunks.iter().map(|c| {
             let meta = &c.indexed_chunk.chunk.metadata.0;
             let source_uri = meta.get("source_uri")
                 .and_then(|v| v.as_str())
@@ -91,7 +96,9 @@ impl CitationGenerator {
                 chunk_index: c.indexed_chunk.chunk.position.index,
                 collection_id: c.indexed_chunk.chunk.collection_id.0.clone(),
             }
-        }).collect()
+        }).collect();
+        tracing::Span::current().record("citation_count", result.len());
+        result
     }
 }
 
