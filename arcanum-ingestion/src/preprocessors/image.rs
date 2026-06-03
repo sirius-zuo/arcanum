@@ -2,6 +2,7 @@ use arcanum_core::{traits::{Preprocessor, TextEnricher}, types::*, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 use std::sync::Arc;
+use tracing::instrument;
 
 pub struct ImageCaptioner {
     enricher: Arc<dyn TextEnricher>,
@@ -13,6 +14,7 @@ impl ImageCaptioner {
 
 #[async_trait]
 impl Preprocessor for ImageCaptioner {
+    #[instrument(skip(self, doc), fields(preprocessor = "image", content_len = doc.content.len()), err)]
     async fn process(&self, mut doc: RawDocument) -> Result<RawDocument> {
         if doc.mime_type != "text/html" && doc.mime_type != "application/xhtml+xml" {
             return Ok(doc);

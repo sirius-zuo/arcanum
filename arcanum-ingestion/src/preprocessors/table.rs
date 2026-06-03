@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Preprocessor, types::*, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
+use tracing::instrument;
 
 pub struct TableExtractor;
 
@@ -10,6 +11,7 @@ impl TableExtractor {
 
 #[async_trait]
 impl Preprocessor for TableExtractor {
+    #[instrument(skip(self, doc), fields(preprocessor = "table", content_len = doc.content.len()), err)]
     async fn process(&self, mut doc: RawDocument) -> Result<RawDocument> {
         if doc.mime_type != "text/html" && doc.mime_type != "application/xhtml+xml" {
             return Ok(doc);

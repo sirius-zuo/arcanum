@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::io::{Cursor, Read};
 use zip::ZipArchive;
+use tracing::instrument;
 
 pub struct EpubParser;
 
@@ -82,6 +83,7 @@ impl EpubParser {
 
 #[async_trait]
 impl Preprocessor for EpubParser {
+    #[instrument(skip(self, doc), fields(preprocessor = "epub", content_len = doc.content.len()), err)]
     async fn process(&self, mut doc: RawDocument) -> Result<RawDocument> {
         if doc.mime_type != "application/epub+zip" { return Ok(doc); }
 
