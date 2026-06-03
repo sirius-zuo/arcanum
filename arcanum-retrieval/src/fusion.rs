@@ -88,14 +88,11 @@ impl WeightedFusion {
 pub struct LearnedFusion;
 
 impl LearnedFusion {
-    #[instrument(fields(strategy_count = strategy_results.len(), result_count))]
     pub fn fuse(
         strategy_results: Vec<(RetrievalStrategy, Vec<RetrievedChunk>)>,
         learned_weights: &[(String, f32)],
     ) -> Vec<RetrievedChunk> {
-        let result = WeightedFusion::fuse(strategy_results, learned_weights);
-        tracing::Span::current().record("result_count", result.len());
-        result
+        WeightedFusion::fuse(strategy_results, learned_weights)
     }
 }
 
