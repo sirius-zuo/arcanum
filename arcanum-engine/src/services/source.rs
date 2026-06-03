@@ -2,6 +2,7 @@ use arcanum_core::{Result, ArcanumError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
+use tracing::instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionSource {
@@ -21,6 +22,7 @@ impl IngestionSourceService {
         Self { sources: Arc::new(RwLock::new(vec![])) }
     }
 
+    #[instrument(skip(self, source), fields(source_id = %source.id), err)]
     pub async fn create(&self, source: IngestionSource) -> Result<()> {
         let mut sources = self.sources.write().await;
         if sources.iter().any(|s| s.id == source.id) {
@@ -30,10 +32,12 @@ impl IngestionSourceService {
         Ok(())
     }
 
+    #[instrument(skip(self))]
     pub async fn list(&self) -> Vec<IngestionSource> {
         self.sources.read().await.clone()
     }
 
+    #[instrument(skip(self), fields(source_id = id), err)]
     pub async fn delete(&self, id: &str) -> Result<()> {
         let mut sources = self.sources.write().await;
         let before = sources.len();

@@ -1,5 +1,6 @@
 use arcanum_core::{Result, ArcanumError};
 use std::sync::Arc;
+use tracing::instrument;
 use crate::audit::{AuditLogger, AuditEntry};
 use crate::auth::AdminRole;
 
@@ -15,6 +16,7 @@ impl AdminService {
 
     /// Check that `caller_role` is at least as privileged as `required`.
     /// Role hierarchy: Admin > Operator > Tester.
+    #[instrument(skip(caller_role, required), fields(caller = ?caller_role, required = ?required), err)]
     pub fn require_role(caller_role: &AdminRole, required: &AdminRole) -> Result<()> {
         let rank = |r: &AdminRole| match r {
             AdminRole::Admin    => 2,
@@ -30,6 +32,7 @@ impl AdminService {
         }
     }
 
+    #[instrument(skip(self), fields(admin_user_id), err)]
     pub async fn rotate_keys(&self, admin_user_id: &str) -> Result<()> {
         self.audit.log(AuditEntry {
             operation: "rotate_keys".into(),

@@ -1,5 +1,6 @@
 use arcanum_core::Result;
 use arcanum_eval::{EvalReport, BenchmarkDataset};
+use tracing::instrument;
 
 #[derive(Debug)]
 pub struct EvalService {}
@@ -9,10 +10,12 @@ impl EvalService {
         Self {}
     }
 
+    #[instrument(skip(self), err)]
     pub async fn list_datasets(&self) -> Result<Vec<BenchmarkDataset>> {
         Ok(vec![])
     }
 
+    #[instrument(skip(self), fields(dataset_id = _dataset_id), err)]
     pub async fn get_report(&self, _dataset_id: &str) -> Result<Option<EvalReport>> {
         Ok(None)
     }

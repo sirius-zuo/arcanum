@@ -2,6 +2,7 @@ use arcanum_core::{types::*, Result};
 use arcanum_ingestion::DocumentHashTracker;
 use arcanum_middleware::BoundedQueue;
 use std::sync::Arc;
+use tracing::instrument;
 use crate::audit::{AuditLogger, AuditEntry};
 use crate::event_bus::EventBus;
 
@@ -57,6 +58,7 @@ impl IngestionService {
         )
     }
 
+    #[instrument(skip(self, req), fields(user_id, source_uri = %req.source_uri, collection_id = ?req.collection_id), err)]
     pub async fn ingest(&self, req: IngestRequest, user_id: &str) -> Result<OperationId> {
         if !req.force && self.hash_tracker.ever_seen(&req.source_uri).await {
             let op_id = OperationId::new();
