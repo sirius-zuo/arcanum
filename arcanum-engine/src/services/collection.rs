@@ -24,7 +24,7 @@ impl CollectionService {
         Self { collections: Arc::new(RwLock::new(HashMap::new())), audit, auth }
     }
 
-    #[instrument(skip(self, claims), fields(collection_id = ?id), err)]
+    #[instrument(skip(self, claims), fields(collection_id = %id.0), err)]
     pub async fn create(&self, id: CollectionId, description: String, claims: &ApiKeyClaims) -> Result<()> {
         // Only admins may create collections.
         if !claims.is_admin {

@@ -36,6 +36,7 @@ impl RateLimiter {
         }
         let allowed = entry.count < self.max_per_window;
         if allowed { entry.count += 1; }
+        tracing::Span::current().record("allowed", allowed);
         tracing::debug!(key, allowed, "rate limit check");
         allowed
     }

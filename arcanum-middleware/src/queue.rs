@@ -15,11 +15,17 @@ impl<T: Send + 'static> BoundedQueue<T> {
 
     #[instrument(skip(self, item), err)]
     pub async fn push(&self, item: T) -> Result<()> {
-        self.tx.try_send(item).map_err(|_| ArcanumError::QueueFull)
+        let result = self.tx.try_send(item).map_err(|_| ArcanumError::QueueFull);
+        let depth = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+        tracing::debug!(queue_depth = depth, success = result.is_ok(), "queue push");
+        result
     }
 
     #[instrument(skip(self))]
     pub async fn pop(&self) -> Option<T> {
-        self.rx.lock().await.recv().await
+        let item = self.rx.lock().await.recv().await;
+        let depth = self.tx.max_capacity().saturating_sub(self.tx.capacity());
+        tracing::debug!(queue_depth = depth, item_received = item.is_some(), "queue pop");
+        item
     }
 }

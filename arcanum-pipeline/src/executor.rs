@@ -1,7 +1,7 @@
 use crate::dag::{PipelineDAG, StageContext, StageId};
 use arcanum_core::{Result, ArcanumError};
 use std::collections::HashSet;
-use tracing::instrument;
+use tracing::{instrument, Instrument};
 
 pub struct DagExecutor;
 
@@ -29,8 +29,9 @@ impl DagExecutor {
             for id in &ready {
                 let stage = dag.stages.iter().find(|s| s.id == *id).unwrap();
                 let span = tracing::info_span!("pipeline.stage", stage_id = %id);
-                let _enter = span.enter();
-                let result = (stage.run)(ctx.clone()).await
+                let result = (stage.run)(ctx.clone())
+                    .instrument(span)
+                    .await
                     .map_err(|e| { tracing::error!(stage_id = %id, err = ?e, "pipeline stage failed"); e })?;
                 ctx.extend(result);
                 completed.insert(id);
