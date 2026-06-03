@@ -1,16 +1,20 @@
 use crate::config::{LogFormat, OtlpProtocol, TelemetryConfig};
-use opentelemetry_sdk::runtime::Tokio;
 use opentelemetry_sdk::trace::TracerProvider;
 use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
+use std::sync::OnceLock;
+
+// Guards the panic-hook installation so repeated init() calls (e.g. in tests)
+// never chain hooks.
+static PANIC_HOOK_INSTALLED: OnceLock<()> = OnceLock::new();
 
 pub struct TelemetryGuard {
-    pub(crate) tracer_provider: Option<TracerProvider>,
     pub(crate) prometheus_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }
 
 impl TelemetryGuard {
     /// Returns the Prometheus handle used to render `/metrics` output.
-    /// `None` when `ARCANUM_METRICS_ENABLED=false`.
+    /// `None` when `ARCANUM_METRICS_ENABLED=false` or when the recorder
+    /// could not be installed.
     pub fn prometheus_handle(&self) -> Option<&metrics_exporter_prometheus::PrometheusHandle> {
         self.prometheus_handle.as_ref()
     }
@@ -18,27 +22,50 @@ impl TelemetryGuard {
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
-        if let Some(provider) = self.tracer_provider.take() {
-            if let Err(e) = provider.shutdown() {
-                eprintln!("arcanum-telemetry: failed to flush traces on shutdown: {e:?}");
-            }
-        }
+        // Shut down through the global so the termination signal propagates
+        // via the same Arc that the OTel layer's Tracer holds. This ensures
+        // correct ordering: the layer sees the provider go into shutdown state
+        // before the underlying data is freed.
+        opentelemetry::global::shutdown_tracer_provider();
     }
 }
 
 pub fn init(config: TelemetryConfig) -> TelemetryGuard {
     use tracing_subscriber::layer::SubscriberExt;
 
-    // Build OTLP tracer provider only when an endpoint is configured.
-    // `build_tracer_provider` is called later in Task 3; for now it's todo!().
-    let tracer_provider = config
+    // ── C9: warn about config fields that are parsed but not yet wired ────────
+    if config.metrics_otlp {
+        eprintln!(
+            "arcanum-telemetry: ARCANUM_METRICS_OTLP=true is set but OTLP \
+             metrics push is not implemented until Stage 6. Metrics are only \
+             available via the /metrics scrape endpoint."
+        );
+    }
+    if config.metrics_token.is_some() {
+        eprintln!(
+            "arcanum-telemetry: ARCANUM_METRICS_TOKEN is set but bearer-token \
+             enforcement is not implemented until Stage 6. The /metrics \
+             endpoint is currently unprotected."
+        );
+    }
+
+    // ── C3: build OTel provider before subscriber install (layer must be
+    // attached in the same try_init call), degrading gracefully on failure ─────
+    let tracer_provider: Option<TracerProvider> = config
         .otlp_endpoint
         .as_deref()
-        .map(|_| build_tracer_provider(&config));
+        .and_then(|_| match build_tracer_provider(&config) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!(
+                    "arcanum-telemetry: OTLP exporter failed to build, \
+                     running without distributed tracing: {e:?}"
+                );
+                None
+            }
+        });
 
-    // ── Subscriber layers ────────────────────────────────────────────────
-    // Both fmt variants are wrapped in Option so they can be added via
-    // `.with()` unconditionally — Option<L> implements Layer as a no-op.
+    // ── Subscriber layers ─────────────────────────────────────────────────────
     let json_fmt = if matches!(config.log_format, LogFormat::Json) {
         Some(tracing_subscriber::fmt::layer().json())
     } else {
@@ -56,62 +83,88 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
             .with_error_events_to_status(true)
     });
 
-    // try_init (not init) so multiple test invocations don't panic.
-    let _ = tracing_subscriber::registry()
+    // ── C2: handle try_init() failure — log but do not crash ─────────────────
+    // try_init returns Err when a global subscriber is already installed.
+    // eprintln! is used here (not tracing!) because tracing is not yet set up.
+    if tracing_subscriber::registry()
         .with(EnvFilter::new(&config.log_filter))
         .with(json_fmt)
         .with(plain_fmt)
         .with(otel_layer)
-        .try_init();
+        .try_init()
+        .is_err()
+    {
+        eprintln!(
+            "arcanum-telemetry: a tracing subscriber is already installed; \
+             OTLP, log format, and filter settings were not applied."
+        );
+    }
 
-    // ── Panic hook ───────────────────────────────────────────────────────
-    let prev = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        tracing::error!(panic.info = %info, "process panicked");
-        prev(info);
-    }));
+    // ── C8: register provider via global so Drop's shutdown_tracer_provider()
+    // propagates through the same Arc the OTel layer's Tracer holds ────────────
+    if let Some(ref p) = tracer_provider {
+        opentelemetry::global::set_tracer_provider(p.clone());
+    }
 
-    // ── Prometheus metrics recorder ──────────────────────────────────────
-    // install_recorder() is idempotent-ish via .ok() — silently no-ops if
-    // already installed (avoids panics when tests call init() multiple times).
+    // ── C1: install panic hook exactly once via OnceLock ─────────────────────
+    PANIC_HOOK_INSTALLED.get_or_init(|| {
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            tracing::error!(panic.info = %info, "process panicked");
+            prev(info);
+        }));
+    });
+
+    // ── C7: log a warning when the Prometheus recorder cannot be installed ─────
     let prometheus_handle = if config.metrics_enabled {
-        metrics_exporter_prometheus::PrometheusBuilder::new()
-            .install_recorder()
-            .ok()
+        match metrics_exporter_prometheus::PrometheusBuilder::new().install_recorder() {
+            Ok(handle) => Some(handle),
+            Err(e) => {
+                tracing::warn!(
+                    err = ?e,
+                    "failed to install Prometheus recorder — /metrics will \
+                     not render data; a different recorder may already be installed"
+                );
+                None
+            }
+        }
     } else {
         None
     };
 
-    TelemetryGuard { tracer_provider, prometheus_handle }
+    TelemetryGuard { prometheus_handle }
 }
 
-fn build_tracer_provider(config: &TelemetryConfig) -> TracerProvider {
-    use opentelemetry_sdk::resource::Resource;
+fn build_tracer_provider(
+    config: &TelemetryConfig,
+) -> Result<TracerProvider, Box<dyn std::error::Error + Send + Sync>> {
     use opentelemetry::KeyValue;
+    use opentelemetry_sdk::{resource::Resource, runtime::Tokio};
 
-    let resource = Resource::new(vec![KeyValue::new(
+    // Resource::default() reads OTEL_RESOURCE_ATTRIBUTES and the SDK's
+    // built-in detectors (telemetry.sdk.name, telemetry.sdk.language, etc.).
+    // Merging our service.name on top ensures it takes precedence over any
+    // value that may already exist in the default resource.
+    let resource = Resource::default().merge(&Resource::new(vec![KeyValue::new(
         "service.name",
         config.service_name.clone(),
-    )]);
+    )]));
 
-    // The OTel SDK also reads OTEL_EXPORTER_OTLP_ENDPOINT from env
-    // automatically, so we don't pass the endpoint explicitly — the env
-    // var set by the caller is the source of truth.
     let exporter = match config.otlp_protocol {
         OtlpProtocol::Grpc => opentelemetry_otlp::SpanExporter::builder()
             .with_tonic()
             .build()
-            .expect("arcanum-telemetry: failed to build OTLP gRPC span exporter"),
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
         OtlpProtocol::HttpProtobuf => opentelemetry_otlp::SpanExporter::builder()
             .with_http()
             .build()
-            .expect("arcanum-telemetry: failed to build OTLP HTTP span exporter"),
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?,
     };
 
-    TracerProvider::builder()
+    Ok(TracerProvider::builder()
         .with_resource(resource)
         .with_batch_exporter(exporter, Tokio)
-        .build()
+        .build())
 }
 
 #[cfg(test)]
@@ -135,10 +188,23 @@ mod tests {
 
     #[test]
     #[serial]
-    fn init_local_mode_no_tracer_provider() {
+    fn init_local_mode_guard_has_no_prometheus_handle() {
         let guard = init(silent_local_config());
-        assert!(guard.tracer_provider.is_none(),
-            "local mode should not set up a tracer provider");
+        assert!(guard.prometheus_handle().is_none(),
+            "metrics_enabled=false → no prometheus handle");
+    }
+
+    #[test]
+    #[serial]
+    fn init_called_twice_does_not_panic() {
+        // Both the panic hook (OnceLock) and try_init() (silently ignores
+        // second registration) must be idempotent. The second guard should
+        // return cleanly with a None prometheus handle (metrics_enabled=false).
+        let _first  = init(silent_local_config());
+        let second = init(silent_local_config());
+        drop(_first);
+        drop(second);
+        // No panic = success
     }
 
     #[test]
@@ -157,6 +223,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn init_with_fake_otlp_endpoint_does_not_panic() {
         // Sets a non-reachable endpoint. No spans are exported (batch exporter
         // will silently drop them), but provider setup must not panic.
@@ -172,8 +239,6 @@ mod tests {
             metrics_otlp:    false,
             metrics_token:   None,
         });
-        assert!(guard.tracer_provider.is_some(),
-            "OTLP endpoint set → tracer_provider must be Some");
-        drop(guard); // shutdown must not panic
+        drop(guard); // returning TelemetryGuard without panic = success
     }
 }
