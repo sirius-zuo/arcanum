@@ -25,6 +25,7 @@ pub fn make_load_stage(
             let loaders = loaders.clone();
             let ht = hash_tracker.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "load", "executing load stage");
                 let source = state.lock().await.source.clone();
                 let mut doc = loaders.load(&source).await?;
                 doc.mime_type = MimeDetector::detect(&doc.content, Some(&doc.mime_type));
@@ -50,6 +51,7 @@ pub fn make_preprocess_stage(
             let state = state.clone();
             let pp = preprocessors.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "preprocess", "executing preprocess stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let doc = state.lock().await.doc.clone().ok_or_else(|| {
                     ArcanumError::Pipeline { stage: "preprocess".into(), message: "no doc".into() }
@@ -73,6 +75,7 @@ pub fn make_chunk_stage(
             let state = state.clone();
             let chunker = chunker.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "chunk", "executing chunk stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let (doc, collection_id) = {
                     let g = state.lock().await;
@@ -111,6 +114,7 @@ pub fn make_context_enrich_stage(
             let state = state.clone();
             let enricher = enricher.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "context_enrich", "executing context_enrich stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let ce = ContextEnricher::new(enricher);
                 let (chunks, doc_context) = {
@@ -146,6 +150,7 @@ pub fn make_entity_extract_stage(
             let enricher = enricher.clone();
             let gs = graph_store.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "entity_extract", "executing entity_extract stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let extractor = EntityExtractor::new(enricher);
                 let chunks = state.lock().await.chunks.clone();
@@ -318,6 +323,7 @@ pub fn make_raptor_build_stage(
             let state = state.clone();
             let tree_store = tree_store.clone();
             Box::pin(async move {
+                tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let (leaves, collection_id) = {
                     let g = state.lock().await;
