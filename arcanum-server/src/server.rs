@@ -6,8 +6,10 @@ use arcanum_engine::ArcanumEngine;
 use crate::routes::{api, health, admin, graph};
 use crate::ws::ws_handler;
 use crate::portal::serve_portal;
+use crate::metrics;
 
 pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: ArcanumConfig) -> Router {
+    metrics::init_metrics();
     let origins = &config.server.cors_allowed_origins;
     let cors = {
         let base = CorsLayer::new()

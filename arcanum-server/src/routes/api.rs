@@ -3,6 +3,8 @@ use serde::Deserialize;
 use std::sync::Arc;
 use arcanum_core::types::{Query, CollectionId};
 use arcanum_engine::{ArcanumEngine, auth::ApiKeyClaims};
+use metrics::{counter, histogram};
+
 
 /// Extract and validate a Bearer token. Returns 401 if absent or invalid.
 fn validate_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
@@ -74,8 +76,8 @@ pub async fn search(
     };
     let elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "search", "status" => status).increment(1);
-    metrics::histogram!("arcanum_request_duration_seconds", "endpoint" => "search").record(elapsed);
+    counter!("arcanum_requests_total", "endpoint" => "search", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "search").record(elapsed);
     response
 }
 
@@ -116,8 +118,8 @@ pub async fn ingest(
     };
     let elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::ACCEPTED { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "ingest", "status" => status).increment(1);
-    metrics::histogram!("arcanum_request_duration_seconds", "endpoint" => "ingest").record(elapsed);
+    counter!("arcanum_requests_total", "endpoint" => "ingest", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "ingest").record(elapsed);
     response
 }
 
@@ -183,8 +185,8 @@ pub async fn upload(
     };
     let elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::ACCEPTED { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "upload", "status" => status).increment(1);
-    metrics::histogram!("arcanum_request_duration_seconds", "endpoint" => "upload").record(elapsed);
+    counter!("arcanum_requests_total", "endpoint" => "upload", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "upload").record(elapsed);
     response
 }
 

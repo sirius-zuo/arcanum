@@ -32,7 +32,7 @@ impl std::fmt::Debug for IngestionService {
 impl IngestionService {
     pub fn new(events: Arc<EventBus>, audit: Arc<AuditLogger>) -> Self {
         Self::new_from_parts(
-            Arc::new(BoundedQueue::new(10_000)),
+            Arc::new(BoundedQueue::new("ingestion", 10_000)),
             Arc::new(DocumentHashTracker::new()),
             events,
             audit,
@@ -51,7 +51,7 @@ impl IngestionService {
 
     pub fn new_with_tracker(hash_tracker: Arc<DocumentHashTracker>) -> Self {
         Self::new_from_parts(
-            Arc::new(BoundedQueue::new(10_000)),
+            Arc::new(BoundedQueue::new("ingestion", 10_000)),
             hash_tracker,
             Arc::new(EventBus::new()),
             Arc::new(AuditLogger::new()),

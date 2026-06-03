@@ -193,11 +193,11 @@ impl ArcanumEngineBuilder {
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
 
-        let embedding_cb    = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
-        let vector_store_cb = Arc::new(CircuitBreaker::new(5, Duration::from_secs(30)));
+        let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
+        let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
 
         // Shared queue and hash tracker — passed to both IngestionService (push) and workers (pop).
-        let queue        = Arc::new(BoundedQueue::new(self.config.ingestion.queue_capacity));
+        let queue        = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
         let hash_tracker = Arc::new(DocumentHashTracker::new());
 
         let ingestion = Arc::new(IngestionService::new_from_parts(

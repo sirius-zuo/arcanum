@@ -3,6 +3,8 @@ use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
 use arcanum_engine::auth::{AdminClaims, AdminRole};
 use arcanum_engine::services::admin::AdminService;
+use metrics::counter;
+use crate::metrics as metrics_mod;
 
 /// Validate RS256 admin JWT and return AdminClaims.
 fn validate_admin_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
@@ -56,7 +58,7 @@ pub async fn list_collections(
     };
     let _elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "admin/list_collections", "status" => status).increment(1);
+    counter!("arcanum_requests_total", "endpoint" => "admin/list_collections", "status" => status).increment(1);
     response
 }
 
@@ -78,7 +80,7 @@ pub async fn get_health(
     };
     let _elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "admin/get_health", "status" => status).increment(1);
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_health", "status" => status).increment(1);
     response
 }
 
@@ -96,11 +98,12 @@ pub async fn get_metrics(
             return (StatusCode::FORBIDDEN,
                 Json(serde_json::json!({ "error": e.to_string() }))).into_response();
         }
-        (StatusCode::OK, Json(serde_json::json!({ "uptime_secs": 0 }))).into_response()
+        let text = metrics_mod::get_metrics_text();
+        (StatusCode::OK, text).into_response()
     };
     let _elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "admin/get_metrics", "status" => status).increment(1);
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_metrics", "status" => status).increment(1);
     response
 }
 
@@ -124,7 +127,7 @@ pub async fn list_ingestion_sources(
     };
     let _elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "admin/list_ingestion_sources", "status" => status).increment(1);
+    counter!("arcanum_requests_total", "endpoint" => "admin/list_ingestion_sources", "status" => status).increment(1);
     response
 }
 
@@ -148,7 +151,7 @@ pub async fn get_audit_logs(
     };
     let _elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "admin/get_audit_logs", "status" => status).increment(1);
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_audit_logs", "status" => status).increment(1);
     response
 }
 
@@ -182,7 +185,7 @@ pub async fn rotate_keys(
     };
     let _elapsed = start.elapsed().as_secs_f64();
     let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    metrics::counter!("arcanum_requests_total", "endpoint" => "admin/rotate_keys", "status" => status).increment(1);
+    counter!("arcanum_requests_total", "endpoint" => "admin/rotate_keys", "status" => status).increment(1);
     response
 }
 

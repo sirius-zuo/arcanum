@@ -7,11 +7,12 @@ edition = "2021"
 tracing               = "0.1"
 tracing-subscriber    = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.28"
-opentelemetry         = "0.27"
-opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp    = { version = "0.27", features = ["grpc-tonic", "http-proto"] }
-metrics               = "0.23"
-metrics-exporter-prometheus = "0.15"
+opentelemetry         = { version = "0.27", features = ["metrics"] }
+opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio", "metrics"] }
+opentelemetry-otlp    = { version = "0.27", features = ["grpc-tonic", "http-proto", "metrics"] }
+metrics               = { workspace = true }
+metrics-prometheus     = { workspace = true }
+prometheus              = { workspace = true }
 tokio                 = { version = "1", features = ["rt"] }
 
 [dev-dependencies]

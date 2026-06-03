@@ -28,4 +28,6 @@ anyhow       = "1"
 uuid         = { version = "1", features = ["v4", "serde"] }
 chrono       = { version = "0.4", features = ["serde"] }
 tracing      = "0.1"
-metrics      = "0.23"
+metrics             = "0.24"
+metrics-prometheus  = "0.9"
+prometheus           = "0.14"
