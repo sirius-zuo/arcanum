@@ -2,6 +2,7 @@ use arcanum_core::{traits::*, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
+use metrics;
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -68,6 +69,7 @@ struct OaiMessageContent {
 impl Embedder for OpenAiProvider {
     #[instrument(skip(self, texts), fields(model = %self.embed_model, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+        let start = std::time::Instant::now();
         let mut results = Vec::new();
         for text in &texts {
             let resp: OaiEmbedResponse = self.client
@@ -81,6 +83,8 @@ impl Embedder for OpenAiProvider {
             }
         }
         tracing::Span::current().record("dimension", self.dimension());
+        metrics::counter!("arcanum_model_calls_total", "provider" => "openai", "operation" => "embed", "status" => "ok").increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "openai", "operation" => "embed").record(start.elapsed().as_secs_f64());
         Ok(results)
     }
 
@@ -97,8 +101,9 @@ impl Embedder for OpenAiProvider {
 impl TextEnricher for OpenAiProvider {
     #[instrument(skip(self, request), fields(model = %self.generate_model, intent = ?request.intent), err)]
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
+        let start = std::time::Instant::now();
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
-        let resp: OaiChatResponse = self.client
+        let result = self.client
             .post("https://api.openai.com/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&OaiChatRequest {
@@ -106,11 +111,17 @@ impl TextEnricher for OpenAiProvider {
                 messages: vec![OaiMessage { role: "user", content: &prompt }],
             })
             .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
-        let text = resp.choices.into_iter().next()
-            .map(|c| c.message.content)
-            .unwrap_or_default();
-        Ok(EnrichedText(text))
+            .json::<OaiChatResponse>().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+        let result = result.map(|resp| {
+            let text = resp.choices.into_iter().next()
+                .map(|c| c.message.content)
+                .unwrap_or_default();
+            EnrichedText(text)
+        });
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_model_calls_total", "provider" => "openai", "operation" => "enrich", "status" => status).increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "openai", "operation" => "enrich").record(start.elapsed().as_secs_f64());
+        result
     }
 }
 

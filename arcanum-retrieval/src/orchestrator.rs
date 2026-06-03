@@ -1,8 +1,8 @@
 use arcanum_core::{traits::*, types::*, Result};
 use crate::fusion::RrfFusion;
 use std::{sync::Arc, time::Duration};
-use tokio::time::timeout;
 use tracing::{instrument, Instrument};
+use metrics;
 
 pub enum OrchestratorMode {
     Static(Vec<RetrievalStrategy>),
@@ -40,8 +40,20 @@ impl RetrievalOrchestrator {
                 strategy = ?r.strategy(),
             );
             tokio::spawn(async move {
+                let t_start = std::time::Instant::now();
                 let result = tokio::time::timeout(t, r.retrieve(&q)).await;
                 let strategy = r.strategy();
+                let strategy_name = format!("{:?}", strategy);
+                let elapsed = t_start.elapsed().as_secs_f64();
+                let status = match &result {
+                    Ok(Ok(_))  => "ok",
+                    Ok(Err(_)) => "error",
+                    Err(_)     => "timeout",
+                };
+                metrics::counter!("arcanum_retrieval_total",
+                    "strategy" => strategy_name.clone(), "status" => status).increment(1);
+                metrics::histogram!("arcanum_retrieval_duration_seconds",
+                    "strategy" => strategy_name).record(elapsed);
                 match result {
                     Ok(Ok(chunks)) => {
                         tracing::debug!(strategy = ?strategy, chunk_count = chunks.len(), "strategy succeeded");

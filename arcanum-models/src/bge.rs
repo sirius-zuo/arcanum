@@ -1,6 +1,7 @@
 use arcanum_core::{traits::Embedder, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use tracing::instrument;
+use metrics;
 
 /// BGE/E5 local embedding models served via a local HTTP endpoint (TEI-compatible).
 pub struct BgeProvider {
@@ -23,6 +24,7 @@ impl BgeProvider {
 impl Embedder for BgeProvider {
     #[instrument(skip(self, texts), fields(model = %self.base_url, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+        let start = std::time::Instant::now();
         let mut results = Vec::new();
         for text in &texts {
             let resp: Vec<Vec<f32>> = self.client
@@ -35,6 +37,8 @@ impl Embedder for BgeProvider {
             }
         }
         tracing::Span::current().record("dimension", self.dim);
+        metrics::counter!("arcanum_model_calls_total", "provider" => "bge", "operation" => "embed", "status" => "ok").increment(1);
+        metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "bge", "operation" => "embed").record(start.elapsed().as_secs_f64());
         Ok(results)
     }
 
