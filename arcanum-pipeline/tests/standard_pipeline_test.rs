@@ -28,6 +28,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         async fn search(&self, _: &str, _: &arcanum_core::traits::VectorQuery) -> arcanum_core::Result<Vec<arcanum_core::traits::ScoredChunk>> { Ok(vec![]) }
         async fn delete(&self, _: &str, _: &[ChunkId]) -> arcanum_core::Result<()> { Ok(()) }
         async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> { Ok(true) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> { Ok(()) }
     }
 
     Arc::new(PipelineDeps {

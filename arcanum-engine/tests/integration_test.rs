@@ -20,6 +20,7 @@ impl VectorStore for RecordingVectorStore {
     }
     async fn delete(&self, _: &str, _: &[ChunkId]) -> arcanum_core::Result<()> { Ok(()) }
     async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> { Ok(true) }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> { Ok(()) }
 }
 
 struct StubEmbedder;

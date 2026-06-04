@@ -364,6 +364,7 @@ mod tests {
         async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> { Ok(vec![]) }
         async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
         async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(false) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
     }
 
     struct FakeEmbedder;
