@@ -20,7 +20,7 @@ tower-http     = { version = "0.5", features = ["trace", "cors"] }
 uuid           = { workspace = true }
 
 [dev-dependencies]
-arcanum-telemetry = { path = "../arcanum-telemetry" }
+arcanum-telemetry = { path = "../arcanum-telemetry", features = ["testing-helpers"] }
 tokio  = { workspace = true }
 tower  = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"

@@ -3,12 +3,16 @@ name    = "arcanum-telemetry"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = []
+testing-helpers = ["opentelemetry_sdk/testing"]
+
 [dependencies]
 tracing               = "0.1"
 tracing-subscriber    = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.28"
 opentelemetry         = { version = "0.27", features = ["metrics"] }
-opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio", "trace", "metrics", "testing"] }
+opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio", "trace", "metrics"] }
 opentelemetry-otlp    = { version = "0.27", features = ["grpc-tonic", "http-proto", "metrics"] }
 metrics               = { workspace = true }
 metrics-prometheus     = { workspace = true }
