@@ -113,6 +113,12 @@ pub fn make_cleanup_stage(
                     })?;
                     (doc.source_uri.clone(), g.collection_id.clone())
                 };
+                if source_uri.is_empty() {
+                    return Err(ArcanumError::Pipeline {
+                        stage: "cleanup".into(),
+                        message: "document source_uri is empty — cannot safely delete stale store data".into(),
+                    });
+                }
                 registry.set_replacing(&source_uri, &collection_id.0).await?;
                 vs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 if let Some(gs) = &gs {

@@ -109,6 +109,10 @@ impl TreeStore for PgTreeStore {
 
     #[instrument(skip(self), fields(store = "postgres_tree", collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "postgres_tree", "delete_by_source_uri called with empty source_uri — skipping");
+            return Ok(());
+        }
         sqlx::query("DELETE FROM arcanum_tree_nodes WHERE collection = $1 AND source_uri = $2")
             .bind(collection)
             .bind(source_uri)

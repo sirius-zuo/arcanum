@@ -114,6 +114,10 @@ impl GraphStore for Neo4jStore {
 
     #[instrument(skip(self), fields(store = "neo4j", source_uri), err)]
     async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "neo4j", "delete_by_source_uri called with empty source_uri — skipping to prevent mass deletion");
+            return Ok(());
+        }
         self.graph.run(
             query("MATCH (e:Entity {source_uri: $source_uri}) DETACH DELETE e")
                 .param("source_uri", source_uri.to_string()),

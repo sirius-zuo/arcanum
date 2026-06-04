@@ -182,6 +182,10 @@ impl VectorStore for LanceDbStore {
 
     #[instrument(skip(self), fields(store = "lancedb", collection_id = collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "lancedb", "delete_by_source_uri called with empty source_uri — skipping");
+            return Ok(());
+        }
         let conn = lancedb::connect(&self.uri)
             .execute()
             .await
