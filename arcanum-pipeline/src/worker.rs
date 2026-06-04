@@ -8,7 +8,7 @@ use crate::{
 use arcanum_core::{
     traits::{ProgressEmitter, Source},
     types::{IngestionReport, IngestionStatus, IngestionTask},
-    Result,
+    ArcanumError, Result,
 };
 use arcanum_middleware::BoundedQueue;
 use std::sync::Arc;
@@ -89,10 +89,18 @@ pub async fn run_task(
             let skipped = final_ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false);
             let state_lock = state.lock().await;
 
-            if !skipped {
-                let content_hash = state_lock.doc.as_ref()
-                    .map(|d| d.content_hash())
-                    .unwrap_or_default();
+            if skipped {
+                emitter.emit("ingestion:progress", serde_json::json!({
+                    "operation_id": operation_id.0,
+                    "status": "skipped",
+                    "reason": "content_unchanged",
+                })).await;
+            } else {
+                let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                    stage: "worker".into(),
+                    message: "pipeline succeeded but doc is None — cannot register content hash".into(),
+                })?;
+                let content_hash = doc.content_hash();
                 deps.document_registry
                     .register(&source_uri, &collection_id.0, &content_hash)
                     .await?;
@@ -115,6 +123,8 @@ pub async fn run_task(
             Ok(())
         }
         Err(e) => {
+            metrics::counter!("arcanum_ingest_docs_total",
+                "source" => source_uri.clone(), "status" => "error").increment(1);
             if deps.retry_policy.should_retry(task_attempt) {
                 tokio::time::sleep(deps.retry_policy.delay_for_attempt(task_attempt)).await;
                 let retry_task = IngestionTask {
