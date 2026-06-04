@@ -271,7 +271,6 @@ pub fn make_vector_write_stage(
 #[cfg(test)]
 mod test_chunk_source_uri {
     use super::*;
-    use arcanum_core::types::*;
     use arcanum_ingestion::FixedSizeChunker;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -335,7 +334,10 @@ pub fn make_raptor_build_stage(
                         .collect();
                     let source_uri = g.doc.as_ref()
                         .map(|d| d.source_uri.clone())
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| {
+                            tracing::warn!(stage = "raptor_build", "doc is None — tree nodes will have empty source_uri and cannot be cleaned up by source");
+                            String::new()
+                        });
                     (leaves, g.collection_id.clone(), source_uri)
                 };
                 let builder = RaptorBuilder::new(tree_store, max_depth);
