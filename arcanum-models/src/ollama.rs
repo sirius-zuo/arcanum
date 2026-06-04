@@ -39,19 +39,23 @@ impl Embedder for OllamaProvider {
     #[instrument(skip(self, texts), fields(model = %self.embed_model, text_count = texts.len(), dimension), err)]
     async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
         let start = std::time::Instant::now();
-        let mut results = vec![];
-        for text in &texts {
-            let resp: EmbedResponse = self.client
-                .post(format!("{}/api/embeddings", self.base_url))
-                .json(&EmbedRequest { model: &self.embed_model, prompt: text })
-                .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
-            results.push(Vector(resp.embedding));
-        }
-        tracing::Span::current().record("dimension", self.dimension());
-        metrics::counter!("arcanum_model_calls_total", "provider" => "ollama", "operation" => "embed", "status" => "ok").increment(1);
+        let result: Result<Vec<Vector>> = async {
+            let mut results = vec![];
+            for text in &texts {
+                let resp: EmbedResponse = self.client
+                    .post(format!("{}/api/embeddings", self.base_url))
+                    .json(&EmbedRequest { model: &self.embed_model, prompt: text })
+                    .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                    .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                results.push(Vector(resp.embedding));
+            }
+            tracing::Span::current().record("dimension", self.dimension());
+            Ok(results)
+        }.await;
+        let status = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!("arcanum_model_calls_total", "provider" => "ollama", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "ollama", "operation" => "embed").record(start.elapsed().as_secs_f64());
-        Ok(results)
+        result
     }
 
     fn dimension(&self) -> usize { 0 } // determined at runtime from API response

@@ -107,7 +107,7 @@ impl McpJsonRpcHandler {
         let elapsed = start.elapsed().as_secs_f64();
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_mcp_requests_total", "method" => method.to_string(), "status" => status).increment(1);
-        metrics::histogram!("arcanum_mcp_request_duration_seconds").record(elapsed);
+        metrics::histogram!("arcanum_mcp_request_duration_seconds", "method" => method.to_string()).record(elapsed);
         result
     }
 

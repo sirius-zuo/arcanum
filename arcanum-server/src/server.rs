@@ -4,12 +4,13 @@ use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
 use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
 use crate::routes::{api, health, admin, graph};
+use crate::routes::metrics as route_metrics;
 use crate::ws::ws_handler;
 use crate::portal::serve_portal;
-use crate::metrics;
 
 pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: ArcanumConfig) -> Router {
-    metrics::init_metrics();
+    // Recorder installation is owned by arcanum_telemetry::init().
+    // Calling init_metrics() here created a dual-init race; removed.
     let origins = &config.server.cors_allowed_origins;
     let cors = {
         let base = CorsLayer::new()
@@ -31,6 +32,7 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
     Router::new()
         .route("/health", get(health::liveness))
         .route("/ready",  get(health::readiness))
+        .route("/metrics", get(route_metrics::get_metrics))
         .route("/api/v1/search", post(api::search))
         .route("/api/v1/ingest", post(api::ingest))
         .route("/api/v1/graph",  get(graph::get_graph))
@@ -55,8 +57,9 @@ pub fn build_app(engine: Option<Arc<ArcanumEngine>>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::{Request, Method}};
+    use axum::{body::Body, http::{Request, Method, StatusCode}};
     use tower::ServiceExt;
+    use serial_test::serial;
 
     #[tokio::test]
     async fn test_cors_absent_when_no_origins_configured() {
@@ -93,5 +96,35 @@ mod tests {
             .and_then(|v| v.to_str().ok());
         assert_eq!(allow_origin, Some("https://app.example.com"),
             "configured origin should appear in allow-origin header");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_metrics_endpoint_returns_200_without_token() {
+        // Without ARCANUM_METRICS_TOKEN set, the endpoint requires no auth.
+        std::env::remove_var("ARCANUM_METRICS_TOKEN");
+        let app = build_app(None);
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK,
+            "GET /metrics with no token env var should return 200");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn test_metrics_endpoint_returns_401_when_token_set_and_not_provided() {
+        std::env::set_var("ARCANUM_METRICS_TOKEN", "test-secret");
+        let app = build_app(None);
+        let req = Request::builder()
+            .uri("/metrics")
+            .body(Body::empty())
+            .unwrap();
+        let resp = app.oneshot(req).await.unwrap();
+        std::env::remove_var("ARCANUM_METRICS_TOKEN");
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
+            "GET /metrics with token set but not provided should return 401");
     }
 }
