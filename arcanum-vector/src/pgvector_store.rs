@@ -155,6 +155,21 @@ impl VectorStore for PgVectorStore {
     }
 
     #[instrument(skip(self), fields(store = "pgvector", collection_id = collection), err)]
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        sqlx::query(
+            "DELETE FROM arcanum_chunks \
+             WHERE collection = $1 \
+               AND chunk_json::jsonb->'chunk'->'metadata'->>'source_uri' = $2",
+        )
+        .bind(collection)
+        .bind(source_uri)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "pgvector", collection_id = collection), err)]
     async fn collection_exists(&self, collection: &str) -> Result<bool> {
         use sqlx::Row;
         let row = sqlx::query(

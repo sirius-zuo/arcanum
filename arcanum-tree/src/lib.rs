@@ -41,6 +41,17 @@ impl TreeStore for InMemoryTreeStore {
         tracing::Span::current().record("child_count", children.len());
         Ok(children)
     }
+
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        let prefix = format!("{}:", collection);
+        let mut nodes = self.nodes.write().await;
+        for (key, level_nodes) in nodes.iter_mut() {
+            if key.starts_with(&prefix) {
+                level_nodes.retain(|n| n.source_uri != source_uri);
+            }
+        }
+        Ok(())
+    }
 }
 
 pub use raptor::RaptorBuilder;
@@ -48,3 +59,27 @@ mod raptor;
 
 pub mod postgres_store;
 pub use postgres_store::PgTreeStore;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn delete_by_source_uri_removes_nodes() {
+        let store = InMemoryTreeStore::new();
+        store.insert_node("col", TreeNode {
+            id: TreeNodeId::new(), level: 0, text: "chunk a".into(),
+            vector: Vector(vec![0.1]), parent: None, children: vec![],
+            cluster_centroid: None, source_uri: "file://a.md".into(),
+        }).await.unwrap();
+        store.insert_node("col", TreeNode {
+            id: TreeNodeId::new(), level: 0, text: "chunk b".into(),
+            vector: Vector(vec![0.2]), parent: None, children: vec![],
+            cluster_centroid: None, source_uri: "file://b.md".into(),
+        }).await.unwrap();
+        store.delete_by_source_uri("col", "file://a.md").await.unwrap();
+        let nodes = store.get_level("col", 0).await.unwrap();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(nodes[0].source_uri, "file://b.md");
+    }
+}

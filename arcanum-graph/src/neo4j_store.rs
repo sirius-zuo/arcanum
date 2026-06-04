@@ -112,6 +112,17 @@ impl GraphStore for Neo4jStore {
         Ok(entities)
     }
 
+    #[instrument(skip(self), fields(store = "neo4j", source_uri), err)]
+    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+        self.graph.run(
+            query("MATCH (e:Entity {source_uri: $source_uri}) DETACH DELETE e")
+                .param("source_uri", source_uri.to_string()),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("delete_by_source_uri error: {}", e)))?;
+        Ok(())
+    }
+
     #[instrument(skip(self, entity_id), fields(store = "neo4j", entity_id = %entity_id.0), err)]
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
         let id_str = entity_id.0.to_string();

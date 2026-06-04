@@ -181,6 +181,26 @@ impl VectorStore for LanceDbStore {
     }
 
     #[instrument(skip(self), fields(store = "lancedb", collection_id = collection), err)]
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        let conn = lancedb::connect(&self.uri)
+            .execute()
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let table = match conn.open_table(collection).execute().await {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
+        // Filter on the source_uri embedded in chunk_json; sufficient for the local dev store.
+        let escaped = source_uri.replace('"', "\\\"");
+        let predicate = format!(r#"chunk_json LIKE '%"source_uri":"{}"%'"#, escaped);
+        table
+            .delete(&predicate)
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "lancedb", collection_id = collection), err)]
     async fn collection_exists(&self, collection: &str) -> Result<bool> {
         let conn = lancedb::connect(&self.uri)
             .execute()

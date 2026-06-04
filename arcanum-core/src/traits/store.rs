@@ -21,6 +21,8 @@ pub trait VectorStore: Send + Sync {
     async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>>;
     async fn delete(&self, collection: &str, ids: &[ChunkId]) -> Result<()>;
     async fn collection_exists(&self, collection: &str) -> Result<bool>;
+    /// Delete all chunks for the given source_uri in the collection. No-op if none exist.
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +39,8 @@ pub trait GraphStore: Send + Sync {
     async fn upsert_relations(&self, relations: Vec<Relation>) -> Result<()>;
     async fn query(&self, q: &GraphQuery) -> Result<Vec<Entity>>;
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>>;
+    /// Delete all entities and their relations for the given source_uri. No-op if none exist.
+    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()>;
 }
 
 #[async_trait]
@@ -44,6 +48,8 @@ pub trait TreeStore: Send + Sync {
     async fn insert_node(&self, collection: &str, node: TreeNode) -> Result<()>;
     async fn get_level(&self, collection: &str, level: u32) -> Result<Vec<TreeNode>>;
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>>;
+    /// Delete all tree nodes for the given source_uri in the collection. No-op if none exist.
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
 }
 
 #[async_trait]
@@ -75,6 +81,7 @@ mod tests {
         async fn collection_exists(&self, collection: &str) -> crate::Result<bool> {
             Ok(self.0.lock().unwrap().contains_key(collection))
         }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> crate::Result<()> { Ok(()) }
     }
 
     #[tokio::test]

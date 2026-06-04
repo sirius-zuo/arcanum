@@ -107,6 +107,16 @@ impl TreeStore for PgTreeStore {
         rows.into_iter().map(row_to_node).collect()
     }
 
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        sqlx::query("DELETE FROM arcanum_tree_nodes WHERE collection = $1 AND source_uri = $2")
+            .bind(collection)
+            .bind(source_uri)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_by_source_uri error: {}", e)))?;
+        Ok(())
+    }
+
     #[instrument(skip(self, node_id), fields(store = "postgres_tree", node_id = %node_id.0), err)]
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>> {
         let rows = sqlx::query_as::<_, PgTreeNodeRow>(
