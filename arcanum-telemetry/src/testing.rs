@@ -12,12 +12,14 @@ use opentelemetry_sdk::{
 pub struct TestTelemetry {
     pub exporter: InMemorySpanExporter,
     pub provider: SdkTracerProvider,
+    _subscriber_guard: Option<tracing::subscriber::DefaultGuard>,
 }
 
 impl TestTelemetry {
     /// Install a tracing subscriber that sends all spans to an in-memory exporter.
     /// Returns the handle so callers can drain and inspect spans.
-    /// Uses `try_init` — safe to call from multiple tests.
+    /// Uses `set_global_default` so the previous subscriber is automatically
+    /// restored when this handle is dropped — safe to call from multiple tests.
     pub fn install() -> Self {
         use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -31,12 +33,15 @@ impl TestTelemetry {
             .with_error_events_to_exceptions(true)
             .with_error_events_to_status(true);
 
-        let _ = tracing_subscriber::registry()
-            .with(tracing_subscriber::filter::LevelFilter::DEBUG)
-            .with(otel_layer)
-            .try_init();
+        let subscriber = tracing_subscriber::registry().with(otel_layer);
 
-        Self { exporter, provider }
+        let guard = subscriber.set_default();
+
+        Self {
+            exporter,
+            provider,
+            _subscriber_guard: Some(guard),
+        }
     }
 
     /// Flush and return all spans collected since `install()` was called.
