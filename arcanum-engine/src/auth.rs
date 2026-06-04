@@ -56,7 +56,7 @@ impl AuthMiddleware {
         self
     }
 
-    #[instrument(skip(self, token), err)]
+    #[instrument(skip(self, token), err(level = "debug"))]
     pub fn validate_admin_jwt(&self, token: &str) -> Result<AdminClaims> {
         let pem = self.rs256_public_key_pem.as_deref()
             .ok_or_else(|| ArcanumError::Auth("RS256 public key not configured".to_string()))?;

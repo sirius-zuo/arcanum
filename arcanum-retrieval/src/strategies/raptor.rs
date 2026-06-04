@@ -114,6 +114,7 @@ mod tests {
         async fn get_children(&self, _node_id: &TreeNodeId) -> Result<Vec<TreeNode>> {
             Ok(vec![])
         }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
     }
 
     #[tokio::test]

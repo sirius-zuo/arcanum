@@ -6,7 +6,7 @@ use crate::{
 };
 use arcanum_core::{
     traits::{ProgressEmitter, Source},
-    types::{CollectionId, IngestionReport, IngestionStatus, IngestionTask},
+    types::{IngestionReport, IngestionStatus, IngestionTask},
     Result,
 };
 use arcanum_middleware::BoundedQueue;
@@ -64,10 +64,7 @@ pub async fn run_task(
     let pipeline_template  = task.pipeline_template.clone();
     let force              = task.force;
 
-    let started_at = std::time::Instant::now();
-
-    let already_seen = deps.hash_tracker.ever_seen(&source_uri).await;
-    if force || already_seen {
+    if force {
         deps.cache_invalidator
             .invalidate_document(&source_uri, &collection_id)
             .await;
@@ -84,16 +81,20 @@ pub async fn run_task(
     let state  = Arc::new(Mutex::new(IngestionState::new(source, collection_id.clone())));
     let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;
 
-    match DagExecutor::execute(&dag, Default::default()).await {
+    let mut initial_ctx = crate::dag::StageContext::default();
+    initial_ctx.insert("__force".to_string(), serde_json::json!(force));
+    match DagExecutor::execute(&dag, initial_ctx).await {
         Ok(final_ctx) => {
             let skipped = final_ctx.get("__skip").and_then(|v| v.as_bool()).unwrap_or(false);
             let state_lock = state.lock().await;
 
             if !skipped {
-                if let Some(doc) = &state_lock.doc {
-                    deps.hash_tracker.record(&doc.source_uri, &doc.content).await;
-                }
-
+                let content_hash = state_lock.doc.as_ref()
+                    .map(|d| d.content_hash())
+                    .unwrap_or_default();
+                deps.document_registry
+                    .register(&source_uri, &collection_id.0, &content_hash)
+                    .await?;
                 let report = IngestionReport {
                     operation_id:         operation_id.clone(),
                     source_uri:           source_uri.clone(),
@@ -101,9 +102,7 @@ pub async fn run_task(
                     stage_results:        vec![],
                     total_chunks:         state_lock.chunks.len(),
                     total_vectors:        state_lock.vectors.len(),
-                    document_fingerprint: state_lock.doc.as_ref()
-                        .map(|d| d.content_hash())
-                        .unwrap_or_default(),
+                    document_fingerprint: content_hash,
                     status:               IngestionStatus::Success,
                 };
                 emitter.emit("ingestion:progress", serde_json::json!({

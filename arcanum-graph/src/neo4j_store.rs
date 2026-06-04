@@ -28,11 +28,12 @@ impl GraphStore for Neo4jStore {
             let canonical_id = entity.canonical_id.clone().unwrap_or_default();
 
             self.graph.run(
-                query("MERGE (e:Entity {id: $id}) SET e.name = $name, e.entity_type = $entity_type, e.canonical_id = $canonical_id")
+                query("MERGE (e:Entity {id: $id}) SET e.name = $name, e.entity_type = $entity_type, e.canonical_id = $canonical_id, e.source_uri = $source_uri")
                     .param("id", id)
                     .param("name", name)
                     .param("entity_type", entity_type)
-                    .param("canonical_id", canonical_id),
+                    .param("canonical_id", canonical_id)
+                    .param("source_uri", entity.source_uri.clone()),
             )
             .await
             .map_err(|e| ArcanumError::Storage(format!("upsert_entity error: {}", e)))?;
@@ -67,13 +68,13 @@ impl GraphStore for Neo4jStore {
         let entity_type = q.entity_type.clone().unwrap_or_default();
 
         let cypher = if !entity_type.is_empty() && !name_pattern.is_empty() {
-            "MATCH (e:Entity) WHERE e.name CONTAINS $name AND e.entity_type = $entity_type RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id"
+            "MATCH (e:Entity) WHERE e.name CONTAINS $name AND e.entity_type = $entity_type RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri"
         } else if !entity_type.is_empty() {
-            "MATCH (e:Entity) WHERE e.entity_type = $entity_type RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id"
+            "MATCH (e:Entity) WHERE e.entity_type = $entity_type RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri"
         } else if !name_pattern.is_empty() {
-            "MATCH (e:Entity) WHERE e.name CONTAINS $name RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id"
+            "MATCH (e:Entity) WHERE e.name CONTAINS $name RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri"
         } else {
-            "MATCH (e:Entity) RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id LIMIT 100"
+            "MATCH (e:Entity) RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri LIMIT 100"
         };
 
         let mut stream = self.graph.execute(
@@ -94,6 +95,7 @@ impl GraphStore for Neo4jStore {
             let entity_type: String = row.get("entity_type")
                 .map_err(|e| ArcanumError::Storage(format!("get entity_type: {}", e)))?;
             let canonical_id: Option<String> = row.get("canonical_id").ok();
+            let source_uri: String = row.get("source_uri").unwrap_or_default();
 
             let id = id_str.parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse uuid: {}", e)))?;
@@ -104,9 +106,21 @@ impl GraphStore for Neo4jStore {
                 entity_type,
                 canonical_id: canonical_id.filter(|s| !s.is_empty()),
                 source_chunks: vec![],
+                source_uri,
             });
         }
         Ok(entities)
+    }
+
+    #[instrument(skip(self), fields(store = "neo4j", source_uri), err)]
+    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+        self.graph.run(
+            query("MATCH (e:Entity {source_uri: $source_uri}) DETACH DELETE e")
+                .param("source_uri", source_uri.to_string()),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("delete_by_source_uri error: {}", e)))?;
+        Ok(())
     }
 
     #[instrument(skip(self, entity_id), fields(store = "neo4j", entity_id = %entity_id.0), err)]
@@ -173,6 +187,7 @@ mod tests {
             entity_type: "PERSON".to_string(),
             canonical_id: None,
             source_chunks: vec![],
+            source_uri: "".to_string(),
         };
         store.upsert_entities(vec![entity.clone()]).await.expect("upsert");
 

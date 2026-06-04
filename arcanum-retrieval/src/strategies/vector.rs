@@ -62,6 +62,7 @@ mod tests {
         async fn collection_exists(&self, collection: &str) -> Result<bool> {
             Ok(self.0.lock().unwrap().contains_key(collection))
         }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
     }
 
     struct MockEmbedder;

@@ -17,13 +17,14 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     }
 
     #[instrument(skip(self, leaf_chunks), fields(collection, input_chunk_count = leaf_chunks.len(), max_depth = self.max_depth), err)]
-    pub async fn build(&self, collection: &str, leaf_chunks: Vec<(String, Vector)>) -> Result<()> {
+    pub async fn build(&self, collection: &str, source_uri: &str, leaf_chunks: Vec<(String, Vector)>) -> Result<()> {
         for (text, vector) in &leaf_chunks {
             let node = TreeNode {
                 id: TreeNodeId::new(), level: 0,
                 text: text.clone(), vector: vector.clone(),
                 parent: None, children: vec![],
                 cluster_centroid: None,
+                source_uri: source_uri.to_string(),
             };
             self.store.insert_node(collection, node).await?;
         }
@@ -44,6 +45,7 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
                     text: summary.clone(), vector: centroid.clone(),
                     parent: None, children: vec![],
                     cluster_centroid: Some(centroid.clone()),
+                    source_uri: source_uri.to_string(),
                 };
                 self.store.insert_node(collection, node).await?;
                 next_level.push((summary, centroid));

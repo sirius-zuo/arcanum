@@ -1,12 +1,12 @@
 use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster, LexicalIndex},
+             CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
 use arcanum_graph::GraphQueryPlanner;
-use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker,
+use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
                         RawLoader, FileLoader, HttpLoader, FixedSizeChunker};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
@@ -100,6 +100,7 @@ pub struct ArcanumEngineBuilder {
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
     bm25_index: Option<Arc<Bm25Index>>,
+    document_registry: Option<Arc<dyn DocumentRegistry>>,
 }
 
 impl Default for ArcanumEngineBuilder {
@@ -114,6 +115,7 @@ impl Default for ArcanumEngineBuilder {
             tree_store: None,
             secret_store: None,
             bm25_index: None,
+            document_registry: None,
         }
     }
 }
@@ -175,6 +177,11 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn document_registry(mut self, registry: Arc<dyn DocumentRegistry>) -> Self {
+        self.document_registry = Some(registry);
+        self
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
 
@@ -196,13 +203,11 @@ impl ArcanumEngineBuilder {
         let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
         let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
 
-        // Shared queue and hash tracker — passed to both IngestionService (push) and workers (pop).
-        let queue        = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
-        let hash_tracker = Arc::new(DocumentHashTracker::new());
+        // Shared queue — passed to both IngestionService (push) and workers (pop).
+        let queue = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
 
         let ingestion = Arc::new(IngestionService::new_from_parts(
             queue.clone(),
-            hash_tracker.clone(),
             events.clone(),
             audit.clone(),
         ));
@@ -224,7 +229,9 @@ impl ArcanumEngineBuilder {
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
-                hash_tracker:      hash_tracker.clone(),
+                document_registry: self.document_registry
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
@@ -364,6 +371,7 @@ mod tests {
         async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> { Ok(vec![]) }
         async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
         async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(false) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
     }
 
     struct FakeEmbedder;

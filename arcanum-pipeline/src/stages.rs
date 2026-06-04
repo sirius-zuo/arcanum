@@ -1,7 +1,7 @@
 use crate::{dag::{PipelineStage, StageContext}, IngestionState};
 use arcanum_core::{traits::*, types::*, ArcanumError};
 use arcanum_ingestion::{
-    LoaderRegistry, PreprocessorRegistry, DocumentHashTracker, MimeDetector,
+    LoaderRegistry, PreprocessorRegistry, MimeDetector,
     ContextEnricher, EntityExtractor,
 };
 use arcanum_tree::RaptorBuilder;
@@ -15,25 +15,113 @@ fn skip(ctx: &StageContext) -> bool {
 pub fn make_load_stage(
     state: Arc<Mutex<IngestionState>>,
     loaders: Arc<LoaderRegistry>,
-    hash_tracker: Arc<DocumentHashTracker>,
 ) -> PipelineStage {
     PipelineStage {
         id: "load",
         deps: vec![],
-        run: Arc::new(move |mut ctx| {
+        run: Arc::new(move |ctx| {
             let state = state.clone();
             let loaders = loaders.clone();
-            let ht = hash_tracker.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "load", "executing load stage");
                 let source = state.lock().await.source.clone();
                 let mut doc = loaders.load(&source).await?;
                 doc.mime_type = MimeDetector::detect(&doc.content, Some(&doc.mime_type));
-                if ht.seen_unchanged(&doc.source_uri, &doc.content).await {
-                    ctx.insert("__skip".to_string(), serde_json::json!(true));
+                state.lock().await.doc = Some(doc);
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
+pub fn make_dedup_stage(
+    state: Arc<Mutex<IngestionState>>,
+    registry: Arc<dyn DocumentRegistry>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "dedup",
+        deps: vec!["load"],
+        run: Arc::new(move |mut ctx| {
+            let state = state.clone();
+            let registry = registry.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "dedup", "executing dedup stage");
+                let force = ctx.get("__force").and_then(|v| v.as_bool()).unwrap_or(false);
+                if force {
+                    ctx.insert("__replace".to_string(), serde_json::json!(true));
                     return Ok(ctx);
                 }
-                state.lock().await.doc = Some(doc);
+                let (source_uri, collection_id, content_hash) = {
+                    let g = state.lock().await;
+                    let doc = g.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "dedup".into(),
+                        message: "no doc after load".into(),
+                    })?;
+                    (doc.source_uri.clone(), g.collection_id.clone(), doc.content_hash())
+                };
+                let entry = registry.get_entry(&source_uri, &collection_id.0).await?;
+                match entry {
+                    None => {
+                        // New document — proceed normally
+                    }
+                    Some(e) if e.status == RegistryStatus::Replacing => {
+                        // Previous cleanup interrupted; resume
+                        ctx.insert("__replace".to_string(), serde_json::json!(true));
+                    }
+                    Some(e) if e.content_hash.as_deref() == Some(content_hash.as_str()) => {
+                        // Identical content — skip
+                        ctx.insert("__skip".to_string(), serde_json::json!(true));
+                    }
+                    Some(_) => {
+                        // Changed content — replace
+                        ctx.insert("__replace".to_string(), serde_json::json!(true));
+                    }
+                }
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
+pub fn make_cleanup_stage(
+    state: Arc<Mutex<IngestionState>>,
+    registry: Arc<dyn DocumentRegistry>,
+    vector_store: Arc<dyn VectorStore>,
+    graph_store: Option<Arc<dyn GraphStore>>,
+    tree_store: Option<Arc<dyn TreeStore>>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "cleanup",
+        deps: vec!["dedup"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let registry = registry.clone();
+            let vs = vector_store.clone();
+            let gs = graph_store.clone();
+            let ts = tree_store.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "cleanup", "executing cleanup stage");
+                let replace = ctx.get("__replace").and_then(|v| v.as_bool()).unwrap_or(false);
+                if !replace {
+                    return Ok(ctx);
+                }
+                let (source_uri, collection_id) = {
+                    let g = state.lock().await;
+                    let doc = g.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "cleanup".into(),
+                        message: "no doc".into(),
+                    })?;
+                    (doc.source_uri.clone(), g.collection_id.clone())
+                };
+                registry.set_replacing(&source_uri, &collection_id.0).await?;
+                vs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
+                if let Some(gs) = &gs {
+                    gs.delete_by_source_uri(&source_uri).await?;
+                }
+                if let Some(ts) = &ts {
+                    ts.delete_by_source_uri(&collection_id.0, &source_uri).await?;
+                }
+                registry.deregister(&source_uri, &collection_id.0).await?;
                 Ok(ctx)
             })
         }),
@@ -46,7 +134,7 @@ pub fn make_preprocess_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "preprocess",
-        deps: vec!["load"],
+        deps: vec!["cleanup"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let pp = preprocessors.clone();
@@ -271,7 +359,6 @@ pub fn make_vector_write_stage(
 #[cfg(test)]
 mod test_chunk_source_uri {
     use super::*;
-    use arcanum_core::types::*;
     use arcanum_ingestion::FixedSizeChunker;
     use std::sync::Arc;
     use tokio::sync::Mutex;
@@ -325,7 +412,7 @@ pub fn make_raptor_build_stage(
             Box::pin(async move {
                 tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
                 if skip(&ctx) { return Ok(ctx); }
-                let (leaves, collection_id) = {
+                let (leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
                     let leaves: Vec<(String, Vector)> = g
                         .chunks
@@ -333,10 +420,16 @@ pub fn make_raptor_build_stage(
                         .map(|c| c.text.clone())
                         .zip(g.vectors.iter().cloned())
                         .collect();
-                    (leaves, g.collection_id.clone())
+                    let source_uri = g.doc.as_ref()
+                        .map(|d| d.source_uri.clone())
+                        .unwrap_or_else(|| {
+                            tracing::warn!(stage = "raptor_build", "doc is None — tree nodes will have empty source_uri and cannot be cleaned up by source");
+                            String::new()
+                        });
+                    (leaves, g.collection_id.clone(), source_uri)
                 };
                 let builder = RaptorBuilder::new(tree_store, max_depth);
-                builder.build(&collection_id.0, leaves).await?;
+                builder.build(&collection_id.0, &source_uri, leaves).await?;
                 Ok(ctx)
             })
         }),

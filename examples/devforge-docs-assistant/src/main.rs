@@ -13,6 +13,7 @@ use arcanum_core::config::ArcanumConfig;
 use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_vector::LanceDbStore;
 use arcanum_models::OllamaProvider;
+use arcanum_ingestion::SqliteDocumentRegistry;
 use arcanum_server::build_app;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -35,6 +36,11 @@ async fn main() -> Result<()> {
 
     std::fs::create_dir_all("data")?;
 
+    let document_registry = Arc::new(
+        SqliteDocumentRegistry::open("data/documents.db")
+            .map_err(|e| anyhow::anyhow!("failed to open document registry: {}", e))?
+    );
+
     // ── Vector store: LanceDB local file ─────────────────────────────────────
     // Production: PgVectorStore::new(&db_url, 768).await?  (see BUILD.md)
     let vector_store = Arc::new(LanceDbStore::new("data/devforge.lance").await?);
@@ -47,6 +53,7 @@ async fn main() -> Result<()> {
         .auth_secret(&secret)
         .vector_store(vector_store)
         .embedder(embedder)
+        .document_registry(document_registry)
         .build()
         .await?;
 
@@ -58,8 +65,9 @@ async fn main() -> Result<()> {
     std::fs::write("ui/.env.development", format!("VITE_API_KEY={}\n", dev_key))?;
 
     // ── Build app, optionally serve built UI ─────────────────────────────────
+    let is_dev = std::env::var("ARCANUM_DEV").is_ok();
     let mut app: Router = build_app(Some(engine));
-    if std::path::Path::new("ui/dist").exists() {
+    if !is_dev && std::path::Path::new("ui/dist").exists() {
         app = app.fallback_service(
             ServeDir::new("ui/dist")
                 .fallback(ServeFile::new("ui/dist/index.html"))
@@ -72,7 +80,7 @@ async fn main() -> Result<()> {
     println!("┌────────────────────────────────────────────────┐");
     println!("│  Devforge Docs Assistant                        │");
     println!("│  API  → http://localhost:{port}                 │");
-    if std::path::Path::new("ui/dist").exists() {
+    if !is_dev && std::path::Path::new("ui/dist").exists() {
         println!("│  UI   → http://localhost:{port}                 │");
     } else {
         println!("│  UI   → http://localhost:5173  (run: make dev)  │");

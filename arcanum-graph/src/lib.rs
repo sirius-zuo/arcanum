@@ -66,4 +66,61 @@ impl GraphStore for InMemoryGraphStore {
             .cloned()
             .collect())
     }
+
+    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+        let mut entities = self.entities.write().await;
+        let to_remove: std::collections::HashSet<String> = entities.values()
+            .filter(|e| e.source_uri == source_uri)
+            .map(|e| e.id.0.to_string())
+            .collect();
+        entities.retain(|id, _| !to_remove.contains(id));
+        drop(entities);
+
+        let mut relations = self.relations.write().await;
+        relations.retain(|r| {
+            !to_remove.contains(&r.source.0.to_string())
+            && !to_remove.contains(&r.target.0.to_string())
+        });
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcanum_core::traits::store::GraphQuery;
+
+    #[tokio::test]
+    async fn delete_by_source_uri_removes_entities_and_relations() {
+        let store = InMemoryGraphStore::new();
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let e1 = Entity {
+            id: id1.clone(), name: "Doc A".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(),
+        };
+        let e2 = Entity {
+            id: id2.clone(), name: "Doc B".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(),
+        };
+        store.upsert_entities(vec![e1, e2]).await.unwrap();
+        // Add a relation from e1 → e2 so we can verify cascade delete removes it
+        let rel = arcanum_core::types::Relation {
+            source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
+            confidence: 1.0, source_chunk: arcanum_core::types::ChunkId::new(),
+        };
+        store.upsert_relations(vec![rel]).await.unwrap();
+
+        store.delete_by_source_uri("file://a.md").await.unwrap();
+
+        let results = store.query(&GraphQuery {
+            entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Doc B");
+
+        // Verify the relation was also removed (cascade)
+        let relations = store.get_relations(&id2).await.unwrap();
+        assert!(relations.is_empty(), "relation from deleted entity should be removed");
+    }
 }
