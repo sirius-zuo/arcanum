@@ -1,0 +1,12 @@
+# observability/prometheus.yml
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: arcanum
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+    metrics_path: /metrics
+    # If ARCANUM_METRICS_TOKEN is set, add:
+    # authorization:
+    #   credentials: <your-token>
