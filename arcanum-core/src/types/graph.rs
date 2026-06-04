@@ -18,6 +18,8 @@ pub struct Entity {
     pub entity_type: String,
     pub canonical_id: Option<String>,
     pub source_chunks: Vec<ChunkId>,
+    #[serde(default)]
+    pub source_uri: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

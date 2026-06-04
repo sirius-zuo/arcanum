@@ -36,12 +36,17 @@ impl EntityExtractor {
         let parsed: ExtractionResult = serde_json::from_str(&raw.0)
             .unwrap_or_default();
 
+        let source_uri = chunk.metadata.0.get("source_uri")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let mut entity_map = std::collections::HashMap::new();
         let entities: Vec<Entity> = parsed.entities.into_iter().map(|e| {
             let id = EntityId::new();
             entity_map.insert(e.name.clone(), id.clone());
             Entity { id, name: e.name, entity_type: e.entity_type,
-                     canonical_id: None, source_chunks: vec![chunk.id.clone()] }
+                     canonical_id: None, source_chunks: vec![chunk.id.clone()],
+                     source_uri: source_uri.clone() }
         }).collect();
 
         let relations: Vec<Relation> = parsed.relations.into_iter().filter_map(|r| {

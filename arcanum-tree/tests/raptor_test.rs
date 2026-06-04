@@ -11,6 +11,7 @@ async fn test_tree_store_insert_and_level_query() {
         vector: Vector(vec![0.1, 0.2]),
         parent: None, children: vec![],
         cluster_centroid: None,
+        source_uri: "".to_string(),
     };
     store.insert_node("test", node.clone()).await.unwrap();
     let level0 = store.get_level("test", 0).await.unwrap();
@@ -27,7 +28,7 @@ async fn test_raptor_builds_tree_levels() {
         (format!("chunk {i}"), Vector(vec![i as f32 * 0.1, i as f32 * 0.2]))
     }).collect();
 
-    builder.build("test", chunks).await.unwrap();
+    builder.build("test", "test://doc", chunks).await.unwrap();
 
     let level0 = store.get_level("test", 0).await.unwrap();
     assert_eq!(level0.len(), 4);

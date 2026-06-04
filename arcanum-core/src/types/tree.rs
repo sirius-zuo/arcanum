@@ -20,4 +20,6 @@ pub struct TreeNode {
     pub parent: Option<TreeNodeId>,
     pub children: Vec<TreeNodeId>,
     pub cluster_centroid: Option<Vector>,
+    #[serde(default)]
+    pub source_uri: String,
 }

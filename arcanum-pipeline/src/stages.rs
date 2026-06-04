@@ -325,7 +325,7 @@ pub fn make_raptor_build_stage(
             Box::pin(async move {
                 tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
                 if skip(&ctx) { return Ok(ctx); }
-                let (leaves, collection_id) = {
+                let (leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
                     let leaves: Vec<(String, Vector)> = g
                         .chunks
@@ -333,10 +333,13 @@ pub fn make_raptor_build_stage(
                         .map(|c| c.text.clone())
                         .zip(g.vectors.iter().cloned())
                         .collect();
-                    (leaves, g.collection_id.clone())
+                    let source_uri = g.doc.as_ref()
+                        .map(|d| d.source_uri.clone())
+                        .unwrap_or_default();
+                    (leaves, g.collection_id.clone(), source_uri)
                 };
                 let builder = RaptorBuilder::new(tree_store, max_depth);
-                builder.build(&collection_id.0, leaves).await?;
+                builder.build(&collection_id.0, &source_uri, leaves).await?;
                 Ok(ctx)
             })
         }),
