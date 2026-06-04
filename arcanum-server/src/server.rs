@@ -37,9 +37,6 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/api/v1/ingest", post(api::ingest))
         .route("/api/v1/graph",  get(graph::get_graph))
         .route("/api/v1/upload", post(api::upload))
-        .route("/admin/collections", get(admin::list_collections))
-        .route("/admin/health",      get(admin::get_health))
-        .route("/admin/metrics",     get(admin::get_metrics))
         .route("/admin/sources",     get(admin::list_ingestion_sources))
         .route("/admin/audit",       get(admin::get_audit_logs))
         .route("/admin/rotate-keys", post(admin::rotate_keys))
@@ -100,8 +97,8 @@ mod tests {
 
     #[tokio::test]
     #[serial]
-    async fn test_metrics_endpoint_returns_200_without_token() {
-        // Without ARCANUM_METRICS_TOKEN set, the endpoint requires no auth.
+    async fn test_metrics_endpoint_returns_500_without_token() {
+        // ARCANUM_METRICS_TOKEN is now required.
         std::env::remove_var("ARCANUM_METRICS_TOKEN");
         let app = build_app(None);
         let req = Request::builder()
@@ -109,8 +106,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK,
-            "GET /metrics with no token env var should return 200");
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR,
+            "GET /metrics with no token env var should return 500");
     }
 
     #[tokio::test]
