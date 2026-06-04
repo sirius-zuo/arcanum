@@ -1,4 +1,4 @@
-use crate::{dag::{PipelineStage, StageContext}, IngestionState};
+use crate::{dag::{PipelineStage, StageContext, CTX_FORCE, CTX_SKIP, CTX_REPLACE}, IngestionState};
 use arcanum_core::{traits::*, types::*, ArcanumError};
 use arcanum_ingestion::{
     LoaderRegistry, PreprocessorRegistry, MimeDetector,
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 fn skip(ctx: &StageContext) -> bool {
-    ctx.get("__skip").and_then(|v| v.as_bool()).unwrap_or(false)
+    ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 pub fn make_load_stage(
@@ -46,9 +46,9 @@ pub fn make_dedup_stage(
             let registry = registry.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "dedup", "executing dedup stage");
-                let force = ctx.get("__force").and_then(|v| v.as_bool()).unwrap_or(false);
+                let force = ctx.get(CTX_FORCE).and_then(|v| v.as_bool()).unwrap_or(false);
                 if force {
-                    ctx.insert("__replace".to_string(), serde_json::json!(true));
+                    ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     return Ok(ctx);
                 }
                 let (source_uri, collection_id, content_hash) = {
@@ -66,15 +66,15 @@ pub fn make_dedup_stage(
                     }
                     Some(e) if e.status == RegistryStatus::Replacing => {
                         // Previous cleanup interrupted; resume
-                        ctx.insert("__replace".to_string(), serde_json::json!(true));
+                        ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     }
                     Some(e) if e.content_hash.as_deref() == Some(content_hash.as_str()) => {
                         // Identical content — skip
-                        ctx.insert("__skip".to_string(), serde_json::json!(true));
+                        ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
                     }
                     Some(_) => {
                         // Changed content — replace
-                        ctx.insert("__replace".to_string(), serde_json::json!(true));
+                        ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     }
                 }
                 Ok(ctx)
@@ -101,7 +101,7 @@ pub fn make_cleanup_stage(
             let ts = tree_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "cleanup", "executing cleanup stage");
-                let replace = ctx.get("__replace").and_then(|v| v.as_bool()).unwrap_or(false);
+                let replace = ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()).unwrap_or(false);
                 if !replace {
                     return Ok(ctx);
                 }

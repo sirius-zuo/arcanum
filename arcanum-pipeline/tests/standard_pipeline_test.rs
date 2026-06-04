@@ -1,4 +1,4 @@
-use arcanum_pipeline::{ArcanumPipelineRegistry, DagExecutor, IngestionState, PipelineDeps};
+use arcanum_pipeline::{ArcanumPipelineRegistry, DagExecutor, IngestionState, PipelineDeps, dag::CTX_SKIP};
 use arcanum_core::traits::Source;
 use arcanum_core::types::CollectionId;
 use std::sync::Arc;
@@ -63,5 +63,5 @@ async fn test_standard_pipeline_runs_all_five_stages() {
     let reg = ArcanumPipelineRegistry::default();
     let dag = reg.build("standard", state.clone(), &deps).unwrap();
     let ctx = DagExecutor::execute(&dag, Default::default()).await.unwrap();
-    assert!(ctx.contains_key("vector_write_ok") || ctx.contains_key("__skip"));
+    assert!(ctx.contains_key("vector_write_ok") || ctx.contains_key(CTX_SKIP));
 }

@@ -9,6 +9,14 @@ pub type StageFn = Arc<
     + Send + Sync
 >;
 
+/// Context flag set by the worker to force cleanup+re-ingest regardless of hash.
+pub const CTX_FORCE:   &str = "__force";
+/// Context flag set by the dedup stage when content is unchanged — pipeline stages skip.
+pub const CTX_SKIP:    &str = "__skip";
+/// Context flag set by the dedup stage when content changed or recovery is needed.
+pub const CTX_REPLACE: &str = "__replace";
+
+
 pub struct PipelineStage {
     pub id: StageId,
     pub deps: Vec<StageId>,

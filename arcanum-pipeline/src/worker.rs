@@ -1,5 +1,6 @@
 use crate::{
     deps::PipelineDeps,
+    dag::{CTX_FORCE, CTX_SKIP},
     executor::DagExecutor,
     ingestion_state::IngestionState,
     registry::ArcanumPipelineRegistry,
@@ -82,10 +83,10 @@ pub async fn run_task(
     let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;
 
     let mut initial_ctx = crate::dag::StageContext::default();
-    initial_ctx.insert("__force".to_string(), serde_json::json!(force));
+    initial_ctx.insert(CTX_FORCE.to_string(), serde_json::json!(force));
     match DagExecutor::execute(&dag, initial_ctx).await {
         Ok(final_ctx) => {
-            let skipped = final_ctx.get("__skip").and_then(|v| v.as_bool()).unwrap_or(false);
+            let skipped = final_ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false);
             let state_lock = state.lock().await;
 
             if !skipped {
