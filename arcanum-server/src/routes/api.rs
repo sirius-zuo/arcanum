@@ -42,6 +42,7 @@ pub struct HttpIngestRequest {
     pub force: Option<bool>,
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn search(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
@@ -81,6 +82,7 @@ pub async fn search(
     response
 }
 
+#[tracing::instrument(skip_all)]
 pub async fn ingest(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
