@@ -21,4 +21,4 @@ tokio                 = { version = "1", features = ["rt"] }
 [dev-dependencies]
 serial_test   = "3"
 tokio         = { version = "1", features = ["rt-multi-thread", "macros"] }
-opentelemetry_sdk = { version = "0.27", features = ["testing"] }
+arcanum-telemetry = { path = ".", features = ["testing-helpers"] }
