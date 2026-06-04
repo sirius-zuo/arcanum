@@ -18,6 +18,8 @@ pub enum ArcanumError {
     Auth(String),
     #[error("not found: {0}")]
     NotFound(String),
+    #[error("already exists: {0}")]
+    AlreadyExists(String),
     #[error("queue full")]
     QueueFull,
     #[error("pipeline error in stage '{stage}': {message}")]
