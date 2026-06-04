@@ -1,6 +1,6 @@
 use arcanum_core::traits::{Chunker, TextEnricher, Embedder, VectorStore, GraphStore, TreeStore,
                             CacheInvalidationBroadcaster, DocumentRegistry};
-use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker};
+use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry};
 use arcanum_middleware::{RetryPolicy, CircuitBreaker};
 use std::sync::Arc;
 
@@ -14,7 +14,6 @@ pub struct PipelineDeps {
     pub vector_store:        Arc<dyn VectorStore>,
     pub graph_store:         Option<Arc<dyn GraphStore>>,
     pub tree_store:          Option<Arc<dyn TreeStore>>,
-    pub hash_tracker:        Arc<DocumentHashTracker>,
     pub document_registry:   Arc<dyn DocumentRegistry>,
     pub retry_policy:        RetryPolicy,
     pub cache_invalidator:   Arc<CacheInvalidationBroadcaster>,

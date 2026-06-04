@@ -2,7 +2,7 @@ use arcanum_pipeline::PipelineDeps;
 use std::sync::Arc;
 
 fn stub_deps() -> Arc<PipelineDeps> {
-    use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker, RawLoader};
+    use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, RawLoader};
     use arcanum_core::traits::{Chunker, Embedder, VectorStore};
     use arcanum_core::types::*;
     use async_trait::async_trait;
@@ -38,7 +38,6 @@ fn stub_deps() -> Arc<PipelineDeps> {
         vector_store: Arc::new(StubVectorStore),
         graph_store: None,
         tree_store: None,
-        hash_tracker: Arc::new(DocumentHashTracker::new()),
         document_registry: Arc::new(arcanum_core::traits::NoOpDocumentRegistry),
         retry_policy: arcanum_middleware::RetryPolicy::default(),
         cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(vec![])),
@@ -120,12 +119,12 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
 }
 
 #[tokio::test]
-async fn test_worker_invalidates_cache_on_re_ingest() {
+async fn test_worker_invalidates_cache_on_force_reingest() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::{ProgressEmitter, CacheInvalidator};
     use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
     use arcanum_middleware::{BoundedQueue, CircuitBreaker, RetryPolicy};
-    use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker, RawLoader};
+    use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, RawLoader};
     use std::time::Duration;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -147,8 +146,6 @@ async fn test_worker_invalidates_cache_on_re_ingest() {
     let broadcaster = Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(
         vec![Arc::new(CountingInvalidator(call_count.clone()))]
     ));
-    let hash_tracker = Arc::new(DocumentHashTracker::new());
-    hash_tracker.record("raw://test-invalidate", b"some content").await;
 
     struct StubChunker2;
     #[async_trait::async_trait]
@@ -181,7 +178,6 @@ async fn test_worker_invalidates_cache_on_re_ingest() {
         vector_store:      Arc::new(StubVectorStore2),
         graph_store:       None,
         tree_store:        None,
-        hash_tracker,
         document_registry: Arc::new(arcanum_core::traits::NoOpDocumentRegistry),
         retry_policy:      RetryPolicy::default(),
         cache_invalidator: broadcaster,
@@ -193,52 +189,16 @@ async fn test_worker_invalidates_cache_on_re_ingest() {
     let queue = Arc::new(BoundedQueue::new("test", 10));
     let task = IngestionTask {
         operation_id: OperationId::new(),
-        source_uri: "raw://test-invalidate".into(),
+        source_uri: "raw://test-force".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
         attempt: 0,
-        force: false,
+        force: true,
         content: None,
         mime_hint: None,
     };
 
     run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await.unwrap();
     assert_eq!(call_count.load(Ordering::SeqCst), 1,
-        "invalidation should fire once for already-seen document");
-}
-
-#[tokio::test]
-async fn test_worker_skips_unchanged_document() {
-    use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task};
-    use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
-    use arcanum_middleware::BoundedQueue;
-    use std::sync::Arc;
-
-    struct NoopEmitter;
-    #[async_trait::async_trait]
-    impl ProgressEmitter for NoopEmitter {
-        async fn emit(&self, _: &str, _: serde_json::Value) {}
-    }
-
-    let deps = stub_deps();
-    // Pre-record the hash so the document appears unchanged
-    deps.hash_tracker.record("raw://test", b"hello world document").await;
-
-    let registry = Arc::new(ArcanumPipelineRegistry::default());
-    let queue = Arc::new(BoundedQueue::new("test", 10));
-
-    let task = IngestionTask {
-        operation_id: OperationId::new(),
-        source_uri: "raw://test".into(),
-        collection_id: CollectionId("col1".into()),
-        pipeline_template: "standard".into(),
-        attempt: 0,
-        force: false,
-        content: None,
-        mime_hint: None,
-    };
-
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
-    assert!(result.is_ok());
+        "invalidation should fire once for force-reingest");
 }

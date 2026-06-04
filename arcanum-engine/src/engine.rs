@@ -231,7 +231,6 @@ impl ArcanumEngineBuilder {
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
-                hash_tracker:      hash_tracker.clone(),
                 document_registry: self.document_registry
                     .clone()
                     .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),

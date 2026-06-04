@@ -66,8 +66,7 @@ pub async fn run_task(
 
     let started_at = std::time::Instant::now();
 
-    let already_seen = deps.hash_tracker.ever_seen(&source_uri).await;
-    if force || already_seen {
+    if force {
         deps.cache_invalidator
             .invalidate_document(&source_uri, &collection_id)
             .await;
@@ -90,10 +89,6 @@ pub async fn run_task(
             let state_lock = state.lock().await;
 
             if !skipped {
-                if let Some(doc) = &state_lock.doc {
-                    deps.hash_tracker.record(&doc.source_uri, &doc.content).await;
-                }
-
                 let report = IngestionReport {
                     operation_id:         operation_id.clone(),
                     source_uri:           source_uri.clone(),
