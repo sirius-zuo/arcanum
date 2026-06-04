@@ -8,7 +8,7 @@ tracing               = "0.1"
 tracing-subscriber    = { version = "0.3", features = ["env-filter", "json"] }
 tracing-opentelemetry = "0.28"
 opentelemetry         = { version = "0.27", features = ["metrics"] }
-opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio", "metrics"] }
+opentelemetry_sdk     = { version = "0.27", features = ["rt-tokio", "trace", "metrics", "testing"] }
 opentelemetry-otlp    = { version = "0.27", features = ["grpc-tonic", "http-proto", "metrics"] }
 metrics               = { workspace = true }
 metrics-prometheus     = { workspace = true }
@@ -17,4 +17,4 @@ tokio                 = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
 serial_test = "3"
-tokio         = { version = "1", features = ["rt-multi-thread"] }
+tokio         = { version = "1", features = ["rt-multi-thread", "macros"] }
