@@ -54,6 +54,15 @@ impl PgVectorStore {
         .await
         .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS arcanum_vector_collections (
+                name TEXT PRIMARY KEY
+            )
+        "#)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure_schema collections: {}", e)))?;
+
         Ok(())
     }
 
@@ -188,6 +197,75 @@ impl VectorStore for PgVectorStore {
             .try_get("cnt")
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(cnt > 0)
+    }
+
+    #[instrument(skip(self), fields(store = "pgvector"), err)]
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM arcanum_vector_collections ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
+
+    #[instrument(skip(self), fields(store = "pgvector", collection = collection), err)]
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM arcanum_vector_collections WHERE name = $1",
+        )
+        .bind(collection)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("create_collection check: {}", e)))?;
+
+        if existing.is_some() {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection),
+            ));
+        }
+        sqlx::query("INSERT INTO arcanum_vector_collections (name) VALUES ($1)")
+            .bind(collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "pgvector", collection = ?collection), err)]
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let count: i64 = match collection {
+            Some(col) => sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT chunk_json->'chunk'->>'document_id') FROM arcanum_chunks WHERE collection = $1",
+            )
+            .bind(col)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
+            None => sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT chunk_json->'chunk'->>'document_id') FROM arcanum_chunks",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
+        };
+        Ok(count as u64)
+    }
+
+    #[instrument(skip(self), fields(store = "pgvector", collection = collection), err)]
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        sqlx::query("DELETE FROM arcanum_chunks WHERE collection = $1")
+            .bind(collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_collection chunks: {}", e)))?;
+        sqlx::query("DELETE FROM arcanum_vector_collections WHERE name = $1")
+            .bind(collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_collection registry: {}", e)))?;
+        Ok(())
     }
 }
 
