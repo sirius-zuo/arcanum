@@ -45,6 +45,15 @@ impl PgTreeStore {
             .await
             .map_err(|e| ArcanumError::Storage(format!("ensure_schema alter: {}", e)))?;
 
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS arcanum_tree_collections (
+                name TEXT PRIMARY KEY
+            )
+        "#)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure_schema tree_collections: {}", e)))?;
+
         Ok(())
     }
 }
@@ -122,6 +131,75 @@ impl TreeStore for PgTreeStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(store = "postgres_tree"), err)]
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM arcanum_tree_collections ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
+        Ok(rows.into_iter().map(|(name,)| name).collect())
+    }
+
+    #[instrument(skip(self), fields(store = "postgres_tree", collection = collection), err)]
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        let existing: Option<(String,)> = sqlx::query_as(
+            "SELECT name FROM arcanum_tree_collections WHERE name = $1",
+        )
+        .bind(collection)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("create_collection check: {}", e)))?;
+
+        if existing.is_some() {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection),
+            ));
+        }
+        sqlx::query("INSERT INTO arcanum_tree_collections (name) VALUES ($1)")
+            .bind(collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "postgres_tree", collection = ?collection), err)]
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let count: i64 = match collection {
+            Some(col) => sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_tree_nodes WHERE collection = $1 AND source_uri != ''",
+            )
+            .bind(col)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
+            None => sqlx::query_scalar(
+                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_tree_nodes WHERE source_uri != ''",
+            )
+            .fetch_one(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
+        };
+        Ok(count as u64)
+    }
+
+    #[instrument(skip(self), fields(store = "postgres_tree", collection = collection), err)]
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        sqlx::query("DELETE FROM arcanum_tree_nodes WHERE collection = $1")
+            .bind(collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_collection nodes: {}", e)))?;
+        sqlx::query("DELETE FROM arcanum_tree_collections WHERE name = $1")
+            .bind(collection)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_collection registry: {}", e)))?;
+        Ok(())
+    }
+
     #[instrument(skip(self, node_id), fields(store = "postgres_tree", node_id = %node_id.0), err)]
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>> {
         let rows = sqlx::query_as::<_, PgTreeNodeRow>(
@@ -133,18 +211,6 @@ impl TreeStore for PgTreeStore {
         .map_err(|e| ArcanumError::Storage(format!("get_children error: {}", e)))?;
 
         rows.into_iter().map(row_to_node).collect()
-    }
-}
-
-impl PgTreeStore {
-    #[instrument(skip(self), fields(store = "postgres_tree", collection), err)]
-    pub async fn delete_collection(&self, collection: &str) -> Result<()> {
-        sqlx::query("DELETE FROM arcanum_tree_nodes WHERE collection = $1")
-            .bind(collection)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| ArcanumError::Storage(format!("delete_collection error: {}", e)))?;
-        Ok(())
     }
 }
 

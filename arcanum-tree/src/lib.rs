@@ -1,4 +1,4 @@
-use arcanum_core::{traits::TreeStore, types::*, Result};
+use arcanum_core::{traits::TreeStore, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
@@ -6,11 +6,15 @@ use tracing::instrument;
 
 pub struct InMemoryTreeStore {
     nodes: Arc<RwLock<HashMap<String, Vec<TreeNode>>>>,
+    created: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
 impl InMemoryTreeStore {
     pub fn new() -> Self {
-        Self { nodes: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            nodes: Arc::new(RwLock::new(HashMap::new())),
+            created: Arc::new(RwLock::new(std::collections::HashSet::new())),
+        }
     }
 }
 
@@ -54,6 +58,64 @@ impl TreeStore for InMemoryTreeStore {
                 level_nodes.retain(|n| n.source_uri != source_uri);
             }
         }
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "in_memory_tree"), err)]
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let created = self.created.read().await;
+        let nodes = self.nodes.read().await;
+        let mut all: std::collections::HashSet<String> = created.clone();
+        for key in nodes.keys() {
+            if let Some(col) = key.split(':').next() {
+                all.insert(col.to_string());
+            }
+        }
+        let mut result: Vec<String> = all.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    #[instrument(skip(self), fields(store = "in_memory_tree", collection = collection), err)]
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        let mut created = self.created.write().await;
+        let nodes = self.nodes.read().await;
+        let key_prefix = format!("{}:", collection);
+        let in_nodes = nodes.keys().any(|k| k.starts_with(&key_prefix));
+        if created.contains(collection) || in_nodes {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection),
+            ));
+        }
+        created.insert(collection.to_string());
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "in_memory_tree", collection = ?collection), err)]
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let nodes = self.nodes.read().await;
+        let mut uris = std::collections::HashSet::new();
+        for (key, node_list) in nodes.iter() {
+            let matches = match collection {
+                Some(col) => key.starts_with(&format!("{}:", col)),
+                None => true,
+            };
+            if matches {
+                for node in node_list {
+                    if !node.source_uri.is_empty() {
+                        uris.insert(node.source_uri.clone());
+                    }
+                }
+            }
+        }
+        Ok(uris.len() as u64)
+    }
+
+    #[instrument(skip(self), fields(store = "in_memory_tree", collection = collection), err)]
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        let prefix = format!("{}:", collection);
+        self.nodes.write().await.retain(|k, _| !k.starts_with(&prefix));
+        self.created.write().await.remove(collection);
         Ok(())
     }
 }
