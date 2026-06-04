@@ -44,8 +44,7 @@ impl DocumentRegistry for SqliteDocumentRegistry {
         let uri = source_uri.to_string();
         let cid = collection_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock()
-                .map_err(|e| ArcanumError::Storage(format!("lock: {}", e)))?;
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
             let mut stmt = conn.prepare(
                 "SELECT content_hash, status FROM documents WHERE source_uri = ?1 AND collection_id = ?2"
             ).map_err(|e| ArcanumError::Storage(e.to_string()))?;
@@ -76,8 +75,7 @@ impl DocumentRegistry for SqliteDocumentRegistry {
         let uri = source_uri.to_string();
         let cid = collection_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock()
-                .map_err(|e| ArcanumError::Storage(format!("lock: {}", e)))?;
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 "INSERT INTO documents (source_uri, collection_id, content_hash, status, registered_at)
                  VALUES (?1, ?2, NULL, 'replacing', ?3)
@@ -97,8 +95,7 @@ impl DocumentRegistry for SqliteDocumentRegistry {
         let cid = collection_id.to_string();
         let hash = content_hash.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock()
-                .map_err(|e| ArcanumError::Storage(format!("lock: {}", e)))?;
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 "INSERT INTO documents (source_uri, collection_id, content_hash, status, registered_at)
                  VALUES (?1, ?2, ?3, 'clean', ?4)
@@ -117,13 +114,43 @@ impl DocumentRegistry for SqliteDocumentRegistry {
         let uri = source_uri.to_string();
         let cid = collection_id.to_string();
         tokio::task::spawn_blocking(move || {
-            let conn = conn.lock()
-                .map_err(|e| ArcanumError::Storage(format!("lock: {}", e)))?;
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
             conn.execute(
                 "DELETE FROM documents WHERE source_uri = ?1 AND collection_id = ?2",
                 rusqlite::params![uri, cid],
             ).map_err(|e| ArcanumError::Storage(e.to_string()))?;
             Ok(())
+        })
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("join: {}", e)))?
+    }
+
+    async fn try_set_replacing(&self, source_uri: &str, collection_id: &str) -> Result<bool> {
+        let conn = self.conn.clone();
+        let uri = source_uri.to_string();
+        let cid = collection_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            // Step 1: Try to UPDATE an existing Clean row → Replacing.
+            let updated = conn.execute(
+                "UPDATE documents SET status = 'replacing', content_hash = NULL, registered_at = ?3
+                 WHERE source_uri = ?1 AND collection_id = ?2 AND status = 'clean'",
+                rusqlite::params![uri, cid, now_secs()],
+            ).map_err(|e| ArcanumError::Storage(e.to_string()))?;
+
+            if updated > 0 {
+                return Ok(true); // we claimed it
+            }
+
+            // Step 2: Try to INSERT (no existing row at all).
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO documents (source_uri, collection_id, content_hash, status, registered_at)
+                 VALUES (?1, ?2, NULL, 'replacing', ?3)",
+                rusqlite::params![uri, cid, now_secs()],
+            ).map_err(|e| ArcanumError::Storage(e.to_string()))?;
+
+            // inserted == 0 means row exists but status != 'clean' → already Replacing → we lost.
+            Ok(inserted > 0)
         })
         .await
         .map_err(|e| ArcanumError::Storage(format!("join: {}", e)))?
@@ -175,5 +202,43 @@ mod tests {
         reg.set_replacing("file://new.md", "col").await.unwrap();
         let entry = reg.get_entry("file://new.md", "col").await.unwrap().unwrap();
         assert_eq!(entry.status, RegistryStatus::Replacing);
+    }
+
+    #[tokio::test]
+    async fn try_set_replacing_returns_false_when_already_replacing() {
+        let reg = SqliteDocumentRegistry::open(":memory:").unwrap();
+        let won = reg.try_set_replacing("file://a.md", "col").await.unwrap();
+        assert!(won, "first caller should win the CAS");
+        let won2 = reg.try_set_replacing("file://a.md", "col").await.unwrap();
+        assert!(!won2, "second caller should lose CAS when already Replacing");
+    }
+
+    #[tokio::test]
+    async fn try_set_replacing_returns_true_for_new_entry() {
+        let reg = SqliteDocumentRegistry::open(":memory:").unwrap();
+        let won = reg.try_set_replacing("file://new.md", "col").await.unwrap();
+        assert!(won, "new entry (no prior row) should always win");
+    }
+
+    #[tokio::test]
+    async fn try_set_replacing_returns_true_for_clean_entry() {
+        let reg = SqliteDocumentRegistry::open(":memory:").unwrap();
+        reg.register("file://a.md", "col", "hash1").await.unwrap();
+        let won = reg.try_set_replacing("file://a.md", "col").await.unwrap();
+        assert!(won, "clean entry should be claimable");
+    }
+
+    #[test]
+    fn lock_poisoning_does_not_break_registry() {
+        use std::sync::{Arc, Mutex};
+        let m: Arc<Mutex<i32>> = Arc::new(Mutex::new(0));
+        let m2 = m.clone();
+        let _ = std::panic::catch_unwind(move || {
+            let _guard = m2.lock().unwrap();
+            panic!("simulate panic while holding lock");
+        });
+        assert!(m.lock().is_err(), "mutex should be poisoned");
+        let val = m.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(*val, 0, "data is still accessible after recovering from poison");
     }
 }

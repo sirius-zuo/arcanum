@@ -28,6 +28,16 @@ pub trait DocumentRegistry: Send + Sync {
 
     /// Remove a registry entry. No-op if the entry doesn't exist.
     async fn deregister(&self, source_uri: &str, collection_id: &str) -> Result<()>;
+
+    /// Atomically claim replacing status only if the entry is currently Clean (or absent).
+    /// Returns Ok(true) if this caller successfully claimed it, Ok(false) if another worker
+    /// is already replacing this document (caller should skip cleanup).
+    /// Default implementation calls set_replacing and always returns Ok(true) — implementors
+    /// that want CAS semantics should override this.
+    async fn try_set_replacing(&self, source_uri: &str, collection_id: &str) -> Result<bool> {
+        self.set_replacing(source_uri, collection_id).await?;
+        Ok(true)
+    }
 }
 
 /// Dedup disabled: every ingest always processes. Used when no registry is configured.

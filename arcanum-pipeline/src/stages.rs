@@ -93,7 +93,7 @@ pub fn make_cleanup_stage(
     PipelineStage {
         id: "cleanup",
         deps: vec!["dedup"],
-        run: Arc::new(move |ctx| {
+        run: Arc::new(move |mut ctx| {
             let state = state.clone();
             let registry = registry.clone();
             let vs = vector_store.clone();
@@ -119,7 +119,13 @@ pub fn make_cleanup_stage(
                         message: "document source_uri is empty — cannot safely delete stale store data".into(),
                     });
                 }
-                registry.set_replacing(&source_uri, &collection_id.0).await?;
+                let claimed = registry.try_set_replacing(&source_uri, &collection_id.0).await?;
+                if !claimed {
+                    tracing::debug!(stage = "cleanup", source_uri = %source_uri,
+                        "another worker is replacing this document — skipping cleanup");
+                    ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
+                    return Ok(ctx);
+                }
                 vs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 if let Some(gs) = &gs {
                     gs.delete_by_source_uri(&source_uri).await?;
@@ -127,7 +133,6 @@ pub fn make_cleanup_stage(
                 if let Some(ts) = &ts {
                     ts.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 }
-                registry.deregister(&source_uri, &collection_id.0).await?;
                 Ok(ctx)
             })
         }),
