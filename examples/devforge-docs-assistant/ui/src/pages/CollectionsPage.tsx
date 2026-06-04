@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { rememberCollection, forgetCollection } from '../store/collections'
+import { getKnownCollections, rememberCollection, forgetCollection } from '../store/collections'
 import { listVectorCollections, getVectorCollectionStats, createVectorCollection, deleteVectorCollection } from '../api/ingest'
-import { apiKey } from '../api/auth'
 import { Database, RefreshCw, Plus, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
@@ -38,15 +37,6 @@ export default function CollectionsPage() {
       // Silent failure — show empty state
     } finally {
       setLoading(false)
-    }
-  }
-
-  function getKnownCollections(): string[] {
-    try {
-      const raw = localStorage.getItem('arcanum_known_collections')
-      return raw ? JSON.parse(raw) : []
-    } catch {
-      return []
     }
   }
 
@@ -128,7 +118,7 @@ export default function CollectionsPage() {
                 <div>
                   <div className="text-sm text-slate-200 font-mono">{c.name}</div>
                   <div className="flex gap-3 text-xs text-slate-500 font-mono mt-0.5">
-                    {c.docCount !== null ? <span>{c.docCount} docs</span> : <span>empty</span>}
+                    <span>{c.docCount !== null ? `${c.docCount} docs` : '…'}</span>
                   </div>
                 </div>
               </div>
@@ -170,7 +160,7 @@ export default function CollectionsPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-[#1e1e2e] border border-slate-700 rounded-xl p-6 w-80 space-y-4">
             <h2 className="text-sm font-mono text-slate-100">Delete "{deleteTarget}"?</h2>
-            <p className="text-xs text-slate-500">Removes this collection from the list. Vector data on the server is not deleted.</p>
+            <p className="text-xs text-slate-500">Permanently deletes this collection and all its vector data from the server.</p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
               <button onClick={() => handleDelete(deleteTarget)} className="px-4 py-2 text-sm bg-red-700 hover:bg-red-600 text-white rounded-md transition-colors">Delete</button>

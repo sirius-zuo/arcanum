@@ -2,8 +2,8 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { uploadFile, ingestSample, listCollections } from '../api/ingest'
 import { apiKey } from '../api/auth'
-import { getKnownCollections, rememberCollection, forgetCollection } from '../store/collections'
-import { createVectorCollection, deleteVectorCollection } from '../api/ingest'
+import { getKnownCollections, rememberCollection } from '../store/collections'
+import { createVectorCollection } from '../api/ingest'
 import { Upload, FileText, CheckCircle, AlertCircle, Loader, FolderDown, RefreshCw } from 'lucide-react'
 
 const SAMPLE_FILES = [
