@@ -1,9 +1,5 @@
 use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_core::config::*;
-use arcanum_engine::services::ingestion::{IngestionService, IngestRequest};
-use arcanum_ingestion::DocumentHashTracker;
-use arcanum_core::types::CollectionId;
-use std::sync::Arc;
 
 const TEST_SECRET: &str = "a-32-char-test-secret-for-testing!!";
 
@@ -46,23 +42,4 @@ async fn test_engine_build_fails_with_short_secret() {
         .build().await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("32 characters"));
-}
-
-#[tokio::test]
-async fn test_ingest_skips_already_seen_uri() {
-    let tracker = Arc::new(DocumentHashTracker::new());
-    tracker.record("file:///doc.pdf", b"some content").await;
-
-    let svc = IngestionService::new_with_tracker(tracker);
-
-    let req = IngestRequest {
-        source_uri: "file:///doc.pdf".into(),
-        collection_id: CollectionId("col".into()),
-        pipeline_template: None,
-        force: false,
-        content: None,
-        mime_hint: None,
-    };
-    let result = svc.ingest(req, "user1").await;
-    assert!(result.is_ok());
 }

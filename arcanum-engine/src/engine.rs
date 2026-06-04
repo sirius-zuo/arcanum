@@ -6,7 +6,7 @@ use arcanum_core::{
     Result, ArcanumError,
 };
 use arcanum_graph::GraphQueryPlanner;
-use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, DocumentHashTracker,
+use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
                         RawLoader, FileLoader, HttpLoader, FixedSizeChunker};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
@@ -203,13 +203,11 @@ impl ArcanumEngineBuilder {
         let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
         let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
 
-        // Shared queue and hash tracker — passed to both IngestionService (push) and workers (pop).
-        let queue        = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
-        let hash_tracker = Arc::new(DocumentHashTracker::new());
+        // Shared queue — passed to both IngestionService (push) and workers (pop).
+        let queue = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
 
         let ingestion = Arc::new(IngestionService::new_from_parts(
             queue.clone(),
-            hash_tracker.clone(),
             events.clone(),
             audit.clone(),
         ));
