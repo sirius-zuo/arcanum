@@ -1,6 +1,6 @@
 pub mod config;
 pub mod init;
-#[cfg(feature = "testing-helpers")]
+#[cfg(any(test, feature = "testing-helpers"))]
 pub mod testing;
 
 pub use config::TelemetryConfig;

@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = []
 testing-helpers = ["opentelemetry_sdk/testing"]
 
 [dependencies]
@@ -20,5 +19,6 @@ prometheus              = { workspace = true }
 tokio                 = { version = "1", features = ["rt"] }
 
 [dev-dependencies]
-serial_test = "3"
+serial_test   = "3"
 tokio         = { version = "1", features = ["rt-multi-thread", "macros"] }
+opentelemetry_sdk = { version = "0.27", features = ["testing"] }
