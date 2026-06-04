@@ -6,7 +6,7 @@ use crate::{
 };
 use arcanum_core::{
     traits::{ProgressEmitter, Source},
-    types::{CollectionId, IngestionReport, IngestionStatus, IngestionTask},
+    types::{IngestionReport, IngestionStatus, IngestionTask},
     Result,
 };
 use arcanum_middleware::BoundedQueue;
@@ -63,8 +63,6 @@ pub async fn run_task(
     let collection_id      = task.collection_id.clone();
     let pipeline_template  = task.pipeline_template.clone();
     let force              = task.force;
-
-    let started_at = std::time::Instant::now();
 
     if force {
         deps.cache_invalidator
