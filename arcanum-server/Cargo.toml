@@ -20,6 +20,7 @@ tower-http     = { version = "0.5", features = ["trace", "cors"] }
 uuid           = { workspace = true }
 
 [dev-dependencies]
+arcanum-telemetry = { path = "../arcanum-telemetry" }
 tokio  = { workspace = true }
 tower  = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
@@ -29,3 +30,7 @@ serial_test = "3"
 [[test]]
 name = "smoke_test"
 path = "../tests/integration/smoke_test.rs"
+
+[[test]]
+name = "telemetry_smoke_test"
+path = "../tests/integration/telemetry_smoke_test.rs"
