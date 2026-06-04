@@ -194,15 +194,10 @@ impl VectorStore for LanceDbStore {
             Ok(t) => t,
             Err(_) => return Ok(()),
         };
-        // Filter on source_uri embedded in chunk_json. Escape LIKE wildcards and backslashes.
-        let escaped = source_uri
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-            .replace('"', "\\\"");
-        let predicate = format!(r#"chunk_json LIKE '%"source_uri":"{}"%' ESCAPE '\'"#, escaped);
+        // Use the first-class source_uri column for exact equality.
+        let safe_uri = source_uri.replace('\'', "''");
         table
-            .delete(&predicate)
+            .delete(&format!("source_uri = '{}'", safe_uri))
             .await
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(())
