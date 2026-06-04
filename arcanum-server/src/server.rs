@@ -3,7 +3,7 @@ use arcanum_core::config::ArcanumConfig;
 use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
 use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
-use crate::routes::{api, health, admin, graph};
+use crate::routes::{api, health, admin, graph, collections};
 use crate::routes::metrics as route_metrics;
 use crate::ws::ws_handler;
 use crate::portal::serve_portal;
@@ -41,6 +41,21 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/admin/audit",       get(admin::get_audit_logs))
         .route("/admin/rotate-keys", post(admin::rotate_keys))
         .route("/admin/ui",          get(serve_portal))
+        // Vector collections
+        .route("/api/v1/vector/collections",              get(collections::vector_list))
+        .route("/api/v1/vector/collections/stats",        get(collections::vector_stats_all))
+        .route("/api/v1/vector/collections/:name",        post(collections::vector_create).delete(collections::vector_delete))
+        .route("/api/v1/vector/collections/:name/stats",  get(collections::vector_stats_one))
+        // Graph collections (stubs)
+        .route("/api/v1/graph/collections",               get(collections::graph_list))
+        .route("/api/v1/graph/collections/stats",         get(collections::graph_stats_all))
+        .route("/api/v1/graph/collections/:name",         post(collections::graph_create).delete(collections::graph_delete))
+        .route("/api/v1/graph/collections/:name/stats",   get(collections::graph_stats_one))
+        // Tree collections
+        .route("/api/v1/tree/collections",                get(collections::tree_list))
+        .route("/api/v1/tree/collections/stats",          get(collections::tree_stats_all))
+        .route("/api/v1/tree/collections/:name",          post(collections::tree_create).delete(collections::tree_delete))
+        .route("/api/v1/tree/collections/:name/stats",    get(collections::tree_stats_one))
         .route("/ws/events",         get(ws_handler))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
