@@ -2,7 +2,8 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { uploadFile, ingestSample, listCollections } from '../api/ingest'
 import { apiKey } from '../api/auth'
-import { upsertCollection, addCollection, getCollections } from '../store/collections'
+import { getKnownCollections, rememberCollection, forgetCollection } from '../store/collections'
+import { createVectorCollection, deleteVectorCollection } from '../api/ingest'
 import { Upload, FileText, CheckCircle, AlertCircle, Loader, FolderDown, RefreshCw } from 'lucide-react'
 
 const SAMPLE_FILES = [
@@ -40,13 +41,13 @@ export default function DocsPage() {
   }, []) // intentional: read once on mount
 
   useEffect(() => {
-    const stored = getCollections().map(c => c.id)
+    const stored = getKnownCollections()
     listCollections()
       .then(remote => {
         const names = Array.from(new Set([
           'devforge',
           ...stored,
-          ...remote.map(r => r.id ?? r.name),
+          ...remote.map(r => r.id),
         ]))
         setServerCollections(names)
       })
@@ -78,7 +79,6 @@ export default function DocsPage() {
               ? { ...f, status: 'ready', operationId: operation_id, chunkCount: chunks }
               : f
           ))
-          upsertCollection(collectionId, { chunkDelta: chunks })
           pendingOps.current.delete(operation_id)
         } else if (status === 'skipped') {
           setFiles(prev => prev.map(f =>
@@ -102,7 +102,6 @@ export default function DocsPage() {
   async function processFile(file: File) {
     const entry: IngestedFile = { name: file.name, status: 'indexing', ingestedAt: new Date().toISOString() }
     setFiles(prev => [...prev, entry])
-    upsertCollection(collection, { docDelta: 1 })
     connectWs(collection)
     try {
       const res = await uploadFile(file, collection)
@@ -118,7 +117,6 @@ export default function DocsPage() {
       const path = `samples/${name}`
       const entry: IngestedFile = { name, status: 'indexing', sourcePath: path, ingestedAt: new Date().toISOString() }
       setFiles(prev => [...prev, entry])
-      upsertCollection(collection, { docDelta: 1 })
       try {
         const res = await ingestSample(path, collection)
         pendingOps.current.set(res.operation_id, name)
@@ -169,10 +167,12 @@ export default function DocsPage() {
     }
   }
 
-  function confirmNewCollection() {
+  async function confirmNewCollection() {
     const name = newCollectionName.trim()
     if (!name) return
-    addCollection(name)
+    const result = await createVectorCollection(name)
+    if (result.conflict) return
+    rememberCollection(name)
     setServerCollections(prev => Array.from(new Set([...prev, name])))
     setCollection(name)
     setShowNewCollection(false)
