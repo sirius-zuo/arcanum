@@ -1,4 +1,4 @@
-use crate::{dag::{PipelineStage, StageContext}, IngestionState};
+use crate::{dag::{PipelineStage, StageContext, CTX_FORCE, CTX_SKIP, CTX_REPLACE}, IngestionState};
 use arcanum_core::{traits::*, types::*, ArcanumError};
 use arcanum_ingestion::{
     LoaderRegistry, PreprocessorRegistry, MimeDetector,
@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 fn skip(ctx: &StageContext) -> bool {
-    ctx.get("__skip").and_then(|v| v.as_bool()).unwrap_or(false)
+    ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false)
 }
 
 pub fn make_load_stage(
@@ -46,9 +46,9 @@ pub fn make_dedup_stage(
             let registry = registry.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "dedup", "executing dedup stage");
-                let force = ctx.get("__force").and_then(|v| v.as_bool()).unwrap_or(false);
+                let force = ctx.get(CTX_FORCE).and_then(|v| v.as_bool()).unwrap_or(false);
                 if force {
-                    ctx.insert("__replace".to_string(), serde_json::json!(true));
+                    ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     return Ok(ctx);
                 }
                 let (source_uri, collection_id, content_hash) = {
@@ -66,15 +66,15 @@ pub fn make_dedup_stage(
                     }
                     Some(e) if e.status == RegistryStatus::Replacing => {
                         // Previous cleanup interrupted; resume
-                        ctx.insert("__replace".to_string(), serde_json::json!(true));
+                        ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     }
                     Some(e) if e.content_hash.as_deref() == Some(content_hash.as_str()) => {
                         // Identical content — skip
-                        ctx.insert("__skip".to_string(), serde_json::json!(true));
+                        ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
                     }
                     Some(_) => {
                         // Changed content — replace
-                        ctx.insert("__replace".to_string(), serde_json::json!(true));
+                        ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     }
                 }
                 Ok(ctx)
@@ -93,7 +93,7 @@ pub fn make_cleanup_stage(
     PipelineStage {
         id: "cleanup",
         deps: vec!["dedup"],
-        run: Arc::new(move |ctx| {
+        run: Arc::new(move |mut ctx| {
             let state = state.clone();
             let registry = registry.clone();
             let vs = vector_store.clone();
@@ -101,7 +101,7 @@ pub fn make_cleanup_stage(
             let ts = tree_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "cleanup", "executing cleanup stage");
-                let replace = ctx.get("__replace").and_then(|v| v.as_bool()).unwrap_or(false);
+                let replace = ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()).unwrap_or(false);
                 if !replace {
                     return Ok(ctx);
                 }
@@ -113,7 +113,19 @@ pub fn make_cleanup_stage(
                     })?;
                     (doc.source_uri.clone(), g.collection_id.clone())
                 };
-                registry.set_replacing(&source_uri, &collection_id.0).await?;
+                if source_uri.is_empty() {
+                    return Err(ArcanumError::Pipeline {
+                        stage: "cleanup".into(),
+                        message: "document source_uri is empty — cannot safely delete stale store data".into(),
+                    });
+                }
+                let claimed = registry.try_set_replacing(&source_uri, &collection_id.0).await?;
+                if !claimed {
+                    tracing::debug!(stage = "cleanup", source_uri = %source_uri,
+                        "another worker is replacing this document — skipping cleanup");
+                    ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
+                    return Ok(ctx);
+                }
                 vs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 if let Some(gs) = &gs {
                     gs.delete_by_source_uri(&source_uri).await?;
@@ -121,7 +133,6 @@ pub fn make_cleanup_stage(
                 if let Some(ts) = &ts {
                     ts.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 }
-                registry.deregister(&source_uri, &collection_id.0).await?;
                 Ok(ctx)
             })
         }),

@@ -43,6 +43,10 @@ impl TreeStore for InMemoryTreeStore {
     }
 
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "in_memory_tree", "delete_by_source_uri called with empty source_uri — skipping");
+            return Ok(());
+        }
         let prefix = format!("{}:", collection);
         let mut nodes = self.nodes.write().await;
         for (key, level_nodes) in nodes.iter_mut() {

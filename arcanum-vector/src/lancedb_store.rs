@@ -182,6 +182,10 @@ impl VectorStore for LanceDbStore {
 
     #[instrument(skip(self), fields(store = "lancedb", collection_id = collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "lancedb", "delete_by_source_uri called with empty source_uri — skipping");
+            return Ok(());
+        }
         let conn = lancedb::connect(&self.uri)
             .execute()
             .await
@@ -190,15 +194,10 @@ impl VectorStore for LanceDbStore {
             Ok(t) => t,
             Err(_) => return Ok(()),
         };
-        // Filter on source_uri embedded in chunk_json. Escape LIKE wildcards and backslashes.
-        let escaped = source_uri
-            .replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-            .replace('"', "\\\"");
-        let predicate = format!(r#"chunk_json LIKE '%"source_uri":"{}"%' ESCAPE '\'"#, escaped);
+        // Use the first-class source_uri column for exact equality.
+        let safe_uri = source_uri.replace('\'', "''");
         table
-            .delete(&predicate)
+            .delete(&format!("source_uri = '{}'", safe_uri))
             .await
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(())

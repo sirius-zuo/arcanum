@@ -1,5 +1,5 @@
 use arcanum_pipeline::{
-    dag::StageContext,
+    dag::{StageContext, CTX_FORCE, CTX_REPLACE, CTX_SKIP},
     executor::DagExecutor,
     ingestion_state::IngestionState,
     stages::{make_load_stage, make_dedup_stage},
@@ -87,7 +87,7 @@ async fn dedup_stage_skips_on_identical_content() {
 
     let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
     assert_eq!(
-        ctx.get("__skip").and_then(|v| v.as_bool()),
+        ctx.get(CTX_SKIP).and_then(|v| v.as_bool()),
         Some(true),
         "dedup stage should set __skip for identical content"
     );
@@ -102,7 +102,7 @@ async fn dedup_stage_sets_replace_on_changed_content() {
 
     let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
     assert_eq!(
-        ctx.get("__replace").and_then(|v| v.as_bool()),
+        ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()),
         Some(true),
         "dedup stage should set __replace for changed content"
     );
@@ -116,15 +116,15 @@ async fn dedup_stage_new_document_proceeds_normally() {
         .add_stage(make_dedup_stage(state.clone(), Arc::new(NoOpDocumentRegistry)));
 
     let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
-    assert!(ctx.get("__skip").is_none(), "new document should not be skipped");
-    assert!(ctx.get("__replace").is_none(), "new document should not trigger replace");
+    assert!(ctx.get(CTX_SKIP).is_none(), "new document should not be skipped");
+    assert!(ctx.get(CTX_REPLACE).is_none(), "new document should not trigger replace");
 }
 
 #[tokio::test]
 async fn dedup_stage_force_sets_replace() {
     let state = make_state(b"any content".to_vec(), "file://forced.txt");
     let mut initial_ctx = StageContext::default();
-    initial_ctx.insert("__force".to_string(), serde_json::json!(true));
+    initial_ctx.insert(CTX_FORCE.to_string(), serde_json::json!(true));
 
     let dag = PipelineDAG::new()
         .add_stage(make_load_stage(state.clone(), make_loaders()))
@@ -132,7 +132,7 @@ async fn dedup_stage_force_sets_replace() {
 
     let ctx = DagExecutor::execute(&dag, initial_ctx).await.unwrap();
     assert_eq!(
-        ctx.get("__replace").and_then(|v| v.as_bool()),
+        ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()),
         Some(true),
         "__force should set __replace"
     );
@@ -147,7 +147,7 @@ async fn dedup_stage_resumes_replacing_status() {
 
     let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
     assert_eq!(
-        ctx.get("__replace").and_then(|v| v.as_bool()),
+        ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()),
         Some(true),
         "Replacing status should resume with __replace"
     );

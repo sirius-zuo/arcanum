@@ -156,6 +156,10 @@ impl VectorStore for PgVectorStore {
 
     #[instrument(skip(self), fields(store = "pgvector", collection_id = collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "pgvector", "delete_by_source_uri called with empty source_uri — skipping");
+            return Ok(());
+        }
         sqlx::query(
             "DELETE FROM arcanum_chunks \
              WHERE collection = $1 \

@@ -68,14 +68,17 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "in_memory_graph", "delete_by_source_uri called with empty source_uri — skipping to prevent mass deletion");
+            return Ok(());
+        }
         let mut entities = self.entities.write().await;
         let to_remove: std::collections::HashSet<String> = entities.values()
             .filter(|e| e.source_uri == source_uri)
             .map(|e| e.id.0.to_string())
             .collect();
         entities.retain(|id, _| !to_remove.contains(id));
-        drop(entities);
-
+        // Hold the entity lock while acquiring relation lock to prevent TOCTOU:
         let mut relations = self.relations.write().await;
         relations.retain(|r| {
             !to_remove.contains(&r.source.0.to_string())
@@ -89,6 +92,21 @@ impl GraphStore for InMemoryGraphStore {
 mod tests {
     use super::*;
     use arcanum_core::traits::store::GraphQuery;
+
+    #[tokio::test]
+    async fn delete_by_source_uri_empty_string_is_noop() {
+        let store = InMemoryGraphStore::new();
+        let e = Entity {
+            id: EntityId::new(), name: "Foo".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(),
+        };
+        store.upsert_entities(vec![e]).await.unwrap();
+        store.delete_by_source_uri("").await.unwrap();
+        let results = store.query(&GraphQuery {
+            entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 1, "entity with source_uri='' must not be deleted by empty-string call");
+    }
 
     #[tokio::test]
     async fn delete_by_source_uri_removes_entities_and_relations() {
