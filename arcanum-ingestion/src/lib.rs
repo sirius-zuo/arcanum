@@ -17,3 +17,6 @@ pub use preprocessors::{HtmlCleaner, PdfParser, EpubParser, PreprocessorRegistry
 pub use chunkers::{FixedSizeChunker, SemanticChunker, PropositionalChunker};
 pub use enrichment::{ContextEnricher, EntityExtractor};
 pub use metadata::DocumentHashTracker;
+
+pub mod registry;
+pub use registry::SqliteDocumentRegistry;
