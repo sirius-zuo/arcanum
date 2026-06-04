@@ -2,30 +2,9 @@ use axum::{extract::{State, Json}, http::{StatusCode, HeaderMap}, response::{Int
 use serde::Deserialize;
 use std::sync::Arc;
 use arcanum_core::types::{Query, CollectionId};
-use arcanum_engine::{ArcanumEngine, auth::ApiKeyClaims};
+use arcanum_engine::ArcanumEngine;
 use metrics::{counter, histogram};
-
-
-/// Extract and validate a Bearer token. Returns 401 if absent or invalid.
-fn validate_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
-    -> Result<ApiKeyClaims, (StatusCode, axum::Json<serde_json::Value>)>
-{
-    let Some(engine) = engine else {
-        // No engine in test mode — reject all auth (fail-closed).
-        return Err((StatusCode::UNAUTHORIZED,
-            axum::Json(serde_json::json!({ "error": "engine not initialised" }))));
-    };
-    let header_val = headers.get("Authorization")
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED,
-            axum::Json(serde_json::json!({ "error": "missing Authorization header" }))))?;
-    let token = header_val.to_str()
-        .unwrap_or("")
-        .strip_prefix("Bearer ")
-        .unwrap_or(header_val.to_str().unwrap_or(""));
-    engine.auth.validate_api_key(token)
-        .map_err(|_| (StatusCode::UNAUTHORIZED,
-            axum::Json(serde_json::json!({ "error": "invalid or expired token" }))))
-}
+use crate::routes::auth::validate_bearer;
 
 #[derive(Deserialize)]
 pub struct SearchRequest {

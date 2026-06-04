@@ -10,16 +10,36 @@ use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
 use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
+use std::collections::HashSet;
 use std::sync::Arc;
 use tracing::instrument;
 
 pub struct LanceDbStore {
     uri: String,
+    collections_file: String,
 }
 
 impl LanceDbStore {
     pub async fn new(path: &str) -> Result<Self> {
-        Ok(Self { uri: path.to_string() })
+        Ok(Self {
+            uri: path.to_string(),
+            collections_file: format!("{}.collections.json", path),
+        })
+    }
+
+    fn load_sidecar(&self) -> Vec<String> {
+        std::fs::read_to_string(&self.collections_file)
+            .ok()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save_sidecar(&self, names: &[String]) -> Result<()> {
+        let json = serde_json::to_string(names)
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        std::fs::write(&self.collections_file, json)
+            .map_err(|e| ArcanumError::Storage(format!("write collections sidecar: {}", e)))?;
+        Ok(())
     }
 
     fn make_schema(dim: i32) -> Arc<Schema> {
@@ -217,5 +237,172 @@ impl VectorStore for LanceDbStore {
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
         Ok(table_names.contains(&collection.to_string()))
+    }
+
+    #[instrument(skip(self), fields(store = "lancedb"), err)]
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let conn = lancedb::connect(&self.uri)
+            .execute()
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let table_names = conn
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let mut all: HashSet<String> = table_names.into_iter().collect();
+        for name in self.load_sidecar() {
+            all.insert(name);
+        }
+        let mut result: Vec<String> = all.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    #[instrument(skip(self), fields(store = "lancedb", collection = collection), err)]
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        let in_lance = self.collection_exists(collection).await?;
+        let in_sidecar = self.load_sidecar().contains(&collection.to_string());
+        if in_lance || in_sidecar {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection)
+            ));
+        }
+        let mut names = self.load_sidecar();
+        names.push(collection.to_string());
+        self.save_sidecar(&names)
+    }
+
+    #[instrument(skip(self), fields(store = "lancedb", collection = ?collection), err)]
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let conn = lancedb::connect(&self.uri)
+            .execute()
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let table_names = match collection {
+            Some(name) => vec![name.to_string()],
+            None => conn
+                .table_names()
+                .execute()
+                .await
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?,
+        };
+        let mut total = 0u64;
+        for table_name in &table_names {
+            let table = match conn.open_table(table_name).execute().await {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let batches: Vec<RecordBatch> = table
+                .query()
+                .execute()
+                .await
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?
+                .try_collect()
+                .await
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            let mut doc_ids = HashSet::new();
+            for batch in &batches {
+                if let Some(col) = batch.column_by_name("chunk_json") {
+                    if let Some(strings) = col.as_any().downcast_ref::<StringArray>() {
+                        for i in 0..strings.len() {
+                            if let Ok(chunk) = serde_json::from_str::<IndexedChunk>(strings.value(i)) {
+                                doc_ids.insert(chunk.chunk.document_id.0.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            total += doc_ids.len() as u64;
+        }
+        Ok(total)
+    }
+
+    #[instrument(skip(self), fields(store = "lancedb", collection = collection), err)]
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        let conn = lancedb::connect(&self.uri)
+            .execute()
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let table_names = conn
+            .table_names()
+            .execute()
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))
+            .unwrap_or_default();
+        if table_names.contains(&collection.to_string()) {
+            conn.drop_table(collection, &[])
+                .await
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        }
+        let names: Vec<String> = self
+            .load_sidecar()
+            .into_iter()
+            .filter(|n| n != collection)
+            .collect();
+        self.save_sidecar(&names)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    async fn make_store(dir: &TempDir) -> LanceDbStore {
+        let path = dir.path().join("test.lance");
+        LanceDbStore::new(path.to_str().unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn create_lists_and_deletes_empty_collection() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        store.create_collection("col1").await.unwrap();
+        let cols = store.list_collections().await.unwrap();
+        assert!(
+            cols.contains(&"col1".to_string()),
+            "created collection should appear in list"
+        );
+
+        store.delete_collection("col1").await.unwrap();
+        let cols = store.list_collections().await.unwrap();
+        assert!(
+            !cols.contains(&"col1".to_string()),
+            "deleted collection should not appear"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_duplicate_returns_already_exists() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        store.create_collection("col1").await.unwrap();
+        let err = store.create_collection("col1").await.unwrap_err();
+        assert!(matches!(
+            err,
+            arcanum_core::ArcanumError::AlreadyExists(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_nonexistent_is_ok() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+        store.delete_collection("ghost").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn count_documents_empty_collection() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+        store.create_collection("empty").await.unwrap();
+        assert_eq!(
+            store.count_documents(Some("empty")).await.unwrap(),
+            0
+        );
+        assert_eq!(store.count_documents(None).await.unwrap(), 0);
     }
 }

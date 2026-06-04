@@ -4,6 +4,46 @@ export interface IngestResponse {
   operation_id: string
 }
 
+export interface RemoteCollection {
+  id: string
+  name: string
+}
+
+export async function listVectorCollections(): Promise<RemoteCollection[]> {
+  const res = await fetch('/api/v1/vector/collections', {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  if (!res.ok) return []
+  const data = await res.json()
+  return Array.isArray(data.collections)
+    ? data.collections.map((id: string) => ({ id, name: id }))
+    : []
+}
+
+export async function getVectorCollectionStats(name: string): Promise<number> {
+  const res = await fetch(`/api/v1/vector/collections/${encodeURIComponent(name)}/stats`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  if (!res.ok) return 0
+  const data = await res.json()
+  return data.count ?? 0
+}
+
+export async function createVectorCollection(name: string): Promise<{ ok: boolean; conflict: boolean }> {
+  const res = await fetch(`/api/v1/vector/collections/${encodeURIComponent(name)}`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  return { ok: res.status === 201, conflict: res.status === 409 }
+}
+
+export async function deleteVectorCollection(name: string): Promise<void> {
+  await fetch(`/api/v1/vector/collections/${encodeURIComponent(name)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+}
+
 /// Upload raw file bytes to POST /api/v1/upload.
 export async function uploadFile(
   file: File,
@@ -51,11 +91,5 @@ export async function ingestSample(
 }
 
 export async function listCollections(): Promise<{ id: string; name: string }[]> {
-  const res = await fetch('/admin/collections', {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  })
-  if (!res.ok) return []
-  const data = await res.json()
-  // Server returns { "collections": [...] } — extract the array.
-  return Array.isArray(data.collections) ? data.collections : []
+  return listVectorCollections()
 }

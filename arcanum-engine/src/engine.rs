@@ -44,6 +44,8 @@ pub struct ArcanumEngine {
     pub secret_store: Option<Arc<dyn SecretStore>>,
     /// Optional knowledge graph store, exposed for the /api/v1/graph endpoint.
     pub graph_store: Option<Arc<dyn GraphStore>>,
+    pub vector_store: Option<Arc<dyn VectorStore>>,
+    pub tree_store: Option<Arc<dyn TreeStore>>,
 }
 
 impl std::fmt::Debug for ArcanumEngine {
@@ -350,6 +352,8 @@ impl ArcanumEngineBuilder {
             vector_store_cb,
             secret_store,
             graph_store: self.graph_store.clone(),
+            vector_store: self.vector_store.clone(),
+            tree_store: self.tree_store.clone(),
         }))
     }
 }

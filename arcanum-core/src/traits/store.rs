@@ -23,6 +23,19 @@ pub trait VectorStore: Send + Sync {
     async fn collection_exists(&self, collection: &str) -> Result<bool>;
     /// Delete all chunks for the given source_uri in the collection. No-op if none exist.
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
+
+    /// Returns all collection names in this store, including empty collections.
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+
+    /// Create a new empty collection. Returns `AlreadyExists` if the name is taken.
+    async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+
+    /// Count distinct documents (by document_id) in this store.
+    /// `None` → total across all collections; `Some("col")` → count for that collection.
+    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+
+    /// Delete all data for the given collection. Idempotent — no-op if it does not exist.
+    async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +54,11 @@ pub trait GraphStore: Send + Sync {
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>>;
     /// Delete all entities and their relations for the given source_uri. No-op if none exist.
     async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()>;
+
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+    async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
 }
 
 #[async_trait]
@@ -50,6 +68,11 @@ pub trait TreeStore: Send + Sync {
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>>;
     /// Delete all tree nodes for the given source_uri in the collection. No-op if none exist.
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
+
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+    async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
 }
 
 #[async_trait]

@@ -1,67 +1,102 @@
 import { useEffect, useState } from 'react'
-import { getCollections, addCollection, deleteCollection, CollectionInfo } from '../store/collections'
+import { rememberCollection, forgetCollection } from '../store/collections'
+import { listVectorCollections, getVectorCollectionStats, createVectorCollection, deleteVectorCollection } from '../api/ingest'
 import { apiKey } from '../api/auth'
-import { Database, RefreshCw, Plus, Trash2, Activity } from 'lucide-react'
+import { Database, RefreshCw, Plus, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
+interface DisplayCollection {
+  name: string
+  docCount: number | null
+}
+
 export default function CollectionsPage() {
-  const [collections, setCollections] = useState<CollectionInfo[]>([])
-  const [health, setHealth] = useState<'ok' | 'error' | 'unknown'>('unknown')
+  const [collections, setCollections] = useState<DisplayCollection[]>([])
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [newName, setNewName] = useState('')
+  const [createError, setCreateError] = useState('')
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
   const navigate = useNavigate()
 
-  function load() {
-    setCollections(getCollections())
-  }
-
-  async function loadHealth() {
+  async function load() {
     try {
-      const res = await fetch('/admin/health', {
-        headers: { Authorization: `Bearer ${apiKey}` },
-      })
-      const data = await res.json()
-      setHealth(data?.vector_store === 'ok' ? 'ok' : 'error')
+      const remote = await listVectorCollections()
+      const localNames = getKnownCollections()
+      const allNames = Array.from(new Set([...remote.map(r => r.id), ...localNames]))
+      const remoteSet = new Set(remote.map(r => r.id))
+      setCollections(allNames.map(name => ({
+        name,
+        docCount: remoteSet.has(name) ? null : 0,
+      })))
+      // Fetch counts for collections that exist on server
+      for (const name of allNames.filter(n => remoteSet.has(n))) {
+        const count = await getVectorCollectionStats(name)
+        setCollections(prev => prev.map(c => c.name === name ? { ...c, docCount: count } : c))
+      }
     } catch {
-      setHealth('error')
+      // Silent failure — show empty state
+    } finally {
+      setLoading(false)
     }
   }
 
-  useEffect(() => {
-    load()
-    loadHealth()
-  }, [])
-
-  function handleCreate() {
-    const name = newName.trim()
-    if (!name) return
-    addCollection(name)
-    load()
-    setNewName('')
-    setShowCreateModal(false)
-    navigate(`/docs?collection=${encodeURIComponent(name)}`)
+  function getKnownCollections(): string[] {
+    try {
+      const raw = localStorage.getItem('arcanum_known_collections')
+      return raw ? JSON.parse(raw) : []
+    } catch {
+      return []
+    }
   }
 
-  function handleDelete(id: string) {
-    deleteCollection(id)
+  useEffect(() => { load() }, [])
+
+  async function handleCreate() {
+    const name = newName.trim()
+    if (!name) return
+    setCreateError('')
+
+    const result = await createVectorCollection(name)
+    if (result.conflict) {
+      setCreateError('Collection already exists')
+      return
+    }
+    if (result.ok) {
+      rememberCollection(name)
+      load()
+      setShowCreateModal(false)
+      setNewName('')
+      navigate(`/docs?collection=${encodeURIComponent(name)}`)
+    }
+  }
+
+  async function handleDelete(name: string) {
+    await deleteVectorCollection(name)
+    forgetCollection(name)
     load()
     setDeleteTarget(null)
   }
 
-  const healthColor = health === 'ok' ? 'text-green-400' : health === 'error' ? 'text-red-400' : 'text-slate-500'
+  if (loading) {
+    return (
+      <div className="max-w-2xl">
+        <h1 className="text-2xl font-mono text-slate-100 mb-6">Collections</h1>
+        <div className="text-slate-500 text-sm flex items-center gap-2 p-6 border border-slate-800 rounded-xl">
+          <RefreshCw size={14} className="animate-spin" />
+          Loading…
+        </div>
+      </div>
+    )
+  }
 
   return (
     <div className="max-w-2xl">
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-mono text-slate-100">Collections</h1>
         <div className="flex items-center gap-3">
-          <span className={`flex items-center gap-1.5 text-xs font-mono ${healthColor}`}>
-            <Activity size={12} />
-            {health === 'ok' ? 'vector store ok' : health === 'error' ? 'store error' : 'checking…'}
-          </span>
           <button
-            onClick={() => { load(); loadHealth() }}
+            onClick={() => load()}
             className="flex items-center gap-2 text-sm text-slate-400 hover:text-slate-200 transition-colors"
           >
             <RefreshCw size={14} />
@@ -80,27 +115,25 @@ export default function CollectionsPage() {
       {collections.length === 0 && (
         <div className="text-slate-500 text-sm flex items-center gap-3 p-6 border border-slate-800 rounded-xl">
           <Database size={20} />
-          <span>No collections yet. Ingest some docs to create one.</span>
+          <span>No collections yet. Create one to start ingesting.</span>
         </div>
       )}
 
       <div className="space-y-3">
         {collections.map(c => (
-          <div key={c.id} className="bg-[#13131f] border border-slate-800 rounded-lg px-4 py-3">
+          <div key={c.name} className="bg-[#13131f] border border-slate-800 rounded-lg px-4 py-3">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
                 <Database size={16} className="text-blue-400 flex-shrink-0 mt-0.5" />
                 <div>
                   <div className="text-sm text-slate-200 font-mono">{c.name}</div>
                   <div className="flex gap-3 text-xs text-slate-500 font-mono mt-0.5">
-                    <span>{c.docCount} docs</span>
-                    <span>{c.chunkCount} chunks</span>
-                    <span title={c.lastIngested}>last: {new Date(c.lastIngested).toLocaleString()}</span>
+                    {c.docCount !== null ? <span>{c.docCount} docs</span> : <span>empty</span>}
                   </div>
                 </div>
               </div>
               <button
-                onClick={() => setDeleteTarget(c.id)}
+                onClick={() => setDeleteTarget(c.name)}
                 className="p-1.5 text-slate-600 hover:text-red-400 transition-colors rounded"
                 title="Delete collection"
               >
@@ -123,6 +156,7 @@ export default function CollectionsPage() {
               className="w-full bg-[#13131f] border border-slate-700 rounded px-3 py-2 text-sm text-slate-200 font-mono focus:border-blue-500 outline-none"
               autoFocus
             />
+            {createError && <p className="text-xs text-red-400">{createError}</p>}
             <p className="text-xs text-slate-500">Creates a named slot and navigates to Docs to start ingesting.</p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => { setShowCreateModal(false); setNewName('') }} className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>

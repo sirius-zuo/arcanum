@@ -29,6 +29,9 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "arcanum-dev-secret-minimum-32chars!!".into());
     let ollama   = std::env::var("OLLAMA_URL")
         .unwrap_or_else(|_| "http://localhost:11434".into());
+    let metrics_token = std::env::var("ARCANUM_METRICS_TOKEN")
+        .map_err(|_| anyhow::anyhow!("ARCANUM_METRICS_TOKEN must be set"))?;
+    let _ = metrics_token; // validated above; the metrics route reads it from env directly
 
     // Load dev config (falls back to default if file not found)
     let config = ArcanumConfig::from_file(std::path::Path::new("config.toml"))

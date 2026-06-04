@@ -4,7 +4,6 @@ use arcanum_engine::ArcanumEngine;
 use arcanum_engine::auth::{AdminClaims, AdminRole};
 use arcanum_engine::services::admin::AdminService;
 use metrics::counter;
-use crate::metrics as metrics_mod;
 
 /// Validate RS256 admin JWT and return AdminClaims.
 fn validate_admin_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
@@ -38,67 +37,6 @@ fn validate_admin_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>
         role: AdminRole::Admin,
         exp: api_claims.exp as u64,
     })
-}
-
-pub async fn list_collections(
-    headers: HeaderMap,
-    State(engine): State<Option<Arc<ArcanumEngine>>>,
-) -> impl IntoResponse {
-    let response = {
-        let claims = match validate_admin_bearer(&headers, &engine) {
-            Ok(c) => c,
-            Err(e) => return e.into_response(),
-        };
-        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
-            return (StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-        }
-        (StatusCode::OK, Json(serde_json::json!({ "collections": [] }))).into_response()
-    };
-    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    counter!("arcanum_requests_total", "endpoint" => "admin/list_collections", "status" => status).increment(1);
-    response
-}
-
-pub async fn get_health(
-    headers: HeaderMap,
-    State(engine): State<Option<Arc<ArcanumEngine>>>,
-) -> impl IntoResponse {
-    let response = {
-        let claims = match validate_admin_bearer(&headers, &engine) {
-            Ok(c) => c,
-            Err(e) => return e.into_response(),
-        };
-        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Tester) {
-            return (StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-        }
-        (StatusCode::OK, Json(serde_json::json!({ "vector_store": "ok" }))).into_response()
-    };
-    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    counter!("arcanum_requests_total", "endpoint" => "admin/get_health", "status" => status).increment(1);
-    response
-}
-
-pub async fn get_metrics(
-    headers: HeaderMap,
-    State(engine): State<Option<Arc<ArcanumEngine>>>,
-) -> impl IntoResponse {
-    let response = {
-        let claims = match validate_admin_bearer(&headers, &engine) {
-            Ok(c) => c,
-            Err(e) => return e.into_response(),
-        };
-        if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Tester) {
-            return (StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-        }
-        let text = metrics_mod::get_metrics_text();
-        (StatusCode::OK, text).into_response()
-    };
-    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    counter!("arcanum_requests_total", "endpoint" => "admin/get_metrics", "status" => status).increment(1);
-    response
 }
 
 pub async fn list_ingestion_sources(
@@ -204,39 +142,5 @@ mod tests {
         app.oneshot(req).await.unwrap().status()
     }
 
-    #[tokio::test]
-    async fn test_health_requires_tester_role_minimum() {
-        let engine = test_engine().await;
-        let token = engine.auth.generate_admin_key("admin1");
-        let status = get_with_token("/admin/health", &token).await;
-        assert_eq!(status, StatusCode::OK, "admin key should pass health check");
-    }
 
-    #[tokio::test]
-    async fn test_health_rejects_non_admin_api_key() {
-        let engine = test_engine().await;
-        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
-        let status = get_with_token("/admin/health", &token).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "non-admin key should be rejected");
-    }
-
-    #[tokio::test]
-    async fn test_collections_requires_operator_role_minimum() {
-        let engine = test_engine().await;
-        let token = engine.auth.generate_admin_key("admin1");
-        let status = get_with_token("/admin/collections", &token).await;
-        assert_eq!(status, StatusCode::OK, "admin key should pass collections check");
-    }
-
-    #[tokio::test]
-    async fn test_metrics_rejects_unauthenticated() {
-        let engine = test_engine().await;
-        let app = build_app(Some(engine));
-        let req = Request::builder()
-            .uri("/admin/metrics")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
 }
