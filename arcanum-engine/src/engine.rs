@@ -1,7 +1,7 @@
 use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster, LexicalIndex},
+             CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -100,6 +100,7 @@ pub struct ArcanumEngineBuilder {
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
     bm25_index: Option<Arc<Bm25Index>>,
+    document_registry: Option<Arc<dyn DocumentRegistry>>,
 }
 
 impl Default for ArcanumEngineBuilder {
@@ -114,6 +115,7 @@ impl Default for ArcanumEngineBuilder {
             tree_store: None,
             secret_store: None,
             bm25_index: None,
+            document_registry: None,
         }
     }
 }
@@ -175,6 +177,11 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn document_registry(mut self, registry: Arc<dyn DocumentRegistry>) -> Self {
+        self.document_registry = Some(registry);
+        self
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
 
@@ -225,6 +232,9 @@ impl ArcanumEngineBuilder {
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
                 hash_tracker:      hash_tracker.clone(),
+                document_registry: self.document_registry
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
