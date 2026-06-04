@@ -7,7 +7,7 @@ pub enum RegistryStatus {
     Replacing,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct RegistryEntry {
     /// None while status is Replacing (cleanup in progress).
     pub content_hash: Option<String>,
