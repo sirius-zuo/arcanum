@@ -196,29 +196,31 @@ impl GraphStore for Neo4jStore {
     }
 
     async fn create_collection(&self, collection: &str) -> Result<()> {
-        // Check existence first.
-        let existing: bool = {
-            let mut stream = self.graph.execute(
-                query("MATCH (c:GraphCollection {name: $name}) RETURN c.name LIMIT 1")
-                    .param("name", collection.to_string()),
+        let mut stream = self.graph.execute(
+            query(
+                "MERGE (c:GraphCollection {name: $name}) \
+                 ON CREATE SET c.just_created = true \
+                 ON MATCH  SET c.just_created = false \
+                 RETURN c.just_created AS just_created",
             )
-            .await
-            .map_err(|e| ArcanumError::Storage(format!("create_collection check: {}", e)))?;
-            stream.next().await
-                .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
-                .is_some()
+            .param("name", collection.to_string()),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("create_collection error: {}", e)))?;
+
+        let just_created: bool = if let Some(row) = stream.next().await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
+        {
+            row.get("just_created").unwrap_or(false)
+        } else {
+            false
         };
-        if existing {
+
+        if !just_created {
             return Err(ArcanumError::AlreadyExists(
                 format!("collection '{}' already exists", collection),
             ));
         }
-        self.graph.run(
-            query("CREATE (:GraphCollection {name: $name})")
-                .param("name", collection.to_string()),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
         Ok(())
     }
 
