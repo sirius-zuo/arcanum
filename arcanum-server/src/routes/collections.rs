@@ -197,14 +197,13 @@ pub async fn graph_stats_all(
     let Some(store) = eng.graph_store.as_ref() else {
         return (StatusCode::OK, Json(serde_json::json!({ "total": 0, "by_collection": {} }))).into_response();
     };
-    let cols = match store.list_collections().await {
+    let counts = match store.count_documents_all().await {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     };
     let mut by_collection = serde_json::Map::new();
     let mut total = 0u64;
-    for col in &cols {
-        let count = store.count_documents(Some(col)).await.unwrap_or(0);
+    for (col, count) in &counts {
         by_collection.insert(col.clone(), serde_json::json!(count));
         total += count;
     }

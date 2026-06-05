@@ -158,6 +158,24 @@ impl GraphStore for InMemoryGraphStore {
         Ok(count as u64)
     }
 
+    async fn count_documents_all(&self) -> Result<std::collections::HashMap<String, u64>> {
+        let entities = self.entities.read().await;
+        let created = self.created.read().await;
+        let mut map: std::collections::HashMap<String, u64> = created
+            .iter()
+            .map(|c| (c.clone(), 0u64))
+            .collect();
+        for (col, entity_map) in entities.iter() {
+            let count = entity_map.values()
+                .map(|e| e.source_uri.as_str())
+                .filter(|u| !u.is_empty())
+                .collect::<HashSet<_>>()
+                .len() as u64;
+            map.insert(col.clone(), count);
+        }
+        Ok(map)
+    }
+
     async fn delete_collection(&self, collection: &str) -> Result<()> {
         self.entities.write().await.remove(collection);
         self.relations.write().await.remove(collection);
@@ -324,5 +342,24 @@ mod tests {
         let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
         assert!(store.query("col-a", &gq).await.unwrap().is_empty());
         assert_eq!(store.query("col-b", &gq).await.unwrap().len(), 1, "col-b unaffected");
+    }
+
+    #[tokio::test]
+    async fn count_documents_all_matches_per_collection_counts() {
+        let store = InMemoryGraphStore::new();
+        for (col, uri, n) in [("c1", "file://a.md", 2usize), ("c2", "file://b.md", 1)] {
+            let entities: Vec<Entity> = (0..n).map(|_| Entity {
+                id: EntityId::new(), name: "X".into(), entity_type: "T".into(),
+                canonical_id: None, source_chunks: vec![],
+                source_uri: uri.into(), collection_id: col.into(),
+            }).collect();
+            store.upsert_entities(col, entities).await.unwrap();
+        }
+        let all = store.count_documents_all().await.unwrap();
+        assert_eq!(all.get("c1").copied().unwrap_or(0), 1, "c1 has 1 distinct source_uri");
+        assert_eq!(all.get("c2").copied().unwrap_or(0), 1, "c2 has 1 distinct source_uri");
+        // Total via count_documents(None) must match sum
+        let total = store.count_documents(None).await.unwrap();
+        assert_eq!(total, all.values().sum::<u64>());
     }
 }

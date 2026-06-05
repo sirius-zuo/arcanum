@@ -271,6 +271,38 @@ impl GraphStore for Neo4jStore {
         Ok(count as u64)
     }
 
+    async fn count_documents_all(&self) -> Result<std::collections::HashMap<String, u64>> {
+        // Seed with all known collections (including empty ones) so they appear with count 0.
+        let mut map: std::collections::HashMap<String, u64> = self
+            .list_collections()
+            .await?
+            .into_iter()
+            .map(|c| (c, 0u64))
+            .collect();
+
+        // One aggregated query returns counts for all collections with data.
+        let mut stream = self.graph.execute(
+            query(
+                "MATCH (e:Entity) \
+                 WHERE e.collection IS NOT NULL \
+                   AND e.source_uri IS NOT NULL AND e.source_uri <> '' \
+                 RETURN e.collection AS col, COUNT(DISTINCT e.source_uri) AS cnt",
+            ),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("count_documents_all error: {}", e)))?;
+
+        while let Some(row) = stream.next().await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
+        {
+            let col: String = row.get("col")
+                .map_err(|e| ArcanumError::Storage(format!("get col: {}", e)))?;
+            let cnt: i64 = row.get("cnt").unwrap_or(0);
+            map.entry(col).and_modify(|v| *v = cnt as u64).or_insert(cnt as u64);
+        }
+        Ok(map)
+    }
+
     async fn delete_collection(&self, collection: &str) -> Result<()> {
         // Delete all entities in the collection (DETACH DELETE cascades relations).
         self.graph.run(
