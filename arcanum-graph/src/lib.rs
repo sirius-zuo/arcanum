@@ -1,6 +1,6 @@
-use arcanum_core::{traits::*, types::*, Result};
+use arcanum_core::{ArcanumError, traits::*, types::*, Result};
 use async_trait::async_trait;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap, HashSet}, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::instrument;
 
@@ -17,41 +17,55 @@ pub struct GraphTraversalPlan {
     pub relation_types: Vec<String>,
 }
 
-/// In-memory GraphStore for development and testing.
-/// Replace with Kuzu or Neo4j implementation for production.
 pub struct InMemoryGraphStore {
-    entities: Arc<RwLock<HashMap<String, Entity>>>,
-    relations: Arc<RwLock<Vec<Relation>>>,
+    // outer key: collection name; inner key: entity ID string
+    entities:  Arc<RwLock<HashMap<String, HashMap<String, Entity>>>>,
+    // outer key: collection name
+    relations: Arc<RwLock<HashMap<String, Vec<Relation>>>>,
+    // tracks explicitly created collections (including empty ones)
+    created:   Arc<RwLock<HashSet<String>>>,
 }
 
 impl InMemoryGraphStore {
     pub fn new() -> Self {
         Self {
-            entities: Arc::new(RwLock::new(HashMap::new())),
-            relations: Arc::new(RwLock::new(Vec::new())),
+            entities:  Arc::new(RwLock::new(HashMap::new())),
+            relations: Arc::new(RwLock::new(HashMap::new())),
+            created:   Arc::new(RwLock::new(HashSet::new())),
         }
     }
 }
 
+impl Default for InMemoryGraphStore {
+    fn default() -> Self { Self::new() }
+}
+
 #[async_trait]
 impl GraphStore for InMemoryGraphStore {
-    #[instrument(skip(self, entities), fields(store = "in_memory_graph", entity_count = entities.len()), err)]
-    async fn upsert_entities(&self, entities: Vec<Entity>) -> Result<()> {
+    #[instrument(skip(self, entities), fields(store = "in_memory_graph", collection, entity_count = entities.len()), err)]
+    async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()> {
         let mut map = self.entities.write().await;
-        for e in entities { map.insert(e.id.0.to_string(), e); }
+        let col = map.entry(collection.to_string()).or_default();
+        for e in entities {
+            col.insert(e.id.0.to_string(), e);
+        }
         Ok(())
     }
 
-    #[instrument(skip(self, relations), fields(store = "in_memory_graph", relation_count = relations.len()), err)]
-    async fn upsert_relations(&self, relations: Vec<Relation>) -> Result<()> {
-        self.relations.write().await.extend(relations);
+    #[instrument(skip(self, relations), fields(store = "in_memory_graph", collection, relation_count = relations.len()), err)]
+    async fn upsert_relations(&self, collection: &str, relations: Vec<Relation>) -> Result<()> {
+        self.relations.write().await
+            .entry(collection.to_string())
+            .or_default()
+            .extend(relations);
         Ok(())
     }
 
-    #[instrument(skip(self, q), fields(store = "in_memory_graph", result_count), err)]
-    async fn query(&self, q: &GraphQuery) -> Result<Vec<Entity>> {
+    #[instrument(skip(self, q), fields(store = "in_memory_graph", collection, result_count), err)]
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
         let map = self.entities.read().await;
-        let results: Vec<Entity> = map.values().filter(|e| {
+        let entities = map.get(collection).cloned().unwrap_or_default();
+        let results: Vec<Entity> = entities.values().filter(|e| {
             q.entity_name.as_deref().map(|n| e.name.contains(n)).unwrap_or(true)
             && q.entity_type.as_deref().map(|t| e.entity_type == t).unwrap_or(true)
         }).cloned().collect();
@@ -61,29 +75,93 @@ impl GraphStore for InMemoryGraphStore {
 
     #[instrument(skip(self, entity_id), fields(store = "in_memory_graph", entity_id = %entity_id.0), err)]
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
-        Ok(self.relations.read().await.iter()
+        let all = self.relations.read().await;
+        Ok(all.values()
+            .flat_map(|v| v.iter())
             .filter(|r| r.source.0 == entity_id.0)
             .cloned()
             .collect())
     }
 
-    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+    #[instrument(skip(self), fields(store = "in_memory_graph", collection, source_uri), err)]
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
         if source_uri.is_empty() {
-            tracing::warn!(store = "in_memory_graph", "delete_by_source_uri called with empty source_uri — skipping to prevent mass deletion");
+            tracing::warn!(store = "in_memory_graph", "delete_by_source_uri called with empty source_uri — skipping");
             return Ok(());
         }
         let mut entities = self.entities.write().await;
-        let to_remove: std::collections::HashSet<String> = entities.values()
-            .filter(|e| e.source_uri == source_uri)
-            .map(|e| e.id.0.to_string())
-            .collect();
-        entities.retain(|id, _| !to_remove.contains(id));
-        // Hold the entity lock while acquiring relation lock to prevent TOCTOU:
+        let removed_ids: HashSet<String> = entities
+            .get(collection)
+            .map(|col| col.values()
+                .filter(|e| e.source_uri == source_uri)
+                .map(|e| e.id.0.to_string())
+                .collect())
+            .unwrap_or_default();
+
+        if let Some(col) = entities.get_mut(collection) {
+            col.retain(|id, _| !removed_ids.contains(id));
+        }
+
         let mut relations = self.relations.write().await;
-        relations.retain(|r| {
-            !to_remove.contains(&r.source.0.to_string())
-            && !to_remove.contains(&r.target.0.to_string())
-        });
+        if let Some(col_rels) = relations.get_mut(collection) {
+            col_rels.retain(|r| {
+                !removed_ids.contains(&r.source.0.to_string())
+                && !removed_ids.contains(&r.target.0.to_string())
+            });
+        }
+        Ok(())
+    }
+
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let entities = self.entities.read().await;
+        let created = self.created.read().await;
+        let mut all: HashSet<String> = entities.keys().cloned().collect();
+        all.extend(created.iter().cloned());
+        let mut result: Vec<String> = all.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        let mut created = self.created.write().await;
+        let entities = self.entities.read().await;
+        if created.contains(collection) || entities.contains_key(collection) {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection),
+            ));
+        }
+        created.insert(collection.to_string());
+        Ok(())
+    }
+
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let entities = self.entities.read().await;
+        let count = match collection {
+            Some(col) => {
+                entities.get(col)
+                    .map(|m| m.values()
+                        .map(|e| e.source_uri.clone())
+                        .filter(|u| !u.is_empty())
+                        .collect::<HashSet<_>>()
+                        .len())
+                    .unwrap_or(0)
+            }
+            None => {
+                entities.values()
+                    .flat_map(|m| m.values())
+                    .map(|e| e.source_uri.clone())
+                    .filter(|u| !u.is_empty())
+                    .collect::<HashSet<_>>()
+                    .len()
+            }
+        };
+        Ok(count as u64)
+    }
+
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        self.entities.write().await.remove(collection);
+        self.relations.write().await.remove(collection);
+        self.created.write().await.remove(collection);
         Ok(())
     }
 }
@@ -98,11 +176,11 @@ mod tests {
         let store = InMemoryGraphStore::new();
         let e = Entity {
             id: EntityId::new(), name: "Foo".into(), entity_type: "T".into(),
-            canonical_id: None, source_chunks: vec![], source_uri: "".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "test-col".into(),
         };
-        store.upsert_entities(vec![e]).await.unwrap();
-        store.delete_by_source_uri("").await.unwrap();
-        let results = store.query(&GraphQuery {
+        store.upsert_entities("test-col", vec![e]).await.unwrap();
+        store.delete_by_source_uri("test-col", "").await.unwrap();
+        let results = store.query("test-col", &GraphQuery {
             entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
         }).await.unwrap();
         assert_eq!(results.len(), 1, "entity with source_uri='' must not be deleted by empty-string call");
@@ -115,23 +193,23 @@ mod tests {
         let id2 = EntityId::new();
         let e1 = Entity {
             id: id1.clone(), name: "Doc A".into(), entity_type: "Doc".into(),
-            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(), collection_id: "test-col".into(),
         };
         let e2 = Entity {
             id: id2.clone(), name: "Doc B".into(), entity_type: "Doc".into(),
-            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(), collection_id: "test-col".into(),
         };
-        store.upsert_entities(vec![e1, e2]).await.unwrap();
+        store.upsert_entities("test-col", vec![e1, e2]).await.unwrap();
         // Add a relation from e1 → e2 so we can verify cascade delete removes it
         let rel = arcanum_core::types::Relation {
             source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
             confidence: 1.0, source_chunk: arcanum_core::types::ChunkId::new(),
         };
-        store.upsert_relations(vec![rel]).await.unwrap();
+        store.upsert_relations("test-col", vec![rel]).await.unwrap();
 
-        store.delete_by_source_uri("file://a.md").await.unwrap();
+        store.delete_by_source_uri("test-col", "file://a.md").await.unwrap();
 
-        let results = store.query(&GraphQuery {
+        let results = store.query("test-col", &GraphQuery {
             entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
         }).await.unwrap();
         assert_eq!(results.len(), 1);
@@ -140,5 +218,111 @@ mod tests {
         // Verify the relation was also removed (cascade)
         let relations = store.get_relations(&id2).await.unwrap();
         assert!(relations.is_empty(), "relation from deleted entity should be removed");
+    }
+
+    #[tokio::test]
+    async fn collections_are_isolated() {
+        let store = InMemoryGraphStore::new();
+        let e1 = Entity {
+            id: EntityId::new(), name: "Alpha".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://a.md".into(), collection_id: "col-a".into(),
+        };
+        let e2 = Entity {
+            id: EntityId::new(), name: "Beta".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://b.md".into(), collection_id: "col-b".into(),
+        };
+        store.upsert_entities("col-a", vec![e1]).await.unwrap();
+        store.upsert_entities("col-b", vec![e2]).await.unwrap();
+
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        let col_a = store.query("col-a", &gq).await.unwrap();
+        assert_eq!(col_a.len(), 1);
+        assert_eq!(col_a[0].name, "Alpha");
+
+        let col_b = store.query("col-b", &gq).await.unwrap();
+        assert_eq!(col_b.len(), 1);
+        assert_eq!(col_b[0].name, "Beta");
+    }
+
+    #[tokio::test]
+    async fn create_collection_and_list() {
+        let store = InMemoryGraphStore::new();
+        store.create_collection("empty-col").await.unwrap();
+        let cols = store.list_collections().await.unwrap();
+        assert!(cols.contains(&"empty-col".to_string()));
+    }
+
+    #[tokio::test]
+    async fn create_collection_duplicate_returns_already_exists() {
+        let store = InMemoryGraphStore::new();
+        store.create_collection("col").await.unwrap();
+        let err = store.create_collection("col").await.unwrap_err();
+        assert!(matches!(err, arcanum_core::ArcanumError::AlreadyExists(_)));
+    }
+
+    #[tokio::test]
+    async fn delete_collection_removes_entities_and_relations() {
+        let store = InMemoryGraphStore::new();
+        let id = EntityId::new();
+        let e = Entity {
+            id: id.clone(), name: "Foo".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://x.md".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e]).await.unwrap();
+        store.delete_collection("col").await.unwrap();
+
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        let results = store.query("col", &gq).await.unwrap();
+        assert!(results.is_empty());
+        let cols = store.list_collections().await.unwrap();
+        assert!(!cols.contains(&"col".to_string()));
+    }
+
+    #[tokio::test]
+    async fn count_documents_by_source_uri() {
+        let store = InMemoryGraphStore::new();
+        // Two entities from the same document (same source_uri) — count should be 1.
+        let e1 = Entity {
+            id: EntityId::new(), name: "E1".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://doc.md".into(), collection_id: "col".into(),
+        };
+        let e2 = Entity {
+            id: EntityId::new(), name: "E2".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://doc.md".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e1, e2]).await.unwrap();
+        let count = store.count_documents(Some("col")).await.unwrap();
+        assert_eq!(count, 1, "two entities from same doc = 1 document");
+
+        let total = store.count_documents(None).await.unwrap();
+        assert_eq!(total, 1);
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_scoped_to_collection() {
+        let store = InMemoryGraphStore::new();
+        let e_a = Entity {
+            id: EntityId::new(), name: "InA".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://shared.md".into(), collection_id: "col-a".into(),
+        };
+        let e_b = Entity {
+            id: EntityId::new(), name: "InB".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![],
+            source_uri: "file://shared.md".into(), collection_id: "col-b".into(),
+        };
+        store.upsert_entities("col-a", vec![e_a]).await.unwrap();
+        store.upsert_entities("col-b", vec![e_b]).await.unwrap();
+
+        store.delete_by_source_uri("col-a", "file://shared.md").await.unwrap();
+
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        assert!(store.query("col-a", &gq).await.unwrap().is_empty());
+        assert_eq!(store.query("col-b", &gq).await.unwrap().len(), 1, "col-b unaffected");
     }
 }
