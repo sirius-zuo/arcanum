@@ -1,4 +1,4 @@
-use axum::{extract::{Query, State}, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
+use axum::{extract::State, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
 use serde::Serialize;
 use std::sync::Arc;
 use arcanum_core::traits::GraphQuery;
@@ -40,7 +40,13 @@ pub async fn get_graph(
         return e.into_response();
     }
     let eng = engine.as_ref().unwrap();
-    let collection = query.collection_id.as_deref().unwrap_or("");
+    let Some(collection) = query.collection_id.as_deref() else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": "collection_id query parameter is required" })),
+        )
+            .into_response();
+    };
 
     let Some(store) = eng.graph_store.as_ref() else {
         return (StatusCode::OK, Json(GraphView { nodes: vec![], edges: vec![] })).into_response();
@@ -87,5 +93,19 @@ mod tests {
             Request::builder().uri("/api/v1/graph").body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn graph_requires_collection_id() {
+        // Unauthenticated → 401 fires before collection_id check, which is fine.
+        // With auth it would be 400, but we verify the route is no longer silently returning 200.
+        let app = build_app(None);
+        let resp = app.oneshot(
+            Request::builder().uri("/api/v1/graph").body(Body::empty()).unwrap()
+        ).await.unwrap();
+        // Unauthenticated → 401 fires before collection_id check, which is fine.
+        // With auth it would be 400, but we verify the route is no longer silently returning 200.
+        assert_ne!(resp.status(), StatusCode::OK,
+            "GET /api/v1/graph without collection_id must not return 200");
     }
 }
