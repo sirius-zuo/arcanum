@@ -20,6 +20,8 @@ pub struct Entity {
     pub source_chunks: Vec<ChunkId>,
     #[serde(default)]
     pub source_uri: String,
+    #[serde(default)]
+    pub collection_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
