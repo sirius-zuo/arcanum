@@ -212,24 +212,19 @@ impl VectorStore for PgVectorStore {
 
     #[instrument(skip(self), fields(store = "pgvector", collection = collection), err)]
     async fn create_collection(&self, collection: &str) -> Result<()> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT name FROM arcanum_vector_collections WHERE name = $1",
+        let result = sqlx::query(
+            "INSERT INTO arcanum_vector_collections (name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
         )
         .bind(collection)
-        .fetch_optional(&self.pool)
+        .execute(&self.pool)
         .await
-        .map_err(|e| ArcanumError::Storage(format!("create_collection check: {}", e)))?;
+        .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
 
-        if existing.is_some() {
+        if result.rows_affected() == 0 {
             return Err(ArcanumError::AlreadyExists(
                 format!("collection '{}' already exists", collection),
             ));
         }
-        sqlx::query("INSERT INTO arcanum_vector_collections (name) VALUES ($1)")
-            .bind(collection)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
         Ok(())
     }
 
