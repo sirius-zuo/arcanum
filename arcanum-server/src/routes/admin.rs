@@ -115,32 +115,3 @@ pub async fn rotate_keys(
     response
 }
 
-#[cfg(test)]
-mod tests {
-    use axum::{body::Body, http::{Request, StatusCode}};
-    use tower::ServiceExt;
-    use arcanum_engine::ArcanumEngine;
-    use crate::build_app;
-    use std::sync::Arc;
-
-    async fn test_engine() -> Arc<ArcanumEngine> {
-        ArcanumEngine::builder()
-            .auth_secret("a-32-char-secret-for-testing-ok!")
-            .build()
-            .await
-            .expect("engine build")
-    }
-
-    async fn get_with_token(path: &str, token: &str) -> StatusCode {
-        let engine = test_engine().await;
-        let app = build_app(Some(engine));
-        let req = Request::builder()
-            .uri(path)
-            .header("Authorization", format!("Bearer {}", token))
-            .body(Body::empty())
-            .unwrap();
-        app.oneshot(req).await.unwrap().status()
-    }
-
-
-}

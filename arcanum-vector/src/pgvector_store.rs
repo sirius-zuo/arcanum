@@ -212,24 +212,19 @@ impl VectorStore for PgVectorStore {
 
     #[instrument(skip(self), fields(store = "pgvector", collection = collection), err)]
     async fn create_collection(&self, collection: &str) -> Result<()> {
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT name FROM arcanum_vector_collections WHERE name = $1",
+        let result = sqlx::query(
+            "INSERT INTO arcanum_vector_collections (name) VALUES ($1) ON CONFLICT (name) DO NOTHING",
         )
         .bind(collection)
-        .fetch_optional(&self.pool)
+        .execute(&self.pool)
         .await
-        .map_err(|e| ArcanumError::Storage(format!("create_collection check: {}", e)))?;
+        .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
 
-        if existing.is_some() {
+        if result.rows_affected() == 0 {
             return Err(ArcanumError::AlreadyExists(
                 format!("collection '{}' already exists", collection),
             ));
         }
-        sqlx::query("INSERT INTO arcanum_vector_collections (name) VALUES ($1)")
-            .bind(collection)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
         Ok(())
     }
 
@@ -237,14 +232,16 @@ impl VectorStore for PgVectorStore {
     async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
         let count: i64 = match collection {
             Some(col) => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT chunk_json->'chunk'->>'document_id') FROM arcanum_chunks WHERE collection = $1",
+                "SELECT COUNT(DISTINCT chunk_json::jsonb->'chunk'->'metadata'->>'source_uri') \
+                 FROM arcanum_chunks WHERE collection = $1",
             )
             .bind(col)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
             None => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT chunk_json->'chunk'->>'document_id') FROM arcanum_chunks",
+                "SELECT COUNT(DISTINCT chunk_json::jsonb->'chunk'->'metadata'->>'source_uri') \
+                 FROM arcanum_chunks",
             )
             .fetch_one(&self.pool)
             .await

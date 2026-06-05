@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import { rememberCollection, forgetCollection } from '../store/collections'
+
 import { listVectorCollections, getVectorCollectionStats, createVectorCollection, deleteVectorCollection } from '../api/ingest'
-import { apiKey } from '../api/auth'
 import { Database, RefreshCw, Plus, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 
@@ -22,31 +21,17 @@ export default function CollectionsPage() {
   async function load() {
     try {
       const remote = await listVectorCollections()
-      const localNames = getKnownCollections()
-      const allNames = Array.from(new Set([...remote.map(r => r.id), ...localNames]))
-      const remoteSet = new Set(remote.map(r => r.id))
-      setCollections(allNames.map(name => ({
-        name,
-        docCount: remoteSet.has(name) ? null : 0,
-      })))
-      // Fetch counts for collections that exist on server
-      for (const name of allNames.filter(n => remoteSet.has(n))) {
-        const count = await getVectorCollectionStats(name)
-        setCollections(prev => prev.map(c => c.name === name ? { ...c, docCount: count } : c))
-      }
+      setCollections(remote.map(r => ({ name: r.id, docCount: null })))
+      await Promise.all(
+        remote.map(async r => {
+          const count = await getVectorCollectionStats(r.id)
+          setCollections(prev => prev.map(c => c.name === r.id ? { ...c, docCount: count } : c))
+        })
+      )
     } catch {
       // Silent failure — show empty state
     } finally {
       setLoading(false)
-    }
-  }
-
-  function getKnownCollections(): string[] {
-    try {
-      const raw = localStorage.getItem('arcanum_known_collections')
-      return raw ? JSON.parse(raw) : []
-    } catch {
-      return []
     }
   }
 
@@ -56,24 +41,23 @@ export default function CollectionsPage() {
     const name = newName.trim()
     if (!name) return
     setCreateError('')
-
     const result = await createVectorCollection(name)
     if (result.conflict) {
       setCreateError('Collection already exists')
       return
     }
     if (result.ok) {
-      rememberCollection(name)
       load()
       setShowCreateModal(false)
       setNewName('')
       navigate(`/docs?collection=${encodeURIComponent(name)}`)
+    } else {
+      setCreateError('Server error — please try again')
     }
   }
 
   async function handleDelete(name: string) {
     await deleteVectorCollection(name)
-    forgetCollection(name)
     load()
     setDeleteTarget(null)
   }
@@ -128,7 +112,7 @@ export default function CollectionsPage() {
                 <div>
                   <div className="text-sm text-slate-200 font-mono">{c.name}</div>
                   <div className="flex gap-3 text-xs text-slate-500 font-mono mt-0.5">
-                    {c.docCount !== null ? <span>{c.docCount} docs</span> : <span>empty</span>}
+                    <span>{c.docCount !== null ? `${c.docCount} docs` : '…'}</span>
                   </div>
                 </div>
               </div>
@@ -170,7 +154,7 @@ export default function CollectionsPage() {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-[#1e1e2e] border border-slate-700 rounded-xl p-6 w-80 space-y-4">
             <h2 className="text-sm font-mono text-slate-100">Delete "{deleteTarget}"?</h2>
-            <p className="text-xs text-slate-500">Removes this collection from the list. Vector data on the server is not deleted.</p>
+            <p className="text-xs text-slate-500">Permanently deletes this collection and all its vector data from the server.</p>
             <div className="flex gap-2 justify-end">
               <button onClick={() => setDeleteTarget(null)} className="px-4 py-2 text-sm text-slate-400 hover:text-slate-200 transition-colors">Cancel</button>
               <button onClick={() => handleDelete(deleteTarget)} className="px-4 py-2 text-sm bg-red-700 hover:bg-red-600 text-white rounded-md transition-colors">Delete</button>
