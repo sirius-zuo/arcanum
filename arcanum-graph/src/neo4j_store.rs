@@ -19,21 +19,23 @@ impl Neo4jStore {
 
 #[async_trait]
 impl GraphStore for Neo4jStore {
-    #[instrument(skip(self, entities), fields(store = "neo4j", entity_count = entities.len()), err)]
-    async fn upsert_entities(&self, entities: Vec<Entity>) -> Result<()> {
+    #[instrument(skip(self, entities), fields(store = "neo4j", collection, entity_count = entities.len()), err)]
+    async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()> {
         for entity in entities {
             let id = entity.id.0.to_string();
-            let name = entity.name.clone();
-            let entity_type = entity.entity_type.clone();
-            let canonical_id = entity.canonical_id.clone().unwrap_or_default();
-
             self.graph.run(
-                query("MERGE (e:Entity {id: $id}) SET e.name = $name, e.entity_type = $entity_type, e.canonical_id = $canonical_id, e.source_uri = $source_uri")
-                    .param("id", id)
-                    .param("name", name)
-                    .param("entity_type", entity_type)
-                    .param("canonical_id", canonical_id)
-                    .param("source_uri", entity.source_uri.clone()),
+                query(
+                    "MERGE (e:Entity {id: $id}) \
+                     SET e.name = $name, e.entity_type = $entity_type, \
+                         e.canonical_id = $canonical_id, e.source_uri = $source_uri, \
+                         e.collection = $collection"
+                )
+                .param("id", id)
+                .param("name", entity.name.clone())
+                .param("entity_type", entity.entity_type.clone())
+                .param("canonical_id", entity.canonical_id.clone().unwrap_or_default())
+                .param("source_uri", entity.source_uri.clone())
+                .param("collection", collection.to_string()),
             )
             .await
             .map_err(|e| ArcanumError::Storage(format!("upsert_entity error: {}", e)))?;
@@ -41,20 +43,21 @@ impl GraphStore for Neo4jStore {
         Ok(())
     }
 
-    #[instrument(skip(self, relations), fields(store = "neo4j", relation_count = relations.len()), err)]
-    async fn upsert_relations(&self, relations: Vec<Relation>) -> Result<()> {
+    #[instrument(skip(self, relations), fields(store = "neo4j", collection, relation_count = relations.len()), err)]
+    async fn upsert_relations(&self, collection: &str, relations: Vec<Relation>) -> Result<()> {
         for rel in relations {
-            let source_id = rel.source.0.to_string();
-            let target_id = rel.target.0.to_string();
-            let relation_type = rel.relation_type.clone();
-            let confidence = rel.confidence as f64;
-
             self.graph.run(
-                query("MATCH (s:Entity {id: $source_id}) MATCH (t:Entity {id: $target_id}) MERGE (s)-[r:RELATION {type: $relation_type}]->(t) SET r.confidence = $confidence")
-                    .param("source_id", source_id)
-                    .param("target_id", target_id)
-                    .param("relation_type", relation_type)
-                    .param("confidence", confidence),
+                query(
+                    "MATCH (s:Entity {id: $source_id}) \
+                     MATCH (t:Entity {id: $target_id}) \
+                     MERGE (s)-[r:RELATION {type: $relation_type}]->(t) \
+                     SET r.confidence = $confidence, r.collection = $collection"
+                )
+                .param("source_id", rel.source.0.to_string())
+                .param("target_id", rel.target.0.to_string())
+                .param("relation_type", rel.relation_type.clone())
+                .param("confidence", rel.confidence as f64)
+                .param("collection", collection.to_string()),
             )
             .await
             .map_err(|e| ArcanumError::Storage(format!("upsert_relation error: {}", e)))?;
@@ -62,23 +65,36 @@ impl GraphStore for Neo4jStore {
         Ok(())
     }
 
-    #[instrument(skip(self, q), fields(store = "neo4j"), err)]
-    async fn query(&self, q: &GraphQuery) -> Result<Vec<Entity>> {
+    #[instrument(skip(self, q), fields(store = "neo4j", collection), err)]
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
         let name_pattern = q.entity_name.clone().unwrap_or_default();
         let entity_type = q.entity_type.clone().unwrap_or_default();
 
         let cypher = if !entity_type.is_empty() && !name_pattern.is_empty() {
-            "MATCH (e:Entity) WHERE e.name CONTAINS $name AND e.entity_type = $entity_type RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri"
+            "MATCH (e:Entity {collection: $collection}) \
+             WHERE e.name CONTAINS $name AND e.entity_type = $entity_type \
+             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
+                    e.canonical_id as canonical_id, e.source_uri as source_uri"
         } else if !entity_type.is_empty() {
-            "MATCH (e:Entity) WHERE e.entity_type = $entity_type RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri"
+            "MATCH (e:Entity {collection: $collection}) \
+             WHERE e.entity_type = $entity_type \
+             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
+                    e.canonical_id as canonical_id, e.source_uri as source_uri"
         } else if !name_pattern.is_empty() {
-            "MATCH (e:Entity) WHERE e.name CONTAINS $name RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri"
+            "MATCH (e:Entity {collection: $collection}) \
+             WHERE e.name CONTAINS $name \
+             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
+                    e.canonical_id as canonical_id, e.source_uri as source_uri"
         } else {
-            "MATCH (e:Entity) RETURN e.id as id, e.name as name, e.entity_type as entity_type, e.canonical_id as canonical_id, e.source_uri as source_uri LIMIT 100"
+            "MATCH (e:Entity {collection: $collection}) \
+             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
+                    e.canonical_id as canonical_id, e.source_uri as source_uri \
+             LIMIT 100"
         };
 
         let mut stream = self.graph.execute(
             query(cypher)
+                .param("collection", collection.to_string())
                 .param("name", name_pattern)
                 .param("entity_type", entity_type),
         )
@@ -96,10 +112,8 @@ impl GraphStore for Neo4jStore {
                 .map_err(|e| ArcanumError::Storage(format!("get entity_type: {}", e)))?;
             let canonical_id: Option<String> = row.get("canonical_id").ok();
             let source_uri: String = row.get("source_uri").unwrap_or_default();
-
             let id = id_str.parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse uuid: {}", e)))?;
-
             entities.push(Entity {
                 id: EntityId(id),
                 name,
@@ -107,19 +121,21 @@ impl GraphStore for Neo4jStore {
                 canonical_id: canonical_id.filter(|s| !s.is_empty()),
                 source_chunks: vec![],
                 source_uri,
+                collection_id: collection.to_string(),
             });
         }
         Ok(entities)
     }
 
-    #[instrument(skip(self), fields(store = "neo4j", source_uri), err)]
-    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()> {
+    #[instrument(skip(self), fields(store = "neo4j", collection, source_uri), err)]
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
         if source_uri.is_empty() {
-            tracing::warn!(store = "neo4j", "delete_by_source_uri called with empty source_uri — skipping to prevent mass deletion");
+            tracing::warn!(store = "neo4j", "delete_by_source_uri called with empty source_uri — skipping");
             return Ok(());
         }
         self.graph.run(
-            query("MATCH (e:Entity {source_uri: $source_uri}) DETACH DELETE e")
+            query("MATCH (e:Entity {collection: $collection, source_uri: $source_uri}) DETACH DELETE e")
+                .param("collection", collection.to_string())
                 .param("source_uri", source_uri.to_string()),
         )
         .await
@@ -161,6 +177,96 @@ impl GraphStore for Neo4jStore {
         }
         Ok(relations)
     }
+
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let mut stream = self.graph.execute(
+            query("MATCH (c:GraphCollection) RETURN c.name as name ORDER BY c.name"),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_collections error: {}", e)))?;
+
+        let mut names = vec![];
+        while let Some(row) = stream.next().await
+            .map_err(|e| ArcanumError::Storage(format!("stream next error: {}", e)))? {
+            let name: String = row.get("name")
+                .map_err(|e| ArcanumError::Storage(format!("get name: {}", e)))?;
+            names.push(name);
+        }
+        Ok(names)
+    }
+
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        // Check existence first.
+        let existing: bool = {
+            let mut stream = self.graph.execute(
+                query("MATCH (c:GraphCollection {name: $name}) RETURN c.name LIMIT 1")
+                    .param("name", collection.to_string()),
+            )
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("create_collection check: {}", e)))?;
+            stream.next().await
+                .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
+                .is_some()
+        };
+        if existing {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection),
+            ));
+        }
+        self.graph.run(
+            query("CREATE (:GraphCollection {name: $name})")
+                .param("name", collection.to_string()),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
+        Ok(())
+    }
+
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let (cypher, col_param) = match collection {
+            Some(col) => (
+                "MATCH (e:Entity {collection: $collection}) \
+                 RETURN COUNT(DISTINCT e.source_uri) as cnt",
+                col.to_string(),
+            ),
+            None => (
+                "MATCH (e:Entity) RETURN COUNT(DISTINCT e.source_uri) as cnt",
+                String::new(),
+            ),
+        };
+        let mut q = query(cypher);
+        if collection.is_some() {
+            q = q.param("collection", col_param);
+        }
+        let mut stream = self.graph.execute(q)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("count_documents error: {}", e)))?;
+        let count: i64 = if let Some(row) = stream.next().await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))? {
+            row.get("cnt").unwrap_or(0)
+        } else {
+            0
+        };
+        Ok(count as u64)
+    }
+
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        // Delete all entities in the collection (DETACH DELETE cascades relations).
+        self.graph.run(
+            query("MATCH (e:Entity {collection: $collection}) DETACH DELETE e")
+                .param("collection", collection.to_string()),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("delete_collection entities: {}", e)))?;
+        // Remove the collection metadata node.
+        self.graph.run(
+            query("MATCH (c:GraphCollection {name: $name}) DELETE c")
+                .param("name", collection.to_string()),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("delete_collection metadata: {}", e)))?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -192,8 +298,9 @@ mod tests {
             canonical_id: None,
             source_chunks: vec![],
             source_uri: "".to_string(),
+            collection_id: "test-col".to_string(),
         };
-        store.upsert_entities(vec![entity.clone()]).await.expect("upsert");
+        store.upsert_entities("test-col", vec![entity.clone()]).await.expect("upsert");
 
         let q = GraphQuery {
             entity_name: Some("Test Entity".to_string()),
@@ -201,7 +308,7 @@ mod tests {
             max_hops: 1,
             relation_filter: None,
         };
-        let results = store.query(&q).await.expect("query");
+        let results = store.query("test-col", &q).await.expect("query");
         assert!(!results.is_empty());
     }
 }
