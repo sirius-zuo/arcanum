@@ -138,18 +138,22 @@ impl GraphStore for InMemoryGraphStore {
         let entities = self.entities.read().await;
         let count = match collection {
             Some(col) => {
-                entities.get(col)
-                    .map(|m| m.values()
-                        .map(|e| e.source_uri.clone())
-                        .filter(|u| !u.is_empty())
-                        .collect::<HashSet<_>>()
-                        .len())
+                entities
+                    .get(col)
+                    .map(|m| {
+                        m.values()
+                            .map(|e| e.source_uri.as_str())
+                            .filter(|u| !u.is_empty())
+                            .collect::<HashSet<_>>()
+                            .len()
+                    })
                     .unwrap_or(0)
             }
             None => {
-                entities.values()
+                entities
+                    .values()
                     .flat_map(|m| m.values())
-                    .map(|e| e.source_uri.clone())
+                    .map(|e| e.source_uri.as_str())
                     .filter(|u| !u.is_empty())
                     .collect::<HashSet<_>>()
                     .len()
