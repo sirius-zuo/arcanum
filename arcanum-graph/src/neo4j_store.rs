@@ -21,47 +21,65 @@ impl Neo4jStore {
 impl GraphStore for Neo4jStore {
     #[instrument(skip(self, entities), fields(store = "neo4j", collection, entity_count = entities.len()), err)]
     async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()> {
-        for entity in entities {
-            let id = entity.id.0.to_string();
-            self.graph.run(
-                query(
-                    "MERGE (e:Entity {id: $id}) \
-                     SET e.name = $name, e.entity_type = $entity_type, \
-                         e.canonical_id = $canonical_id, e.source_uri = $source_uri, \
-                         e.collection = $collection"
-                )
-                .param("id", id)
-                .param("name", entity.name.clone())
-                .param("entity_type", entity.entity_type.clone())
-                .param("canonical_id", entity.canonical_id.clone().unwrap_or_default())
-                .param("source_uri", entity.source_uri.clone())
-                .param("collection", collection.to_string()),
-            )
-            .await
-            .map_err(|e| ArcanumError::Storage(format!("upsert_entity error: {}", e)))?;
-        }
+        let futs: Vec<_> = entities
+            .into_iter()
+            .map(|entity| {
+                let graph = Arc::clone(&self.graph);
+                let col = collection.to_string();
+                async move {
+                    let id = entity.id.0.to_string();
+                    graph
+                        .run(
+                            query(
+                                "MERGE (e:Entity {id: $id}) \
+                                 SET e.name = $name, e.entity_type = $entity_type, \
+                                     e.canonical_id = $canonical_id, e.source_uri = $source_uri, \
+                                     e.collection = $collection",
+                            )
+                            .param("id", id)
+                            .param("name", entity.name)
+                            .param("entity_type", entity.entity_type)
+                            .param("canonical_id", entity.canonical_id.unwrap_or_default())
+                            .param("source_uri", entity.source_uri)
+                            .param("collection", col),
+                        )
+                        .await
+                        .map_err(|e| ArcanumError::Storage(format!("upsert_entity error: {}", e)))
+                }
+            })
+            .collect();
+        futures::future::try_join_all(futs).await?;
         Ok(())
     }
 
     #[instrument(skip(self, relations), fields(store = "neo4j", collection, relation_count = relations.len()), err)]
     async fn upsert_relations(&self, collection: &str, relations: Vec<Relation>) -> Result<()> {
-        for rel in relations {
-            self.graph.run(
-                query(
-                    "MATCH (s:Entity {id: $source_id}) \
-                     MATCH (t:Entity {id: $target_id}) \
-                     MERGE (s)-[r:RELATION {type: $relation_type}]->(t) \
-                     SET r.confidence = $confidence, r.collection = $collection"
-                )
-                .param("source_id", rel.source.0.to_string())
-                .param("target_id", rel.target.0.to_string())
-                .param("relation_type", rel.relation_type.clone())
-                .param("confidence", rel.confidence as f64)
-                .param("collection", collection.to_string()),
-            )
-            .await
-            .map_err(|e| ArcanumError::Storage(format!("upsert_relation error: {}", e)))?;
-        }
+        let futs: Vec<_> = relations
+            .into_iter()
+            .map(|rel| {
+                let graph = Arc::clone(&self.graph);
+                let col = collection.to_string();
+                async move {
+                    graph
+                        .run(
+                            query(
+                                "MATCH (s:Entity {id: $source_id}) \
+                                 MATCH (t:Entity {id: $target_id}) \
+                                 MERGE (s)-[r:RELATION {type: $relation_type}]->(t) \
+                                 SET r.confidence = $confidence, r.collection = $collection",
+                            )
+                            .param("source_id", rel.source.0.to_string())
+                            .param("target_id", rel.target.0.to_string())
+                            .param("relation_type", rel.relation_type)
+                            .param("confidence", rel.confidence as f64)
+                            .param("collection", col),
+                        )
+                        .await
+                        .map_err(|e| ArcanumError::Storage(format!("upsert_relation error: {}", e)))
+                }
+            })
+            .collect();
+        futures::future::try_join_all(futs).await?;
         Ok(())
     }
 
