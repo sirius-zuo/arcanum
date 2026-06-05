@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { uploadFile, ingestSample, listCollections } from '../api/ingest'
 import { apiKey } from '../api/auth'
-import { getKnownCollections, rememberCollection } from '../store/collections'
+
 import { createVectorCollection } from '../api/ingest'
 import { Upload, FileText, CheckCircle, AlertCircle, Loader, FolderDown, RefreshCw } from 'lucide-react'
 
@@ -41,17 +41,12 @@ export default function DocsPage() {
   }, []) // intentional: read once on mount
 
   useEffect(() => {
-    const stored = getKnownCollections()
     listCollections()
       .then(remote => {
-        const names = Array.from(new Set([
-          'devforge',
-          ...stored,
-          ...remote.map(r => r.id),
-        ]))
+        const names = Array.from(new Set(['devforge', ...remote.map(r => r.id)]))
         setServerCollections(names)
       })
-      .catch(() => setServerCollections(stored.length ? stored : ['devforge']))
+      .catch(() => setServerCollections(['devforge']))
   }, [])
 
   function connectWs(collectionId: string) {
@@ -172,7 +167,7 @@ export default function DocsPage() {
     if (!name) return
     const result = await createVectorCollection(name)
     if (result.conflict) return
-    rememberCollection(name)
+    if (!result.ok) return
     setServerCollections(prev => Array.from(new Set([...prev, name])))
     setCollection(name)
     setShowNewCollection(false)

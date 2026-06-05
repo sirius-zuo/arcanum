@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getKnownCollections, rememberCollection, forgetCollection } from '../store/collections'
+
 import { listVectorCollections, getVectorCollectionStats, createVectorCollection, deleteVectorCollection } from '../api/ingest'
 import { Database, RefreshCw, Plus, Trash2 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
@@ -21,18 +21,13 @@ export default function CollectionsPage() {
   async function load() {
     try {
       const remote = await listVectorCollections()
-      const localNames = getKnownCollections()
-      const allNames = Array.from(new Set([...remote.map(r => r.id), ...localNames]))
-      const remoteSet = new Set(remote.map(r => r.id))
-      setCollections(allNames.map(name => ({
-        name,
-        docCount: remoteSet.has(name) ? null : 0,
-      })))
-      // Fetch counts for collections that exist on server
-      for (const name of allNames.filter(n => remoteSet.has(n))) {
-        const count = await getVectorCollectionStats(name)
-        setCollections(prev => prev.map(c => c.name === name ? { ...c, docCount: count } : c))
-      }
+      setCollections(remote.map(r => ({ name: r.id, docCount: null })))
+      await Promise.all(
+        remote.map(async r => {
+          const count = await getVectorCollectionStats(r.id)
+          setCollections(prev => prev.map(c => c.name === r.id ? { ...c, docCount: count } : c))
+        })
+      )
     } catch {
       // Silent failure — show empty state
     } finally {
@@ -46,24 +41,23 @@ export default function CollectionsPage() {
     const name = newName.trim()
     if (!name) return
     setCreateError('')
-
     const result = await createVectorCollection(name)
     if (result.conflict) {
       setCreateError('Collection already exists')
       return
     }
     if (result.ok) {
-      rememberCollection(name)
       load()
       setShowCreateModal(false)
       setNewName('')
       navigate(`/docs?collection=${encodeURIComponent(name)}`)
+    } else {
+      setCreateError('Server error — please try again')
     }
   }
 
   async function handleDelete(name: string) {
     await deleteVectorCollection(name)
-    forgetCollection(name)
     load()
     setDeleteTarget(null)
   }
