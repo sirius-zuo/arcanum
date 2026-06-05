@@ -12,18 +12,35 @@ use futures::TryStreamExt;
 use lancedb::query::{ExecutableQuery, QueryBase};
 use std::collections::HashSet;
 use std::sync::Arc;
+use tokio::sync::Mutex as TokioMutex;
 use tracing::instrument;
 
 pub struct LanceDbStore {
     uri: String,
     collections_file: String,
+    sidecar_lock: Arc<TokioMutex<()>>,
 }
 
 impl LanceDbStore {
     pub async fn new(path: &str) -> Result<Self> {
+        // Resolve to absolute path so the sidecar location is stable
+        // across working-directory changes and process restarts.
+        let abs = std::fs::canonicalize(path)
+            .or_else(|_| {
+                // Path may not exist yet (new DB). Use absolute form of the given path.
+                let p = std::path::Path::new(path);
+                if p.is_absolute() {
+                    Ok(p.to_path_buf())
+                } else {
+                    std::env::current_dir().map(|d| d.join(p))
+                }
+            })
+            .map_err(|e| ArcanumError::Storage(format!("resolve lancedb path: {}", e)))?;
+        let uri = abs.to_string_lossy().to_string();
         Ok(Self {
-            uri: path.to_string(),
-            collections_file: format!("{}.collections.json", path),
+            collections_file: format!("{}.collections.json", uri),
+            uri,
+            sidecar_lock: Arc::new(TokioMutex::new(())),
         })
     }
 
@@ -261,16 +278,18 @@ impl VectorStore for LanceDbStore {
 
     #[instrument(skip(self), fields(store = "lancedb", collection = collection), err)]
     async fn create_collection(&self, collection: &str) -> Result<()> {
+        let _guard = self.sidecar_lock.lock().await;
         let in_lance = self.collection_exists(collection).await?;
-        let in_sidecar = self.load_sidecar().contains(&collection.to_string());
+        let names = self.load_sidecar();
+        let in_sidecar = names.contains(&collection.to_string());
         if in_lance || in_sidecar {
             return Err(ArcanumError::AlreadyExists(
                 format!("collection '{}' already exists", collection)
             ));
         }
-        let mut names = self.load_sidecar();
-        names.push(collection.to_string());
-        self.save_sidecar(&names)
+        let mut updated = names;
+        updated.push(collection.to_string());
+        self.save_sidecar(&updated)
     }
 
     #[instrument(skip(self), fields(store = "lancedb", collection = ?collection), err)]
@@ -320,6 +339,7 @@ impl VectorStore for LanceDbStore {
 
     #[instrument(skip(self), fields(store = "lancedb", collection = collection), err)]
     async fn delete_collection(&self, collection: &str) -> Result<()> {
+        let _guard = self.sidecar_lock.lock().await;
         let conn = lancedb::connect(&self.uri)
             .execute()
             .await
@@ -328,8 +348,7 @@ impl VectorStore for LanceDbStore {
             .table_names()
             .execute()
             .await
-            .map_err(|e| ArcanumError::Storage(e.to_string()))
-            .unwrap_or_default();
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         if table_names.contains(&collection.to_string()) {
             conn.drop_table(collection, &[])
                 .await
