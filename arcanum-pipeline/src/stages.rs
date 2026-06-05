@@ -128,7 +128,7 @@ pub fn make_cleanup_stage(
                 }
                 vs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 if let Some(gs) = &gs {
-                    gs.delete_by_source_uri(&source_uri).await?;
+                    gs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
                 }
                 if let Some(ts) = &ts {
                     ts.delete_by_source_uri(&collection_id.0, &source_uri).await?;
@@ -252,16 +252,23 @@ pub fn make_entity_extract_stage(
                 tracing::debug!(stage = "entity_extract", "executing entity_extract stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let extractor = EntityExtractor::new(enricher);
-                let chunks = state.lock().await.chunks.clone();
+                let (chunks, collection_id) = {
+                    let g = state.lock().await;
+                    (g.chunks.clone(), g.collection_id.clone())
+                };
                 let mut all_entities = Vec::new();
                 let mut all_relations = Vec::new();
                 for chunk in &chunks {
-                    let (entities, relations) = extractor.extract(chunk).await?;
+                    let (mut entities, relations) = extractor.extract(chunk).await?;
+                    // Stamp each entity with the collection so the store can scope it.
+                    for e in &mut entities {
+                        e.collection_id = collection_id.0.clone();
+                    }
                     all_entities.extend(entities);
                     all_relations.extend(relations);
                 }
-                gs.upsert_entities(all_entities).await?;
-                gs.upsert_relations(all_relations).await?;
+                gs.upsert_entities(&collection_id.0, all_entities).await?;
+                gs.upsert_relations(&collection_id.0, all_relations).await?;
                 Ok(ctx)
             })
         }),

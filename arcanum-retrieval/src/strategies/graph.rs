@@ -51,7 +51,7 @@ impl Retriever for GraphRetriever {
                 max_hops: self.max_hops,
                 relation_filter: None,
             };
-            let entities = self.graph_store.query(&gq).await?;
+            let entities = self.graph_store.query(collection, &gq).await?;
             for entity in entities {
                 chunk_ids.extend(entity.source_chunks);
             }

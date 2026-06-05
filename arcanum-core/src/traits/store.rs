@@ -48,16 +48,20 @@ pub struct GraphQuery {
 
 #[async_trait]
 pub trait GraphStore: Send + Sync {
-    async fn upsert_entities(&self, entities: Vec<Entity>) -> Result<()>;
-    async fn upsert_relations(&self, relations: Vec<Relation>) -> Result<()>;
-    async fn query(&self, q: &GraphQuery) -> Result<Vec<Entity>>;
+    async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()>;
+    async fn upsert_relations(&self, collection: &str, relations: Vec<Relation>) -> Result<()>;
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>>;
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>>;
-    /// Delete all entities and their relations for the given source_uri. No-op if none exist.
-    async fn delete_by_source_uri(&self, source_uri: &str) -> Result<()>;
+    /// Delete all entities (and their relations) for the given source_uri in the collection.
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
 
+    /// Returns all collection names, including empty ones.
     async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    /// Create a new empty collection. Returns `AlreadyExists` if name is taken.
     async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    /// Count distinct source_uri values. None = whole store; Some(col) = one collection.
     async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+    /// Delete all data for the collection. Idempotent.
     async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
 }
 

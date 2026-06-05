@@ -1,9 +1,14 @@
-use axum::{extract::State, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
+use axum::{extract::{Query, State}, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
 use serde::Serialize;
 use std::sync::Arc;
 use arcanum_core::traits::GraphQuery;
 use arcanum_engine::ArcanumEngine;
 use crate::routes::auth::validate_bearer;
+
+#[derive(serde::Deserialize)]
+pub struct GraphQueryParams {
+    pub collection_id: Option<String>,
+}
 
 #[derive(Serialize)]
 pub struct GraphNode {
@@ -25,19 +30,17 @@ pub struct GraphView {
     pub edges: Vec<GraphEdge>,
 }
 
-/// GET /api/v1/graph — returns the engine-global knowledge graph as {nodes, edges}.
-///
-/// The graph is not collection-scoped: the GraphStore trait and Entity type carry no
-/// collection_id. Per-collection filtering is future work. Returns an empty graph when
-/// no graph store is wired.
+/// GET /api/v1/graph?collection_id=X — returns the knowledge graph for a collection.
 pub async fn get_graph(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
+    query: axum::extract::Query<GraphQueryParams>,
 ) -> impl IntoResponse {
     if let Err(e) = validate_bearer(&headers, &engine) {
         return e.into_response();
     }
     let eng = engine.as_ref().unwrap();
+    let collection = query.collection_id.as_deref().unwrap_or("");
 
     let Some(store) = eng.graph_store.as_ref() else {
         return (StatusCode::OK, Json(GraphView { nodes: vec![], edges: vec![] })).into_response();
@@ -45,7 +48,7 @@ pub async fn get_graph(
 
     // All entities: a query with no name/type filter matches everything.
     let q = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
-    let entities = store.query(&q).await.unwrap_or_default();
+    let entities = store.query(collection, &q).await.unwrap_or_default();
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
