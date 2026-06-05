@@ -179,20 +179,39 @@ impl GraphStore for Neo4jStore {
     }
 
     async fn list_collections(&self) -> Result<Vec<String>> {
-        let mut stream = self.graph.execute(
-            query("MATCH (c:GraphCollection) RETURN c.name as name ORDER BY c.name"),
+        let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // Source 1: explicitly created collections (GraphCollection metadata nodes)
+        let mut meta_stream = self.graph.execute(
+            query("MATCH (c:GraphCollection) RETURN c.name AS name"),
         )
         .await
-        .map_err(|e| ArcanumError::Storage(format!("list_collections error: {}", e)))?;
-
-        let mut names = vec![];
-        while let Some(row) = stream.next().await
-            .map_err(|e| ArcanumError::Storage(format!("stream next error: {}", e)))? {
-            let name: String = row.get("name")
-                .map_err(|e| ArcanumError::Storage(format!("get name: {}", e)))?;
-            names.push(name);
+        .map_err(|e| ArcanumError::Storage(format!("list_collections meta: {}", e)))?;
+        while let Some(row) = meta_stream.next().await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
+        {
+            if let Ok(name) = row.get::<String>("name") {
+                if !name.is_empty() { names.insert(name); }
+            }
         }
-        Ok(names)
+
+        // Source 2: collections discovered from upserted entities (pipeline path)
+        let mut entity_stream = self.graph.execute(
+            query("MATCH (e:Entity) WHERE e.collection IS NOT NULL \
+                   RETURN DISTINCT e.collection AS name"),
+        )
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_collections entities: {}", e)))?;
+        while let Some(row) = entity_stream.next().await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))? {
+            if let Ok(name) = row.get::<String>("name") {
+                if !name.is_empty() { names.insert(name); }
+            }
+        }
+
+        let mut result: Vec<String> = names.into_iter().collect();
+        result.sort();
+        Ok(result)
     }
 
     async fn create_collection(&self, collection: &str) -> Result<()> {
@@ -312,5 +331,33 @@ mod tests {
         };
         let results = store.query("test-col", &q).await.expect("query");
         assert!(!results.is_empty());
+    }
+
+    /// Verifies that list_collections returns collections populated by upsert_entities
+    /// even without a prior create_collection call.
+    /// Run with: cargo test -p arcanum-graph -- test_list_collections_includes_entity_collections --include-ignored
+    #[tokio::test]
+    #[ignore]
+    async fn test_list_collections_includes_entity_collections() {
+        let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+        let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
+        let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string());
+        let store = Neo4jStore::new(&uri, &user, &password).await.expect("connect");
+
+        let col = format!("test-entity-col-{}", uuid::Uuid::new_v4());
+        let entity = Entity {
+            id: EntityId::new(), name: "Pipeline Entity".into(),
+            entity_type: "T".into(), canonical_id: None, source_chunks: vec![],
+            source_uri: "file://doc.md".into(), collection_id: col.clone(),
+        };
+        // Intentionally NOT calling create_collection first:
+        store.upsert_entities(&col, vec![entity]).await.expect("upsert");
+
+        let cols = store.list_collections().await.expect("list");
+        assert!(cols.contains(&col),
+            "list_collections must include collections populated by upsert_entities");
+
+        // Cleanup
+        store.delete_collection(&col).await.ok();
     }
 }
