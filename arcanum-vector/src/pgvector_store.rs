@@ -232,14 +232,16 @@ impl VectorStore for PgVectorStore {
     async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
         let count: i64 = match collection {
             Some(col) => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT chunk_json->'chunk'->>'document_id') FROM arcanum_chunks WHERE collection = $1",
+                "SELECT COUNT(DISTINCT chunk_json::jsonb->'chunk'->'metadata'->>'source_uri') \
+                 FROM arcanum_chunks WHERE collection = $1",
             )
             .bind(col)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
             None => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT chunk_json->'chunk'->>'document_id') FROM arcanum_chunks",
+                "SELECT COUNT(DISTINCT chunk_json::jsonb->'chunk'->'metadata'->>'source_uri') \
+                 FROM arcanum_chunks",
             )
             .fetch_one(&self.pool)
             .await

@@ -320,19 +320,23 @@ impl VectorStore for LanceDbStore {
                 .try_collect()
                 .await
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
-            let mut doc_ids = HashSet::new();
+            let mut source_uris = HashSet::new();
             for batch in &batches {
                 if let Some(col) = batch.column_by_name("chunk_json") {
                     if let Some(strings) = col.as_any().downcast_ref::<StringArray>() {
                         for i in 0..strings.len() {
                             if let Ok(chunk) = serde_json::from_str::<IndexedChunk>(strings.value(i)) {
-                                doc_ids.insert(chunk.chunk.document_id.0.to_string());
+                                if let Some(uri) = chunk.chunk.metadata.0.get("source_uri") {
+                                    if let Some(s) = uri.as_str() {
+                                        source_uris.insert(s.to_string());
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-            total += doc_ids.len() as u64;
+            total += source_uris.len() as u64;
         }
         Ok(total)
     }
