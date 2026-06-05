@@ -46,7 +46,7 @@ impl EntityExtractor {
             entity_map.insert(e.name.clone(), id.clone());
             Entity { id, name: e.name, entity_type: e.entity_type,
                      canonical_id: None, source_chunks: vec![chunk.id.clone()],
-                     source_uri: source_uri.clone() }
+                     source_uri: source_uri.clone(), collection_id: String::new() }
         }).collect();
 
         let relations: Vec<Relation> = parsed.relations.into_iter().filter_map(|r| {
