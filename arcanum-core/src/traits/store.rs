@@ -61,6 +61,18 @@ pub trait GraphStore: Send + Sync {
     async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
     /// Count distinct source_uri values. None = whole store; Some(col) = one collection.
     async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+    /// Count distinct source_uri values per collection in a single operation.
+    /// Returns a map of collection_name → document_count.
+    /// The default impl calls list_collections + count_documents(Some) in a loop.
+    async fn count_documents_all(&self) -> Result<std::collections::HashMap<String, u64>> {
+        let cols = self.list_collections().await?;
+        let mut map = std::collections::HashMap::new();
+        for col in cols {
+            let count = self.count_documents(Some(&col)).await?;
+            map.insert(col, count);
+        }
+        Ok(map)
+    }
     /// Delete all data for the collection. Idempotent.
     async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
 }

@@ -13,3 +13,4 @@ serde_json   = { workspace = true }
 anyhow       = { workspace = true }
 neo4rs       = "0.7"
 uuid         = { workspace = true }
+futures      = "0.3"
