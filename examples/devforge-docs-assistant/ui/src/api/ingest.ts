@@ -93,3 +93,24 @@ export async function ingestSample(
 export async function listCollections(): Promise<{ id: string; name: string }[]> {
   return listVectorCollections()
 }
+
+export interface DocumentEntry {
+  source_uri: string
+  registered_at: number  // Unix seconds
+}
+
+export async function listCollectionDocuments(name: string): Promise<DocumentEntry[]> {
+  const res = await fetch(`/api/v1/vector/collections/${encodeURIComponent(name)}/documents`, {
+    headers: { Authorization: `Bearer ${apiKey}` },
+  })
+  if (!res.ok) return []
+  const data = await res.json()
+  return Array.isArray(data.documents) ? data.documents : []
+}
+
+export async function deleteCollectionDocument(name: string, sourceUri: string): Promise<void> {
+  await fetch(
+    `/api/v1/vector/collections/${encodeURIComponent(name)}/documents?source_uri=${encodeURIComponent(sourceUri)}`,
+    { method: 'DELETE', headers: { Authorization: `Bearer ${apiKey}` } }
+  )
+}
