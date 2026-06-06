@@ -14,6 +14,12 @@ pub struct RegistryEntry {
     pub status: RegistryStatus,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DocumentEntry {
+    pub source_uri: String,
+    pub registered_at: i64,   // Unix seconds
+}
+
 #[async_trait]
 pub trait DocumentRegistry: Send + Sync {
     /// Returns the current entry, or None if this document has never been registered.
@@ -28,6 +34,12 @@ pub trait DocumentRegistry: Send + Sync {
 
     /// Remove a registry entry. No-op if the entry doesn't exist.
     async fn deregister(&self, source_uri: &str, collection_id: &str) -> Result<()>;
+
+    /// List all successfully registered documents in a collection, newest first.
+    /// Default returns empty — override in real implementations.
+    async fn list_by_collection(&self, _collection_id: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
+    }
 
     /// Atomically claim replacing status only if the entry is currently Clean (or absent).
     /// Returns Ok(true) if this caller successfully claimed it, Ok(false) if another worker
@@ -51,6 +63,9 @@ impl DocumentRegistry for NoOpDocumentRegistry {
     async fn set_replacing(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
     async fn register(&self, _: &str, _: &str, _: &str) -> Result<()> { Ok(()) }
     async fn deregister(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    async fn list_by_collection(&self, _: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
+    }
 }
 
 #[cfg(test)]
