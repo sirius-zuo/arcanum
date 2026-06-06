@@ -2,7 +2,7 @@ import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { uploadFile, ingestSample, listCollections, createVectorCollection } from '../api/ingest'
 import { apiKey } from '../api/auth'
-import { Upload, FileText, CheckCircle, AlertCircle, Loader, FolderDown, RefreshCw } from 'lucide-react'
+import { Upload, FileText, CheckCircle, MinusCircle, AlertCircle, Loader, FolderDown, RefreshCw } from 'lucide-react'
 
 const SAMPLE_FILES = [
   'api-authentication.md',
@@ -13,7 +13,7 @@ const SAMPLE_FILES = [
 
 interface IngestedFile {
   name: string
-  status: 'pending' | 'indexing' | 'ready' | 'error'
+  status: 'pending' | 'indexing' | 'ready' | 'existed' | 'error'
   operationId?: string
   sourcePath?: string    // server-side path for sample files — enables re-ingest
   error?: string
@@ -100,7 +100,7 @@ export default function DocsPage() {
       ))
     } else if (status === 'skipped') {
       setFiles(prev => prev.map(f =>
-        f.name === fileName ? { ...f, status: 'ready', operationId } : f
+        f.name === fileName ? { ...f, status: 'existed', operationId } : f
       ))
     }
   }
@@ -174,6 +174,7 @@ export default function DocsPage() {
 
   function statusIcon(s: IngestedFile['status']) {
     if (s === 'ready')    return <CheckCircle size={14} className="text-green-400" />
+    if (s === 'existed')  return <MinusCircle size={14} className="text-slate-400" />
     if (s === 'error')    return <AlertCircle size={14} className="text-red-400" />
     if (s === 'indexing') return <Loader size={14} className="text-blue-400 animate-spin" />
     return <FileText size={14} className="text-slate-500" />
@@ -273,7 +274,8 @@ export default function DocsPage() {
                 </div>
               </div>
               <span className={`text-xs font-mono shrink-0 ${
-                f.status === 'ready'     ? 'text-green-400' :
+                f.status === 'ready'    ? 'text-green-400' :
+                f.status === 'existed'  ? 'text-slate-400' :
                 f.status === 'error'    ? 'text-red-400'   :
                 f.status === 'indexing' ? 'text-blue-400'  : 'text-slate-500'
               }`}>{f.status}</span>
