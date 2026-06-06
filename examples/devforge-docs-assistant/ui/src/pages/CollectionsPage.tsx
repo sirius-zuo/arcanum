@@ -70,6 +70,7 @@ export default function CollectionsPage() {
   }
 
   async function toggleExpand(name: string) {
+    const isOpening = !expanded.has(name)
     setExpanded(prev => {
       const next = new Set(prev)
       if (next.has(name)) {
@@ -80,7 +81,7 @@ export default function CollectionsPage() {
       return next
     })
     // Lazy-load on first expand only (also retry after an error)
-    if (!expanded.has(name) && (docsByCollection[name] === undefined || docErrors.has(name))) {
+    if (isOpening && (docsByCollection[name] === undefined || docErrors.has(name))) {
       setDocErrors(prev => { const s = new Set(prev); s.delete(name); return s })
       setLoadingDocs(prev => new Set(prev).add(name))
       try {
@@ -95,7 +96,12 @@ export default function CollectionsPage() {
   }
 
   async function handleFileDelete(col: string, uri: string) {
-    await deleteCollectionDocument(col, uri)
+    try {
+      await deleteCollectionDocument(col, uri)
+    } catch {
+      setFileDeleteTarget(null)
+      return
+    }
     setDocsByCollection(prev => ({
       ...prev,
       [col]: (prev[col] ?? []).filter(d => d.source_uri !== uri),

@@ -103,14 +103,15 @@ export async function listCollectionDocuments(name: string): Promise<DocumentEnt
   const res = await fetch(`/api/v1/vector/collections/${encodeURIComponent(name)}/documents`, {
     headers: { Authorization: `Bearer ${apiKey}` },
   })
-  if (!res.ok) return []
+  if (!res.ok) throw new Error(`Failed to list documents: ${res.status}`)
   const data = await res.json()
   return Array.isArray(data.documents) ? data.documents : []
 }
 
 export async function deleteCollectionDocument(name: string, sourceUri: string): Promise<void> {
-  await fetch(
+  const res = await fetch(
     `/api/v1/vector/collections/${encodeURIComponent(name)}/documents?source_uri=${encodeURIComponent(sourceUri)}`,
     { method: 'DELETE', headers: { Authorization: `Bearer ${apiKey}` } }
   )
+  if (!res.ok) throw new Error(`Failed to delete document: ${res.status}`)
 }
