@@ -1,9 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { uploadFile, ingestSample, listCollections } from '../api/ingest'
+import { uploadFile, ingestSample, listCollections, createVectorCollection } from '../api/ingest'
 import { apiKey } from '../api/auth'
-
-import { createVectorCollection } from '../api/ingest'
 import { Upload, FileText, CheckCircle, AlertCircle, Loader, FolderDown, RefreshCw } from 'lucide-react'
 
 const SAMPLE_FILES = [
@@ -34,6 +32,9 @@ export default function DocsPage() {
 
   const wsRef = useRef<WebSocket | null>(null)
   const pendingOps = useRef<Map<string, string>>(new Map())
+  // Buffer for WS events that arrive before pendingOps.set (race condition: dedup-skip
+  // completes faster than the HTTP 202 response round-trip).
+  const earlyEvents = useRef<Map<string, { status: string; report?: { total_chunks?: number } }>>(new Map())
 
   useEffect(() => {
     const col = searchParams.get('collection')
@@ -65,22 +66,16 @@ export default function DocsPage() {
           report?: { total_chunks?: number }
         }
         const fileName = pendingOps.current.get(operation_id)
-        if (!fileName) return
-
-        if (status === 'completed') {
-          const chunks = report?.total_chunks ?? 0
-          setFiles(prev => prev.map(f =>
-            f.name === fileName
-              ? { ...f, status: 'ready', operationId: operation_id, chunkCount: chunks }
-              : f
-          ))
-          pendingOps.current.delete(operation_id)
-        } else if (status === 'skipped') {
-          setFiles(prev => prev.map(f =>
-            f.name === fileName ? { ...f, status: 'ready', operationId: operation_id } : f
-          ))
-          pendingOps.current.delete(operation_id)
+        if (!fileName) {
+          // Event arrived before the HTTP response registered this op — buffer it.
+          if (status === 'completed' || status === 'skipped') {
+            earlyEvents.current.set(operation_id, { status, report })
+          }
+          return
         }
+
+        applyEvent(fileName, operation_id, status, report)
+        pendingOps.current.delete(operation_id)
       } catch {}
     }
     ws.onerror = () => { wsRef.current = null }
@@ -89,6 +84,34 @@ export default function DocsPage() {
   }
 
   useEffect(() => () => { wsRef.current?.close() }, [])
+
+  function applyEvent(
+    fileName: string,
+    operationId: string,
+    status: string,
+    report?: { total_chunks?: number },
+  ) {
+    if (status === 'completed') {
+      const chunks = report?.total_chunks ?? 0
+      setFiles(prev => prev.map(f =>
+        f.name === fileName
+          ? { ...f, status: 'ready', operationId, chunkCount: chunks }
+          : f
+      ))
+    } else if (status === 'skipped') {
+      setFiles(prev => prev.map(f =>
+        f.name === fileName ? { ...f, status: 'ready', operationId } : f
+      ))
+    }
+  }
+
+  // Drain a buffered event that arrived before pendingOps was populated.
+  function drainEarlyEvent(operationId: string, fileName: string) {
+    const buffered = earlyEvents.current.get(operationId)
+    if (!buffered) return
+    earlyEvents.current.delete(operationId)
+    applyEvent(fileName, operationId, buffered.status, buffered.report)
+  }
 
   function markError(name: string, error: string) {
     setFiles(prev => prev.map(f => f.name === name ? { ...f, status: 'error', error } : f))
@@ -101,6 +124,7 @@ export default function DocsPage() {
     try {
       const res = await uploadFile(file, collection)
       pendingOps.current.set(res.operation_id, file.name)
+      drainEarlyEvent(res.operation_id, file.name)
     } catch (err) {
       markError(file.name, String(err))
     }
@@ -115,6 +139,7 @@ export default function DocsPage() {
       try {
         const res = await ingestSample(path, collection)
         pendingOps.current.set(res.operation_id, name)
+        drainEarlyEvent(res.operation_id, name)
       } catch (err) {
         markError(name, String(err))
       }
@@ -131,6 +156,7 @@ export default function DocsPage() {
     try {
       const res = await ingestSample(f.sourcePath, collection, undefined, true)
       pendingOps.current.set(res.operation_id, f.name)
+      drainEarlyEvent(res.operation_id, f.name)
     } catch (err) {
       markError(f.name, String(err))
     }
