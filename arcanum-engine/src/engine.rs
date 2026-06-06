@@ -46,6 +46,7 @@ pub struct ArcanumEngine {
     pub graph_store: Option<Arc<dyn GraphStore>>,
     pub vector_store: Option<Arc<dyn VectorStore>>,
     pub tree_store: Option<Arc<dyn TreeStore>>,
+    pub document_registry: Arc<dyn DocumentRegistry>,
 }
 
 impl std::fmt::Debug for ArcanumEngine {
@@ -354,6 +355,9 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
+            document_registry: self.document_registry
+                .clone()
+                .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
         }))
     }
 }
