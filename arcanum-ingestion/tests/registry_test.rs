@@ -74,3 +74,72 @@ fn fixed_uses_default_params_when_not_specified() {
     };
     assert!(registry.build(&config).is_ok());
 }
+
+#[test]
+fn fixed_float_chunk_size_returns_error() {
+    let registry = default_registry();
+    // 100.0 is an f64 literal → serde_json stores it as Float → as_u64() returns None
+    let config = ChunkStrategyConfig {
+        strategy: "fixed".to_string(),
+        params: serde_json::json!({ "chunk_size": 100.0, "overlap": 10 }),
+    };
+    match registry.build(&config) {
+        Ok(_) => panic!("float chunk_size should return error"),
+        Err(e) => assert!(
+            e.to_string().contains("chunk_size"),
+            "error should name the offending param: {}",
+            e
+        ),
+    }
+}
+
+#[test]
+fn semantic_float_max_chars_returns_error() {
+    let registry = default_registry();
+    let config = ChunkStrategyConfig {
+        strategy: "semantic".to_string(),
+        params: serde_json::json!({ "max_chars": 500.0 }),
+    };
+    match registry.build(&config) {
+        Ok(_) => panic!("float max_chars should return error"),
+        Err(e) => assert!(
+            e.to_string().contains("max_chars"),
+            "error should name the offending param: {}",
+            e
+        ),
+    }
+}
+
+#[test]
+fn semantic_zero_max_chars_returns_error() {
+    let registry = default_registry();
+    let config = ChunkStrategyConfig {
+        strategy: "semantic".to_string(),
+        params: serde_json::json!({ "max_chars": 0 }),
+    };
+    match registry.build(&config) {
+        Ok(_) => panic!("zero max_chars should return error"),
+        Err(e) => assert!(
+            e.to_string().contains("max_chars"),
+            "error should mention max_chars: {}",
+            e
+        ),
+    }
+}
+
+#[test]
+fn structure_zero_max_chunk_chars_returns_error() {
+    let registry = default_registry();
+    let config = ChunkStrategyConfig {
+        strategy: "structure".to_string(),
+        params: serde_json::json!({ "max_chunk_chars": 0 }),
+    };
+    match registry.build(&config) {
+        Ok(_) => panic!("zero max_chunk_chars should return error"),
+        Err(e) => assert!(
+            e.to_string().contains("max_chunk_chars"),
+            "error should mention max_chunk_chars: {}",
+            e
+        ),
+    }
+}
