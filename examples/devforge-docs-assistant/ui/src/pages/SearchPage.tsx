@@ -1,8 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { search, SearchResult, RetrievedChunk } from '../api/search'
+import { listVectorCollections } from '../api/ingest'
 import { Search } from 'lucide-react'
-
-const COLLECTION = 'devforge'
 
 const SUGGESTED_QUERIES = [
   'invalid_api_key error',
@@ -62,6 +61,46 @@ export default function SearchPage() {
   const [result, setResult] = useState<SearchResult | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [collectionIds, setCollectionIds] = useState<string[]>(['devforge'])
+
+  useEffect(() => {
+    listVectorCollections()
+      .then(cols => { if (cols.length > 0) setCollectionIds(cols.map(c => c.id)) })
+      .catch(() => {})
+  }, [])
+
+  const searchAll = useCallback(async (q: string): Promise<SearchResult> => {
+    const results = await Promise.all(
+      collectionIds.map(id => search(q, id).catch(() => null))
+    )
+    const valid = results.filter((r): r is SearchResult => r !== null)
+    if (valid.length === 0) throw new Error('Search failed on all collections')
+
+    const seen = new Set<string>()
+    const chunks = valid
+      .flatMap(r => r.chunks)
+      .filter(c => {
+        const id = c.indexed_chunk.chunk.id
+        if (seen.has(id)) return false
+        seen.add(id)
+        return true
+      })
+      .sort((a, b) => b.score - a.score)
+
+    const strategy_scores: Record<string, number> = {}
+    for (const r of valid) {
+      for (const [k, v] of Object.entries(r.strategy_scores)) {
+        strategy_scores[k] = (strategy_scores[k] ?? 0) + v
+      }
+    }
+
+    return {
+      chunks,
+      strategy_scores,
+      confidence: valid.reduce((sum, r) => sum + r.confidence, 0) / valid.length,
+    }
+  }, [collectionIds])
+
   const inputRef = useRef<HTMLInputElement>(null)
 
   // "/" to focus search input
@@ -82,20 +121,20 @@ export default function SearchPage() {
     setLoading(true)
     setError(null)
     try {
-      const r = await search(query, COLLECTION)
+      const r = await searchAll(query)
       setResult(r)
     } catch (err) {
       setError(String(err))
     } finally {
       setLoading(false)
     }
-  }, [query])
+  }, [query, searchAll])
 
   function runSuggestedQuery(q: string) {
     setQuery(q)
     setLoading(true)
     setError(null)
-    search(q, COLLECTION)
+    searchAll(q)
       .then(setResult)
       .catch(err => setError(String(err)))
       .finally(() => setLoading(false))
