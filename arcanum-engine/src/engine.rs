@@ -113,7 +113,7 @@ fn resolve_chunkers(
 ) -> Result<PerBackendChunkers> {
     let registry = default_registry();
     let vector_cfg = collection_config
-        .and_then(|c| Some(&c.vector))
+        .map(|c| &c.vector)
         .unwrap_or(&global_config.vector);
     let graph_cfg = collection_config
         .and_then(|c| c.graph.as_ref())
@@ -489,5 +489,65 @@ mod builder_tests {
         assert!(build_with_mode(OrchestrationMode::ParallelFusion).await,  "ParallelFusion must build");
         assert!(build_with_mode(OrchestrationMode::QueryClassified).await, "QueryClassified must build");
         assert!(build_with_mode(OrchestrationMode::Static).await,          "Static must build");
+    }
+}
+
+#[cfg(test)]
+mod resolution_tests {
+    use super::resolve_chunkers;
+    use arcanum_core::types::{ChunkStrategyConfig, PerBackendChunkConfig};
+
+    fn make_fixed(size: u64, overlap: u64) -> ChunkStrategyConfig {
+        ChunkStrategyConfig {
+            strategy: "fixed".to_string(),
+            params: serde_json::json!({ "chunk_size": size, "overlap": overlap }),
+        }
+    }
+
+    fn make_semantic(max_chars: u64) -> ChunkStrategyConfig {
+        ChunkStrategyConfig {
+            strategy: "semantic".to_string(),
+            params: serde_json::json!({ "max_chars": max_chars }),
+        }
+    }
+
+    #[test]
+    fn no_collection_override_uses_global_default() {
+        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        assert!(resolve_chunkers(None, &global).is_ok());
+    }
+
+    #[test]
+    fn collection_vector_override_wins() {
+        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        let collection = PerBackendChunkConfig {
+            vector: make_semantic(800),
+            graph:  None,
+            tree:   None,
+        };
+        assert!(resolve_chunkers(Some(&collection), &global).is_ok());
+    }
+
+    #[test]
+    fn collection_none_graph_falls_back_to_global_then_vector() {
+        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        assert!(resolve_chunkers(None, &global).is_ok());
+    }
+
+    #[test]
+    fn unknown_strategy_in_collection_config_returns_error() {
+        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        let bad = PerBackendChunkConfig {
+            vector: ChunkStrategyConfig {
+                strategy: "nonexistent".to_string(),
+                params:   serde_json::json!({}),
+            },
+            graph: None,
+            tree:  None,
+        };
+        match resolve_chunkers(Some(&bad), &global) {
+            Ok(_) => panic!("should have returned error for unknown strategy"),
+            Err(e) => assert!(e.to_string().contains("nonexistent")),
+        }
     }
 }
