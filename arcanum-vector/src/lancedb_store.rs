@@ -21,6 +21,12 @@ pub struct LanceDbStore {
     sidecar_lock: Arc<TokioMutex<()>>,
 }
 
+/// Builds a LanceDB `only_if` predicate for `source_uri = <val>`.
+/// Single-quotes inside `val` are escaped by doubling them (standard SQL).
+fn lance_eq_filter(val: &str) -> String {
+    format!("source_uri = '{}'", val.replace('\'', "''"))
+}
+
 impl LanceDbStore {
     pub async fn new(path: &str) -> Result<Self> {
         // Resolve to absolute path so the sidecar location is stable
@@ -168,8 +174,7 @@ impl VectorStore for LanceDbStore {
         let mut source_uri_filter: Option<String> = None;
         for f in &query.filters {
             if f.field == "source_uri" && matches!(f.op, FilterOp::Eq) {
-                source_uri_filter = f.value.as_str()
-                    .map(|s| format!("source_uri = '{}'", s.replace('\'', "''")));
+                source_uri_filter = f.value.as_str().map(lance_eq_filter);
             } else {
                 tracing::warn!(
                     store = "lancedb",
@@ -259,9 +264,8 @@ impl VectorStore for LanceDbStore {
             Err(_) => return Ok(()),
         };
         // Use the first-class source_uri column for exact equality.
-        let safe_uri = source_uri.replace('\'', "''");
         table
-            .delete(&format!("source_uri = '{}'", safe_uri))
+            .delete(&lance_eq_filter(source_uri))
             .await
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(())
@@ -479,6 +483,18 @@ mod tests {
             store.count_documents(Some("lance_uri_test")).await.unwrap(),
             1,
             "should count 1 distinct source_uri"
+        );
+    }
+
+    #[test]
+    fn test_lance_eq_filter_escapes_quotes() {
+        assert_eq!(
+            lance_eq_filter("it's here"),
+            "source_uri = 'it''s here'"
+        );
+        assert_eq!(
+            lance_eq_filter("file:///plain.pdf"),
+            "source_uri = 'file:///plain.pdf'"
         );
     }
 
