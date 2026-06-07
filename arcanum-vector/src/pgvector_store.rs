@@ -63,6 +63,22 @@ impl PgVectorStore {
         .await
         .map_err(|e| ArcanumError::Storage(format!("ensure_schema collections: {}", e)))?;
 
+        sqlx::query(
+            "ALTER TABLE arcanum_chunks \
+             ADD COLUMN IF NOT EXISTS source_uri TEXT NOT NULL DEFAULT ''",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure_schema source_uri column: {}", e)))?;
+
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS arcanum_chunks_source_uri_idx \
+             ON arcanum_chunks (collection, source_uri)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure_schema source_uri index: {}", e)))?;
+
         Ok(())
     }
 
@@ -91,18 +107,25 @@ impl VectorStore for PgVectorStore {
             let json = serde_json::to_string(chunk)
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
             let vec_literal = Self::vector_to_pg_literal(&chunk.vector);
+            let source_uri = chunk.chunk.metadata.0
+                .get("source_uri")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
 
             sqlx::query(
-                "INSERT INTO arcanum_chunks (id, collection, chunk_json, embedding)
-                 VALUES ($1, $2, $3, $4::vector)
+                "INSERT INTO arcanum_chunks (id, collection, chunk_json, embedding, source_uri)
+                 VALUES ($1, $2, $3, $4::vector, $5)
                  ON CONFLICT (collection, id)
-                 DO UPDATE SET chunk_json = EXCLUDED.chunk_json,
-                               embedding  = EXCLUDED.embedding",
+                 DO UPDATE SET chunk_json  = EXCLUDED.chunk_json,
+                               embedding   = EXCLUDED.embedding,
+                               source_uri  = EXCLUDED.source_uri",
             )
             .bind(&id)
             .bind(collection)
             .bind(&json)
             .bind(&vec_literal)
+            .bind(&source_uri)
             .execute(&self.pool)
             .await
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
@@ -114,20 +137,50 @@ impl VectorStore for PgVectorStore {
     async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
         let vec_literal = Self::vector_to_pg_literal(&query.vector);
 
-        let rows = sqlx::query(
-            "SELECT chunk_json,
-                    1 - (embedding <=> $1::vector) AS score
-             FROM arcanum_chunks
-             WHERE collection = $2
-             ORDER BY embedding <=> $1::vector
-             LIMIT $3",
-        )
-        .bind(&vec_literal)
-        .bind(collection)
-        .bind(query.top_k as i64)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        // Warn on unsupported filter fields; extract source_uri Eq filter if present.
+        let mut source_uri_filter: Option<String> = None;
+        for f in &query.filters {
+            if f.field == "source_uri" && matches!(f.op, FilterOp::Eq) {
+                source_uri_filter = f.value.as_str().map(|s| s.to_string());
+            } else {
+                tracing::warn!(
+                    store = "pgvector",
+                    field = %f.field,
+                    "unsupported metadata filter field — ignoring"
+                );
+            }
+        }
+
+        let rows = if let Some(ref uri) = source_uri_filter {
+            sqlx::query(
+                "SELECT chunk_json, 1 - (embedding <=> $1::vector) AS score
+                 FROM arcanum_chunks
+                 WHERE collection = $2 AND source_uri = $3
+                 ORDER BY embedding <=> $1::vector
+                 LIMIT $4",
+            )
+            .bind(&vec_literal)
+            .bind(collection)
+            .bind(uri)
+            .bind(query.top_k as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?
+        } else {
+            sqlx::query(
+                "SELECT chunk_json, 1 - (embedding <=> $1::vector) AS score
+                 FROM arcanum_chunks
+                 WHERE collection = $2
+                 ORDER BY embedding <=> $1::vector
+                 LIMIT $3",
+            )
+            .bind(&vec_literal)
+            .bind(collection)
+            .bind(query.top_k as i64)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?
+        };
 
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
@@ -171,8 +224,7 @@ impl VectorStore for PgVectorStore {
         }
         sqlx::query(
             "DELETE FROM arcanum_chunks \
-             WHERE collection = $1 \
-               AND chunk_json::jsonb->'chunk'->'metadata'->>'source_uri' = $2",
+             WHERE collection = $1 AND source_uri = $2",
         )
         .bind(collection)
         .bind(source_uri)
@@ -232,7 +284,7 @@ impl VectorStore for PgVectorStore {
     async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
         let count: i64 = match collection {
             Some(col) => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT chunk_json::jsonb->'chunk'->'metadata'->>'source_uri') \
+                "SELECT COUNT(DISTINCT source_uri) \
                  FROM arcanum_chunks WHERE collection = $1",
             )
             .bind(col)
@@ -240,8 +292,7 @@ impl VectorStore for PgVectorStore {
             .await
             .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
             None => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT chunk_json::jsonb->'chunk'->'metadata'->>'source_uri') \
-                 FROM arcanum_chunks",
+                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_chunks",
             )
             .fetch_one(&self.pool)
             .await
@@ -352,5 +403,143 @@ mod tests {
             .await
             .unwrap();
         assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_pg_source_uri_column() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let store = PgVectorStore::new(&url, 3).await.unwrap();
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("source_uri".to_string(), serde_json::json!("file:///doc-a.pdf"));
+        let chunk = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "content a".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("src_uri_col_test".into()),
+                position: ChunkPosition { start: 0, end: 9, index: 0 },
+                metadata: ChunkMetadata(meta),
+            },
+            vector: Vector(vec![0.1, 0.2, 0.3]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("src_uri_col_test", vec![chunk]).await.unwrap();
+        let count = store.count_documents(Some("src_uri_col_test")).await.unwrap();
+        assert_eq!(count, 1, "expected 1 distinct source_uri");
+
+        // Cleanup
+        store.delete_collection("src_uri_col_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_pg_delete_by_source_uri() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let store = PgVectorStore::new(&url, 3).await.unwrap();
+
+        let mut meta_a = std::collections::HashMap::new();
+        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///doc-a.pdf"));
+        let chunk_a = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "doc a".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("del_uri_test".into()),
+                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: ChunkMetadata(meta_a),
+            },
+            vector: Vector(vec![0.1, 0.2, 0.3]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        let mut meta_b = std::collections::HashMap::new();
+        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///doc-b.pdf"));
+        let chunk_b = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "doc b".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("del_uri_test".into()),
+                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: ChunkMetadata(meta_b),
+            },
+            vector: Vector(vec![0.4, 0.5, 0.6]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("del_uri_test", vec![chunk_a, chunk_b]).await.unwrap();
+        assert_eq!(store.count_documents(Some("del_uri_test")).await.unwrap(), 2);
+
+        store.delete_by_source_uri("del_uri_test", "file:///doc-a.pdf").await.unwrap();
+        assert_eq!(store.count_documents(Some("del_uri_test")).await.unwrap(), 1,
+            "only doc-b should remain");
+
+        // Cleanup
+        store.delete_collection("del_uri_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_pg_search_source_uri_filter() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let store = PgVectorStore::new(&url, 3).await.unwrap();
+
+        let mut meta_a = std::collections::HashMap::new();
+        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///filter-a.pdf"));
+        let chunk_a = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "doc a".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("filter_test".into()),
+                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: ChunkMetadata(meta_a),
+            },
+            vector: Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        let mut meta_b = std::collections::HashMap::new();
+        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///filter-b.pdf"));
+        let chunk_b = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "doc b".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("filter_test".into()),
+                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: ChunkMetadata(meta_b),
+            },
+            vector: Vector(vec![0.0, 1.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("filter_test", vec![chunk_a, chunk_b]).await.unwrap();
+
+        let results = store.search("filter_test", &VectorQuery {
+            vector: Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![MetadataFilter {
+                field: "source_uri".into(),
+                op: FilterOp::Eq,
+                value: serde_json::json!("file:///filter-a.pdf"),
+            }],
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1, "filter should return only doc-a");
+        let uri = results[0].chunk.chunk.metadata.0
+            .get("source_uri").and_then(|v| v.as_str()).unwrap_or("");
+        assert_eq!(uri, "file:///filter-a.pdf");
+
+        // Cleanup
+        store.delete_collection("filter_test").await.unwrap();
     }
 }
