@@ -133,11 +133,23 @@ impl VectorStore for PgVectorStore {
     async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
         let vec_literal = Self::vector_to_pg_literal(&query.vector);
 
-        // Warn on unsupported filter fields; extract source_uri Eq filter if present.
         let mut source_uri_filter: Option<String> = None;
         for f in &query.filters {
-            if f.field == "source_uri" && matches!(f.op, FilterOp::Eq) {
-                source_uri_filter = f.value.as_str().map(|s| s.to_string());
+            if f.field == "source_uri" {
+                if !matches!(f.op, FilterOp::Eq) {
+                    tracing::warn!(
+                        store = "pgvector",
+                        op = ?f.op,
+                        "unsupported filter op for source_uri (only Eq is supported) — ignoring"
+                    );
+                } else if let Some(s) = f.value.as_str() {
+                    source_uri_filter = Some(s.to_string());
+                } else {
+                    tracing::warn!(
+                        store = "pgvector",
+                        "source_uri filter value is not a string — ignoring"
+                    );
+                }
             } else {
                 tracing::warn!(
                     store = "pgvector",
