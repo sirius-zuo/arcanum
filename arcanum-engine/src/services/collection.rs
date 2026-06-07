@@ -10,6 +10,7 @@ pub struct CollectionInfo {
     pub id: CollectionId,
     pub description: String,
     pub chunk_count: usize,
+    pub chunker_config: Option<PerBackendChunkConfig>,
 }
 
 #[derive(Debug)]
@@ -34,7 +35,7 @@ impl CollectionService {
         if map.contains_key(&id.0) {
             return Err(ArcanumError::Storage(format!("collection '{}' already exists", id.0)));
         }
-        map.insert(id.0.clone(), CollectionInfo { id: id.clone(), description, chunk_count: 0 });
+        map.insert(id.0.clone(), CollectionInfo { id: id.clone(), description, chunk_count: 0, chunker_config: None });
         self.audit.log(AuditEntry {
             operation: "create_collection".into(), user_id: claims.user_id.clone(),
             collection_id: id.0, result: "ok".into(),
