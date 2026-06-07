@@ -23,7 +23,7 @@ pub fn builder() -> TemplateBuilder {
                 deps.tree_store.clone(),
             ))
             .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
-            .add_stage(make_chunk_stage(state.clone(), deps.chunker.clone()));
+            .add_stage(make_chunk_stage(state.clone(), deps.chunkers.vector.clone()));
 
         let embed_dep = match &deps.context_enricher {
             Some(e) => {

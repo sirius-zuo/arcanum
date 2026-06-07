@@ -28,7 +28,7 @@ pub fn builder() -> TemplateBuilder {
                         deps.tree_store.clone(),
                     ))
                     .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
-                    .add_stage(make_chunk_stage(state.clone(), deps.chunker.clone()))
+                    .add_stage(make_chunk_stage(state.clone(), deps.chunkers.vector.clone()))
                     .add_stage(make_context_enrich_stage(state.clone(), enricher.clone()))
                     .add_stage(make_embed_stage_after("context_enrich", state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()))
                     .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone()))
