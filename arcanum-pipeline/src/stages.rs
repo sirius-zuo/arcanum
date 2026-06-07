@@ -163,24 +163,93 @@ pub fn make_preprocess_stage(
     }
 }
 
-pub fn make_chunk_stage(
+pub fn make_vector_chunk_stage(
     state: Arc<Mutex<IngestionState>>,
     chunker: Arc<dyn Chunker>,
+    shadow_chunker: Option<(Arc<dyn Chunker>, String)>, // (chunker, shadow_collection_id)
 ) -> PipelineStage {
     PipelineStage {
-        id: "chunk",
+        id: "vector_chunk",
         deps: vec!["preprocess"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let chunker = chunker.clone();
+            let shadow = shadow_chunker.clone();
             Box::pin(async move {
-                tracing::debug!(stage = "chunk", "executing chunk stage");
+                tracing::debug!(stage = "vector_chunk", "executing vector chunk stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let (doc, collection_id) = {
                     let g = state.lock().await;
                     (
                         g.doc.clone().ok_or_else(|| ArcanumError::Pipeline {
-                            stage: "chunk".into(),
+                            stage: "vector_chunk".into(),
+                            message: "no doc".into(),
+                        })?,
+                        g.collection_id.clone(),
+                    )
+                };
+                // Primary chunking
+                let mut chunks = chunker.chunk(&doc).await?;
+                let source_uri = doc.source_uri.clone();
+                for c in &mut chunks {
+                    c.collection_id = collection_id.clone();
+                    c.metadata.0.insert(
+                        "source_uri".to_string(),
+                        serde_json::Value::String(source_uri.clone()),
+                    );
+                }
+                state.lock().await.chunks = chunks;
+
+                // Shadow chunking — best-effort, failure does not fail primary
+                if let Some((shadow_ch, shadow_coll_id)) = shadow {
+                    let shadow_doc = doc.clone();
+                    let shadow_collection = CollectionId(shadow_coll_id);
+                    tokio::spawn(async move {
+                        match shadow_ch.chunk(&shadow_doc).await {
+                            Ok(mut shadow_chunks) => {
+                                for c in &mut shadow_chunks {
+                                    c.collection_id = shadow_collection.clone();
+                                    c.metadata.0.insert(
+                                        "source_uri".to_string(),
+                                        serde_json::Value::String(shadow_doc.source_uri.clone()),
+                                    );
+                                }
+                                tracing::debug!(
+                                    shadow_chunk_count = shadow_chunks.len(),
+                                    "shadow vector chunks produced"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!(err = ?e, "shadow vector chunking failed — ignoring");
+                            }
+                        }
+                    });
+                }
+
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
+pub fn make_graph_chunk_stage(
+    state: Arc<Mutex<IngestionState>>,
+    chunker: Arc<dyn Chunker>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "graph_chunk",
+        deps: vec!["preprocess"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let chunker = chunker.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "graph_chunk", "executing graph chunk stage");
+                if skip(&ctx) { return Ok(ctx); }
+                let (doc, collection_id) = {
+                    let g = state.lock().await;
+                    (
+                        g.doc.clone().ok_or_else(|| ArcanumError::Pipeline {
+                            stage: "graph_chunk".into(),
                             message: "no doc".into(),
                         })?,
                         g.collection_id.clone(),
@@ -195,7 +264,46 @@ pub fn make_chunk_stage(
                         serde_json::Value::String(source_uri.clone()),
                     );
                 }
-                state.lock().await.chunks = chunks;
+                state.lock().await.graph_chunks = chunks;
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
+pub fn make_tree_chunk_stage(
+    state: Arc<Mutex<IngestionState>>,
+    chunker: Arc<dyn Chunker>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "tree_chunk",
+        deps: vec!["preprocess"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let chunker = chunker.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "tree_chunk", "executing tree chunk stage");
+                if skip(&ctx) { return Ok(ctx); }
+                let (doc, collection_id) = {
+                    let g = state.lock().await;
+                    (
+                        g.doc.clone().ok_or_else(|| ArcanumError::Pipeline {
+                            stage: "tree_chunk".into(),
+                            message: "no doc".into(),
+                        })?,
+                        g.collection_id.clone(),
+                    )
+                };
+                let mut chunks = chunker.chunk(&doc).await?;
+                let source_uri = doc.source_uri.clone();
+                for c in &mut chunks {
+                    c.collection_id = collection_id.clone();
+                    c.metadata.0.insert(
+                        "source_uri".to_string(),
+                        serde_json::Value::String(source_uri.clone()),
+                    );
+                }
+                state.lock().await.tree_chunks = chunks;
                 Ok(ctx)
             })
         }),
@@ -208,7 +316,7 @@ pub fn make_context_enrich_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "context_enrich",
-        deps: vec!["chunk"],
+        deps: vec!["vector_chunk"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let enricher = enricher.clone();
@@ -243,7 +351,7 @@ pub fn make_entity_extract_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "entity_extract",
-        deps: vec!["chunk"],
+        deps: vec!["graph_chunk"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let enricher = enricher.clone();
@@ -254,7 +362,8 @@ pub fn make_entity_extract_stage(
                 let extractor = EntityExtractor::new(enricher);
                 let (chunks, collection_id) = {
                     let g = state.lock().await;
-                    (g.chunks.clone(), g.collection_id.clone())
+                    let chunks = if g.graph_chunks.is_empty() { g.chunks.clone() } else { g.graph_chunks.clone() };
+                    (chunks, g.collection_id.clone())
                 };
                 let mut all_entities = Vec::new();
                 let mut all_relations = Vec::new();
@@ -282,7 +391,7 @@ pub fn make_embed_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "embed",
-        deps: vec!["chunk"],
+        deps: vec!["vector_chunk"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let embedder = embedder.clone();
@@ -400,10 +509,12 @@ mod test_chunk_source_uri {
             collection_id: collection.clone(),
             doc: Some(doc),
             chunks: vec![],
+            graph_chunks: vec![],
+            tree_chunks: vec![],
             vectors: vec![],
         }));
         let chunker = Arc::new(FixedSizeChunker::new(512, 0));
-        let stage = make_chunk_stage(state.clone(), chunker);
+        let stage = make_vector_chunk_stage(state.clone(), chunker, None);
         (stage.run)(Default::default()).await.unwrap();
         let chunks = state.lock().await.chunks.clone();
         assert!(!chunks.is_empty(), "expected at least one chunk");
@@ -432,8 +543,8 @@ pub fn make_raptor_build_stage(
                 if skip(&ctx) { return Ok(ctx); }
                 let (leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
-                    let leaves: Vec<(String, Vector)> = g
-                        .chunks
+                    let chunks = if g.tree_chunks.is_empty() { g.chunks.clone() } else { g.tree_chunks.clone() };
+                    let leaves: Vec<(String, Vector)> = chunks
                         .iter()
                         .map(|c| c.text.clone())
                         .zip(g.vectors.iter().cloned())

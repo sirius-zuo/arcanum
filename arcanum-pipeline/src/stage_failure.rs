@@ -6,5 +6,5 @@ pub enum StageFailure {
 }
 
 pub fn is_core_stage(stage_id: &str) -> bool {
-    matches!(stage_id, "load" | "preprocess" | "chunk" | "embed" | "vector_write")
+    matches!(stage_id, "load" | "preprocess" | "vector_chunk" | "graph_chunk" | "tree_chunk" | "embed" | "vector_write")
 }
