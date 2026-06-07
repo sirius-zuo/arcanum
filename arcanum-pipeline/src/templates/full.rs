@@ -23,14 +23,16 @@ pub fn builder() -> TemplateBuilder {
                 deps.tree_store.clone(),
             ))
             .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
-            .add_stage(make_chunk_stage(state.clone(), deps.chunkers.vector.clone()));
+            .add_stage(make_vector_chunk_stage(state.clone(), deps.chunkers.vector.clone(), None))
+            .add_stage(make_graph_chunk_stage(state.clone(), deps.chunkers.graph.clone()))
+            .add_stage(make_tree_chunk_stage(state.clone(), deps.chunkers.tree.clone()));
 
         let embed_dep = match &deps.context_enricher {
             Some(e) => {
                 dag = dag.add_stage(make_context_enrich_stage(state.clone(), e.clone()));
                 "context_enrich"
             }
-            None => "chunk",
+            None => "vector_chunk",
         };
 
         dag = dag.add_stage(make_embed_stage_after(embed_dep, state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()));
