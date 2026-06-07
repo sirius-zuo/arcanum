@@ -34,7 +34,11 @@ fn stub_deps() -> Arc<PipelineDeps> {
     Arc::new(PipelineDeps {
         loaders: Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
         preprocessors: Arc::new(PreprocessorRegistry::new()),
-        chunker: Arc::new(StubChunker),
+        chunkers: PerBackendChunkers {
+            vector: Arc::new(StubChunker),
+            graph:  Arc::new(StubChunker),
+            tree:   Arc::new(StubChunker),
+        },
         context_enricher: None,
         entity_extractor: None,
         embedder: Arc::new(StubEmbedder),
@@ -46,6 +50,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(vec![])),
         embedding_cb:      Arc::new(arcanum_middleware::CircuitBreaker::new("embedding", 5, std::time::Duration::from_secs(30))),
         vector_store_cb:   Arc::new(arcanum_middleware::CircuitBreaker::new("vector_store", 5, std::time::Duration::from_secs(30))),
+        shadow:            None,
     })
 }
 

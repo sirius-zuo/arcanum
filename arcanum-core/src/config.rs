@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use crate::{ArcanumError, Result};
+use crate::types::PerBackendChunkConfig;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RuntimeMode {
@@ -84,19 +85,22 @@ pub enum FusionStrategy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
-    pub worker_pool_size: usize,
-    pub queue_capacity: usize,
-    pub retry_max_attempts: u32,
+    pub worker_pool_size:    usize,
+    pub queue_capacity:      usize,
+    pub retry_max_attempts:  u32,
     pub retry_base_delay_ms: u64,
+    #[serde(default)]
+    pub chunking:            PerBackendChunkConfig,
 }
 
 impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
-            worker_pool_size: 4,
-            queue_capacity: 10_000,
-            retry_max_attempts: 3,
+            worker_pool_size:    4,
+            queue_capacity:      10_000,
+            retry_max_attempts:  3,
             retry_base_delay_ms: 1_000,
+            chunking: PerBackendChunkConfig::default(),
         }
     }
 }
@@ -410,5 +414,17 @@ retry_base_delay_ms = 1000
         assert_eq!(cfg.server.cors_allowed_origins,
             vec!["https://a.com".to_string(), "https://b.com".to_string()]);
         std::env::remove_var("ARCANUM_CORS_ALLOWED_ORIGINS");
+    }
+
+    #[test]
+    fn ingestion_default_chunking_matches_per_backend_default() {
+        let ic  = IngestionConfig::default();
+        let pbc = PerBackendChunkConfig::default();
+        // PerBackendChunkConfig doesn't derive PartialEq, so compare via JSON serialization.
+        assert_eq!(
+            serde_json::to_value(&ic.chunking).unwrap(),
+            serde_json::to_value(&pbc).unwrap(),
+            "IngestionConfig::default().chunking must equal PerBackendChunkConfig::default()"
+        );
     }
 }

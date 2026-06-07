@@ -4,7 +4,7 @@ use std::sync::Arc;
 fn stub_deps() -> Arc<PipelineDeps> {
     use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, RawLoader};
     use arcanum_core::traits::{Chunker, Embedder, VectorStore};
-    use arcanum_core::types::*;
+    use arcanum_core::types::{*, PerBackendChunkers};
     use async_trait::async_trait;
 
     struct StubChunker;
@@ -12,6 +12,12 @@ fn stub_deps() -> Arc<PipelineDeps> {
     impl Chunker for StubChunker {
         async fn chunk(&self, _doc: &RawDocument) -> arcanum_core::Result<Vec<Chunk>> { Ok(vec![]) }
     }
+    let stub_chunker = Arc::new(StubChunker);
+    let chunkers = PerBackendChunkers {
+        vector: stub_chunker.clone(),
+        graph:  stub_chunker.clone(),
+        tree:   stub_chunker.clone(),
+    };
     struct StubEmbedder;
     #[async_trait]
     impl Embedder for StubEmbedder {
@@ -31,7 +37,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
     Arc::new(PipelineDeps {
         loaders: Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
         preprocessors: Arc::new(PreprocessorRegistry::new()),
-        chunker: Arc::new(StubChunker),
+        chunkers,
         context_enricher: None,
         entity_extractor: None,
         embedder: Arc::new(StubEmbedder),
@@ -43,6 +49,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(vec![])),
         embedding_cb:      Arc::new(arcanum_middleware::CircuitBreaker::new("embedding", 5, std::time::Duration::from_secs(30))),
         vector_store_cb:   Arc::new(arcanum_middleware::CircuitBreaker::new("vector_store", 5, std::time::Duration::from_secs(30))),
+        shadow:            None,
     })
 }
 
@@ -122,7 +129,7 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
 async fn test_worker_invalidates_cache_on_force_reingest() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::{ProgressEmitter, CacheInvalidator};
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_core::types::{CollectionId, IngestionTask, OperationId, PerBackendChunkers};
     use arcanum_middleware::{BoundedQueue, CircuitBreaker, RetryPolicy};
     use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, RawLoader};
     use std::time::Duration;
@@ -171,7 +178,11 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
     let deps = Arc::new(PipelineDeps {
         loaders:           Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
         preprocessors:     Arc::new(PreprocessorRegistry::new()),
-        chunker:           Arc::new(StubChunker2),
+        chunkers: PerBackendChunkers {
+            vector: Arc::new(StubChunker2),
+            graph:  Arc::new(StubChunker2),
+            tree:   Arc::new(StubChunker2),
+        },
         context_enricher:  None,
         entity_extractor:  None,
         embedder:          Arc::new(StubEmbedder2),
@@ -183,6 +194,7 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
         cache_invalidator: broadcaster,
         embedding_cb:      Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30))),
         vector_store_cb:   Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30))),
+        shadow:            None,
     });
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
