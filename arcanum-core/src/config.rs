@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc};
 use tokio::sync::RwLock;
 use crate::{ArcanumError, Result};
+use crate::types::{ChunkStrategyConfig, PerBackendChunkConfig};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RuntimeMode {
@@ -84,19 +85,29 @@ pub enum FusionStrategy {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
-    pub worker_pool_size: usize,
-    pub queue_capacity: usize,
-    pub retry_max_attempts: u32,
+    pub worker_pool_size:    usize,
+    pub queue_capacity:      usize,
+    pub retry_max_attempts:  u32,
     pub retry_base_delay_ms: u64,
+    #[serde(default)]
+    pub chunking:            PerBackendChunkConfig,
 }
 
 impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
-            worker_pool_size: 4,
-            queue_capacity: 10_000,
-            retry_max_attempts: 3,
+            worker_pool_size:    4,
+            queue_capacity:      10_000,
+            retry_max_attempts:  3,
             retry_base_delay_ms: 1_000,
+            chunking: PerBackendChunkConfig {
+                vector: ChunkStrategyConfig {
+                    strategy: "fixed".to_string(),
+                    params: serde_json::json!({ "chunk_size": 512, "overlap": 64 }),
+                },
+                graph: None,
+                tree:  None,
+            },
         }
     }
 }

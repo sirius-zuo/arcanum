@@ -1,9 +1,14 @@
+pub mod chunk_config;
 pub mod document;
 pub mod enrichment;
 pub mod graph;
 pub mod operation;
 pub mod query;
 pub mod tree;
+pub use chunk_config::{
+    ChunkStrategyConfig, PerBackendChunkConfig, PerBackendChunkers,
+    ExperimentId, ShadowContext,
+};
 pub use document::*;
 pub use enrichment::*;
 pub use graph::*;
