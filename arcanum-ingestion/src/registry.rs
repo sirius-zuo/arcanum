@@ -1,5 +1,5 @@
 use arcanum_core::{
-    traits::{DocumentRegistry, RegistryEntry, RegistryStatus},
+    traits::{DocumentRegistry, DocumentEntry, RegistryEntry, RegistryStatus},
     ArcanumError, Result,
 };
 use async_trait::async_trait;
@@ -125,6 +125,30 @@ impl DocumentRegistry for SqliteDocumentRegistry {
         .map_err(|e| ArcanumError::Storage(format!("join: {}", e)))?
     }
 
+    async fn list_by_collection(&self, collection_id: &str) -> Result<Vec<DocumentEntry>> {
+        let conn = self.conn.clone();
+        let cid = collection_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            let conn = conn.lock().unwrap_or_else(|e| e.into_inner());
+            let mut stmt = conn.prepare(
+                "SELECT source_uri, registered_at \
+                 FROM documents \
+                 WHERE collection_id = ?1 AND status = 'clean' \
+                 ORDER BY registered_at DESC"
+            ).map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            let rows = stmt.query_map(rusqlite::params![cid], |row| {
+                Ok(DocumentEntry {
+                    source_uri: row.get(0)?,
+                    registered_at: row.get(1)?,
+                })
+            }).map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|e| ArcanumError::Storage(e.to_string()))
+        })
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("join: {}", e)))?
+    }
+
     async fn try_set_replacing(&self, source_uri: &str, collection_id: &str) -> Result<bool> {
         let conn = self.conn.clone();
         let uri = source_uri.to_string();
@@ -240,5 +264,39 @@ mod tests {
         assert!(m.lock().is_err(), "mutex should be poisoned");
         let val = m.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(*val, 0, "data is still accessible after recovering from poison");
+    }
+
+    #[tokio::test]
+    async fn list_by_collection_returns_clean_docs_newest_first() {
+        let reg = SqliteDocumentRegistry::open(":memory:").unwrap();
+        reg.register("file://a.md", "col", "hash-a").await.unwrap();
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        reg.register("file://b.md", "col", "hash-b").await.unwrap();
+        reg.register("file://c.md", "other-col", "hash-c").await.unwrap();
+
+        let docs = reg.list_by_collection("col").await.unwrap();
+        assert_eq!(docs.len(), 2, "only docs from 'col'");
+        // newest first — b was registered after a
+        assert_eq!(docs[0].source_uri, "file://b.md");
+        assert_eq!(docs[1].source_uri, "file://a.md");
+        // other-col not returned
+        assert!(!docs.iter().any(|d| d.source_uri == "file://c.md"));
+    }
+
+    #[tokio::test]
+    async fn list_by_collection_excludes_replacing_status() {
+        let reg = SqliteDocumentRegistry::open(":memory:").unwrap();
+        reg.register("file://a.md", "col", "hash-a").await.unwrap();
+        reg.set_replacing("file://a.md", "col").await.unwrap();
+
+        let docs = reg.list_by_collection("col").await.unwrap();
+        assert!(docs.is_empty(), "replacing docs should not appear");
+    }
+
+    #[tokio::test]
+    async fn list_by_collection_empty_collection_returns_empty() {
+        let reg = SqliteDocumentRegistry::open(":memory:").unwrap();
+        let docs = reg.list_by_collection("no-such-col").await.unwrap();
+        assert!(docs.is_empty());
     }
 }

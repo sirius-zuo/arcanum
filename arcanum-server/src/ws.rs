@@ -20,7 +20,8 @@ pub async fn ws_handler(
         Ok(pair) => pair,
         Err(status) => return status.into_response(),
     };
-    ws.on_upgrade(move |socket| handle_socket(socket, claims, eng))
+    ws.protocols(["arcanum-v1"])
+        .on_upgrade(move |socket| handle_socket(socket, claims, eng))
 }
 
 fn extract_and_validate_ws_token(

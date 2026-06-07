@@ -1,5 +1,5 @@
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
@@ -335,6 +335,58 @@ pub async fn tree_stats_one(
     }
 }
 
+// ── vector collection documents ───────────────────────────────────────────────
+
+/// GET /api/v1/vector/collections/:name/documents
+pub async fn vector_list_documents(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Path(name): Path<String>,
+) -> impl IntoResponse {
+    let _claims = match validate_bearer(&headers, &engine) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let eng = engine.as_ref().unwrap();
+    match eng.document_registry.list_by_collection(&name).await {
+        Ok(docs) => (StatusCode::OK, Json(serde_json::json!({ "documents": docs }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+pub struct DeleteDocumentParams {
+    pub source_uri: String,
+}
+
+/// DELETE /api/v1/vector/collections/:name/documents?source_uri=<encoded>
+pub async fn vector_delete_document(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Path(name): Path<String>,
+    Query(params): Query<DeleteDocumentParams>,
+) -> impl IntoResponse {
+    let _claims = match validate_bearer(&headers, &engine) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    let eng = engine.as_ref().unwrap();
+    // Remove from vector store (no-op if already gone — idempotent).
+    if let Some(store) = eng.vector_store.as_ref() {
+        if let Err(e) = store.delete_by_source_uri(&name, &params.source_uri).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        }
+    }
+    // Remove from document registry.
+    if let Err(e) = eng.document_registry.deregister(&params.source_uri, &name).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    }
+    StatusCode::NO_CONTENT.into_response()
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -394,6 +446,31 @@ mod tests {
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
             "vector_delete should require auth");
+    }
+
+    #[tokio::test]
+    async fn vector_list_documents_requires_auth() {
+        let app = build_app(None);
+        let resp = app.oneshot(
+            Request::builder()
+                .uri("/api/v1/vector/collections/devforge/documents")
+                .body(Body::empty())
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn vector_delete_document_requires_auth() {
+        let app = build_app(None);
+        let resp = app.clone().oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri("/api/v1/vector/collections/devforge/documents?source_uri=test.md")
+                .body(Body::empty())
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

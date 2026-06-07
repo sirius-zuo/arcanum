@@ -64,6 +64,7 @@ impl LanceDbStore {
             Field::new("id", DataType::Utf8, false),
             Field::new("text", DataType::Utf8, false),
             Field::new("chunk_json", DataType::Utf8, false),
+            Field::new("source_uri", DataType::Utf8, false),
             Field::new(
                 "vector",
                 DataType::FixedSizeList(
@@ -82,6 +83,13 @@ impl LanceDbStore {
             .iter()
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .collect();
+        let source_uri_strings: Vec<String> = chunks.iter().map(|c| {
+            c.chunk.metadata.0
+                .get("source_uri")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        }).collect();
 
         let vec_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
             chunks
@@ -101,6 +109,9 @@ impl LanceDbStore {
                 )),
                 Arc::new(StringArray::from(
                     json_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    source_uri_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                 )),
                 Arc::new(vec_array),
             ],
@@ -158,10 +169,32 @@ impl VectorStore for LanceDbStore {
         };
 
         let query_vec: Vec<f32> = query.vector.0.clone();
-        let results = table
+
+        // Extract source_uri Eq filter if present; warn on anything else.
+        let mut source_uri_filter: Option<String> = None;
+        for f in &query.filters {
+            if f.field == "source_uri" && matches!(f.op, FilterOp::Eq) {
+                source_uri_filter = f.value.as_str()
+                    .map(|s| format!("source_uri = '{}'", s.replace('\'', "''")));
+            } else {
+                tracing::warn!(
+                    store = "lancedb",
+                    field = %f.field,
+                    "unsupported metadata filter field — ignoring"
+                );
+            }
+        }
+
+        let mut q = table
             .query()
             .nearest_to(query_vec.as_slice())
-            .map_err(|e| ArcanumError::Storage(e.to_string()))?
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+
+        if let Some(filter) = source_uri_filter {
+            q = q.only_if(filter);
+        }
+
+        let results = q
             .limit(query.top_k)
             .execute()
             .await
@@ -322,15 +355,12 @@ impl VectorStore for LanceDbStore {
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
             let mut source_uris = HashSet::new();
             for batch in &batches {
-                if let Some(col) = batch.column_by_name("chunk_json") {
+                if let Some(col) = batch.column_by_name("source_uri") {
                     if let Some(strings) = col.as_any().downcast_ref::<StringArray>() {
                         for i in 0..strings.len() {
-                            if let Ok(chunk) = serde_json::from_str::<IndexedChunk>(strings.value(i)) {
-                                if let Some(uri) = chunk.chunk.metadata.0.get("source_uri") {
-                                    if let Some(s) = uri.as_str() {
-                                        source_uris.insert(s.to_string());
-                                    }
-                                }
+                            let uri = strings.value(i);
+                            if !uri.is_empty() {
+                                source_uris.insert(uri.to_string());
                             }
                         }
                     }
@@ -427,5 +457,137 @@ mod tests {
             0
         );
         assert_eq!(store.count_documents(None).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_lance_source_uri_stored_and_counted() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("source_uri".to_string(), serde_json::json!("file:///doc-a.pdf"));
+        let chunk = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "doc a".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("lance_uri_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta),
+            },
+            vector: arcanum_core::types::Vector(vec![0.1, 0.2, 0.3]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("lance_uri_test", vec![chunk]).await.unwrap();
+        assert_eq!(
+            store.count_documents(Some("lance_uri_test")).await.unwrap(),
+            1,
+            "should count 1 distinct source_uri"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lance_delete_by_source_uri() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let mut meta_a = std::collections::HashMap::new();
+        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///a.pdf"));
+        let chunk_a = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "a".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("del_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta_a),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        let mut meta_b = std::collections::HashMap::new();
+        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///b.pdf"));
+        let chunk_b = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "b".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("del_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta_b),
+            },
+            vector: arcanum_core::types::Vector(vec![0.0, 1.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("del_test", vec![chunk_a, chunk_b]).await.unwrap();
+        assert_eq!(store.count_documents(Some("del_test")).await.unwrap(), 2);
+
+        store.delete_by_source_uri("del_test", "file:///a.pdf").await.unwrap();
+        assert_eq!(
+            store.count_documents(Some("del_test")).await.unwrap(),
+            1,
+            "only b.pdf should remain"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_lance_search_source_uri_filter() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let mut meta_a = std::collections::HashMap::new();
+        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///filter-a.pdf"));
+        let chunk_a = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "doc a".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("lance_filter_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta_a),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        let mut meta_b = std::collections::HashMap::new();
+        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///filter-b.pdf"));
+        let chunk_b = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "doc b".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("lance_filter_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta_b),
+            },
+            vector: arcanum_core::types::Vector(vec![0.0, 1.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("lance_filter_test", vec![chunk_a, chunk_b]).await.unwrap();
+
+        let results = store.search("lance_filter_test", &VectorQuery {
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![MetadataFilter {
+                field: "source_uri".into(),
+                op: FilterOp::Eq,
+                value: serde_json::json!("file:///filter-a.pdf"),
+            }],
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1, "filter should return only filter-a.pdf chunk");
+        let uri = results[0].chunk.chunk.metadata.0
+            .get("source_uri").and_then(|v| v.as_str()).unwrap_or("");
+        assert_eq!(uri, "file:///filter-a.pdf");
     }
 }
