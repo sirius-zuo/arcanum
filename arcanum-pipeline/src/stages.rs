@@ -400,6 +400,8 @@ mod test_chunk_source_uri {
             collection_id: collection.clone(),
             doc: Some(doc),
             chunks: vec![],
+            graph_chunks: vec![],
+            tree_chunks: vec![],
             vectors: vec![],
         }));
         let chunker = Arc::new(FixedSizeChunker::new(512, 0));
