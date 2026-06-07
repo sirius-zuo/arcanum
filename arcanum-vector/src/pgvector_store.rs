@@ -107,11 +107,7 @@ impl VectorStore for PgVectorStore {
             let json = serde_json::to_string(chunk)
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
             let vec_literal = Self::vector_to_pg_literal(&chunk.vector);
-            let source_uri = chunk.chunk.metadata.0
-                .get("source_uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let source_uri = chunk.chunk.metadata.source_uri();
 
             sqlx::query(
                 "INSERT INTO arcanum_chunks (id, collection, chunk_json, embedding, source_uri)
@@ -137,11 +133,23 @@ impl VectorStore for PgVectorStore {
     async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
         let vec_literal = Self::vector_to_pg_literal(&query.vector);
 
-        // Warn on unsupported filter fields; extract source_uri Eq filter if present.
         let mut source_uri_filter: Option<String> = None;
         for f in &query.filters {
-            if f.field == "source_uri" && matches!(f.op, FilterOp::Eq) {
-                source_uri_filter = f.value.as_str().map(|s| s.to_string());
+            if f.field == "source_uri" {
+                if !matches!(f.op, FilterOp::Eq) {
+                    tracing::warn!(
+                        store = "pgvector",
+                        op = ?f.op,
+                        "unsupported filter op for source_uri (only Eq is supported) — ignoring"
+                    );
+                } else if let Some(s) = f.value.as_str() {
+                    source_uri_filter = Some(s.to_string());
+                } else {
+                    tracing::warn!(
+                        store = "pgvector",
+                        "source_uri filter value is not a string — ignoring"
+                    );
+                }
             } else {
                 tracing::warn!(
                     store = "pgvector",
@@ -285,14 +293,14 @@ impl VectorStore for PgVectorStore {
         let count: i64 = match collection {
             Some(col) => sqlx::query_scalar(
                 "SELECT COUNT(DISTINCT source_uri) \
-                 FROM arcanum_chunks WHERE collection = $1",
+                 FROM arcanum_chunks WHERE collection = $1 AND source_uri <> ''",
             )
             .bind(col)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
             None => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_chunks",
+                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_chunks WHERE source_uri <> ''",
             )
             .fetch_one(&self.pool)
             .await
@@ -542,4 +550,33 @@ mod tests {
         // Cleanup
         store.delete_collection("filter_test").await.unwrap();
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_pg_count_documents_excludes_empty_source_uri() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let store = PgVectorStore::new(&url, 3).await.unwrap();
+
+        // Chunk with NO source_uri in metadata — will be stored as source_uri = ''
+        let chunk = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "no-uri chunk".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("count_empty_test".into()),
+                position: ChunkPosition { start: 0, end: 12, index: 0 },
+                metadata: ChunkMetadata::default(),  // no source_uri key
+            },
+            vector: Vector(vec![0.1, 0.2, 0.3]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("count_empty_test", vec![chunk]).await.unwrap();
+        let count = store.count_documents(Some("count_empty_test")).await.unwrap();
+        assert_eq!(count, 0, "chunks with empty source_uri must not be counted as a document");
+
+        store.delete_collection("count_empty_test").await.unwrap();
+    }
+
 }

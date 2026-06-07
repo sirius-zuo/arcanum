@@ -179,6 +179,7 @@ dependencies = [
  "anyhow",
  "arcanum-core",
  "async-trait",
+ "futures",
  "neo4rs",
  "serde",
  "serde_json",

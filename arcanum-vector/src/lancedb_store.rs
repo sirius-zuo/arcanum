@@ -21,6 +21,12 @@ pub struct LanceDbStore {
     sidecar_lock: Arc<TokioMutex<()>>,
 }
 
+/// Builds a LanceDB `only_if` predicate for `source_uri = <val>`.
+/// Single-quotes inside `val` are escaped by doubling them (standard SQL).
+fn lance_eq_filter(val: &str) -> String {
+    format!("source_uri = '{}'", val.replace('\'', "''"))
+}
+
 impl LanceDbStore {
     pub async fn new(path: &str) -> Result<Self> {
         // Resolve to absolute path so the sidecar location is stable
@@ -83,13 +89,9 @@ impl LanceDbStore {
             .iter()
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .collect();
-        let source_uri_strings: Vec<String> = chunks.iter().map(|c| {
-            c.chunk.metadata.0
-                .get("source_uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }).collect();
+        let source_uri_strings: Vec<&str> = chunks.iter()
+            .map(|c| c.chunk.metadata.source_uri())
+            .collect();
 
         let vec_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
             chunks
@@ -110,9 +112,7 @@ impl LanceDbStore {
                 Arc::new(StringArray::from(
                     json_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                 )),
-                Arc::new(StringArray::from(
-                    source_uri_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                )),
+                Arc::new(StringArray::from(source_uri_strings)),
                 Arc::new(vec_array),
             ],
         )
@@ -170,12 +170,23 @@ impl VectorStore for LanceDbStore {
 
         let query_vec: Vec<f32> = query.vector.0.clone();
 
-        // Extract source_uri Eq filter if present; warn on anything else.
         let mut source_uri_filter: Option<String> = None;
         for f in &query.filters {
-            if f.field == "source_uri" && matches!(f.op, FilterOp::Eq) {
-                source_uri_filter = f.value.as_str()
-                    .map(|s| format!("source_uri = '{}'", s.replace('\'', "''")));
+            if f.field == "source_uri" {
+                if !matches!(f.op, FilterOp::Eq) {
+                    tracing::warn!(
+                        store = "lancedb",
+                        op = ?f.op,
+                        "unsupported filter op for source_uri (only Eq is supported) — ignoring"
+                    );
+                } else if let Some(s) = f.value.as_str() {
+                    source_uri_filter = Some(lance_eq_filter(s));
+                } else {
+                    tracing::warn!(
+                        store = "lancedb",
+                        "source_uri filter value is not a string — ignoring"
+                    );
+                }
             } else {
                 tracing::warn!(
                     store = "lancedb",
@@ -265,9 +276,8 @@ impl VectorStore for LanceDbStore {
             Err(_) => return Ok(()),
         };
         // Use the first-class source_uri column for exact equality.
-        let safe_uri = source_uri.replace('\'', "''");
         table
-            .delete(&format!("source_uri = '{}'", safe_uri))
+            .delete(&lance_eq_filter(source_uri))
             .await
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(())
@@ -488,6 +498,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_lance_eq_filter_escapes_quotes() {
+        assert_eq!(
+            lance_eq_filter("it's here"),
+            "source_uri = 'it''s here'"
+        );
+        assert_eq!(
+            lance_eq_filter("file:///plain.pdf"),
+            "source_uri = 'file:///plain.pdf'"
+        );
+    }
+
     #[tokio::test]
     async fn test_lance_delete_by_source_uri() {
         let dir = TempDir::new().unwrap();
@@ -590,4 +612,78 @@ mod tests {
             .get("source_uri").and_then(|v| v.as_str()).unwrap_or("");
         assert_eq!(uri, "file:///filter-a.pdf");
     }
+
+    #[tokio::test]
+    async fn test_lance_search_non_string_filter_value_returns_all() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("source_uri".to_string(), serde_json::json!("file:///x.pdf"));
+        let chunk = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "x".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("filter_type_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        store.upsert("filter_type_test", vec![chunk]).await.unwrap();
+
+        // Non-string value: the filter is invalid but must not panic or error
+        let results = store.search("filter_type_test", &VectorQuery {
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![MetadataFilter {
+                field: "source_uri".into(),
+                op: FilterOp::Eq,
+                value: serde_json::json!(42),  // number, not a string
+            }],
+        }).await;
+
+        // Must not error
+        assert!(results.is_ok(), "non-string filter value must not cause an error");
+    }
+
+    #[tokio::test]
+    async fn test_lance_search_unsupported_op_returns_all() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("source_uri".to_string(), serde_json::json!("file:///y.pdf"));
+        let chunk = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "y".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("filter_op_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(meta),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        store.upsert("filter_op_test", vec![chunk]).await.unwrap();
+
+        // FilterOp::Ne is unsupported — must not panic or error
+        let results = store.search("filter_op_test", &VectorQuery {
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![MetadataFilter {
+                field: "source_uri".into(),
+                op: FilterOp::Ne,
+                value: serde_json::json!("file:///y.pdf"),
+            }],
+        }).await;
+
+        assert!(results.is_ok(), "unsupported op must not cause an error");
+    }
+
 }
