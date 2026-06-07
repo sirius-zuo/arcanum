@@ -281,14 +281,14 @@ impl VectorStore for PgVectorStore {
         let count: i64 = match collection {
             Some(col) => sqlx::query_scalar(
                 "SELECT COUNT(DISTINCT source_uri) \
-                 FROM arcanum_chunks WHERE collection = $1",
+                 FROM arcanum_chunks WHERE collection = $1 AND source_uri <> ''",
             )
             .bind(col)
             .fetch_one(&self.pool)
             .await
             .map_err(|e| ArcanumError::Storage(format!("count_documents: {}", e)))?,
             None => sqlx::query_scalar(
-                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_chunks",
+                "SELECT COUNT(DISTINCT source_uri) FROM arcanum_chunks WHERE source_uri <> ''",
             )
             .fetch_one(&self.pool)
             .await
@@ -538,4 +538,33 @@ mod tests {
         // Cleanup
         store.delete_collection("filter_test").await.unwrap();
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_pg_count_documents_excludes_empty_source_uri() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let store = PgVectorStore::new(&url, 3).await.unwrap();
+
+        // Chunk with NO source_uri in metadata — will be stored as source_uri = ''
+        let chunk = IndexedChunk {
+            chunk: Chunk {
+                id: ChunkId::new(),
+                text: "no-uri chunk".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("count_empty_test".into()),
+                position: ChunkPosition { start: 0, end: 12, index: 0 },
+                metadata: ChunkMetadata::default(),  // no source_uri key
+            },
+            vector: Vector(vec![0.1, 0.2, 0.3]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+
+        store.upsert("count_empty_test", vec![chunk]).await.unwrap();
+        let count = store.count_documents(Some("count_empty_test")).await.unwrap();
+        assert_eq!(count, 0, "chunks with empty source_uri must not be counted as a document");
+
+        store.delete_collection("count_empty_test").await.unwrap();
+    }
+
 }
