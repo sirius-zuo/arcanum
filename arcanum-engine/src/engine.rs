@@ -7,7 +7,8 @@ use arcanum_core::{
 };
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
-                        RawLoader, FileLoader, HttpLoader, FixedSizeChunker};
+                        RawLoader, FileLoader, HttpLoader, default_registry};
+use arcanum_core::types::{PerBackendChunkConfig, PerBackendChunkers};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
@@ -104,6 +105,29 @@ pub struct ArcanumEngineBuilder {
     secret_store: Option<Arc<dyn SecretStore>>,
     bm25_index: Option<Arc<Bm25Index>>,
     document_registry: Option<Arc<dyn DocumentRegistry>>,
+}
+
+fn resolve_chunkers(
+    collection_config: Option<&PerBackendChunkConfig>,
+    global_config: &PerBackendChunkConfig,
+) -> Result<PerBackendChunkers> {
+    let registry = default_registry();
+    let vector_cfg = collection_config
+        .and_then(|c| Some(&c.vector))
+        .unwrap_or(&global_config.vector);
+    let graph_cfg = collection_config
+        .and_then(|c| c.graph.as_ref())
+        .or(global_config.graph.as_ref())
+        .unwrap_or(&global_config.vector);
+    let tree_cfg = collection_config
+        .and_then(|c| c.tree.as_ref())
+        .or(global_config.tree.as_ref())
+        .unwrap_or(&global_config.vector);
+    Ok(PerBackendChunkers {
+        vector: registry.build(vector_cfg)?,
+        graph:  registry.build(graph_cfg)?,
+        tree:   registry.build(tree_cfg)?,
+    })
 }
 
 impl Default for ArcanumEngineBuilder {
@@ -225,7 +249,8 @@ impl ArcanumEngineBuilder {
                         .register(Arc::new(HttpLoader::new())),
                 ),
                 preprocessors:     Arc::new(PreprocessorRegistry::new()),
-                chunker:           Arc::new(FixedSizeChunker::new(512, 64)),
+                chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
+                shadow:            None,
                 context_enricher:  self.enricher.clone(),
                 entity_extractor:  self.enricher.clone(),
                 embedder:          embedder.clone(),
