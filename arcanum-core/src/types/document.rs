@@ -49,6 +49,16 @@ pub struct ChunkPosition {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ChunkMetadata(pub HashMap<String, serde_json::Value>);
 
+impl ChunkMetadata {
+    /// Extracts the `source_uri` string from metadata, or `""` if absent or not a string.
+    pub fn source_uri(&self) -> &str {
+        self.0
+            .get("source_uri")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Chunk {
     pub id: ChunkId,
@@ -149,5 +159,17 @@ mod tests {
             metadata: Default::default(),
         };
         assert_ne!(doc.content_hash(), doc2.content_hash());
+    }
+
+    #[test]
+    fn test_chunk_metadata_source_uri() {
+        let mut m = ChunkMetadata::default();
+        assert_eq!(m.source_uri(), "", "missing key returns empty string");
+
+        m.0.insert("source_uri".to_string(), serde_json::json!("file:///doc.pdf"));
+        assert_eq!(m.source_uri(), "file:///doc.pdf", "string value is returned");
+
+        m.0.insert("source_uri".to_string(), serde_json::json!(42));
+        assert_eq!(m.source_uri(), "", "non-string value returns empty string");
     }
 }

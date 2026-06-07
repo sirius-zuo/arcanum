@@ -83,13 +83,9 @@ impl LanceDbStore {
             .iter()
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .collect();
-        let source_uri_strings: Vec<String> = chunks.iter().map(|c| {
-            c.chunk.metadata.0
-                .get("source_uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string()
-        }).collect();
+        let source_uri_strings: Vec<&str> = chunks.iter()
+            .map(|c| c.chunk.metadata.source_uri())
+            .collect();
 
         let vec_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
             chunks
@@ -110,9 +106,7 @@ impl LanceDbStore {
                 Arc::new(StringArray::from(
                     json_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
                 )),
-                Arc::new(StringArray::from(
-                    source_uri_strings.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-                )),
+                Arc::new(StringArray::from(source_uri_strings)),
                 Arc::new(vec_array),
             ],
         )

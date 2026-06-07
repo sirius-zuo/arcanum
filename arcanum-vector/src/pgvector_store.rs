@@ -107,11 +107,7 @@ impl VectorStore for PgVectorStore {
             let json = serde_json::to_string(chunk)
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
             let vec_literal = Self::vector_to_pg_literal(&chunk.vector);
-            let source_uri = chunk.chunk.metadata.0
-                .get("source_uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
+            let source_uri = chunk.chunk.metadata.source_uri();
 
             sqlx::query(
                 "INSERT INTO arcanum_chunks (id, collection, chunk_json, embedding, source_uri)
