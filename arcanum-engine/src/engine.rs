@@ -22,6 +22,7 @@ use crate::{
     services::{
         admin::AdminService,
         eval::EvalService,
+        experiment::ExperimentService,
         ingestion::IngestionService,
         retrieval::RetrievalService,
         collection::CollectionService,
@@ -34,6 +35,7 @@ pub struct ArcanumEngine {
     pub ingestion: Arc<IngestionService>,
     pub retrieval: Arc<RetrievalService>,
     pub collection: Arc<CollectionService>,
+    pub experiment: Arc<ExperimentService>,
     pub audit: Arc<AuditLogger>,
     pub events: Arc<EventBus>,
     pub auth: Arc<AuthMiddleware>,
@@ -341,6 +343,7 @@ impl ArcanumEngineBuilder {
             vector_store_cb.clone(),
         ));
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
+        let experiment = Arc::new(ExperimentService::new(collection.clone()));
         let eval       = Arc::new(EvalService::new());
         let source     = Arc::new(IngestionSourceService::new());
         let admin      = Arc::new(AdminService::new(audit.clone()));
@@ -363,11 +366,40 @@ impl ArcanumEngineBuilder {
             });
         }
 
+        // Background experiment eval loop
+        {
+            let exp_svc = experiment.clone();
+            let eval_interval = std::time::Duration::from_secs(3600); // 1 hour default
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(eval_interval).await;
+                    let active = exp_svc.active_experiments().await;
+                    for (collection_id, exp) in active {
+                        tracing::info!(
+                            collection_id = %collection_id,
+                            experiment_id = %exp.id.0,
+                            "running background eval for active experiment"
+                        );
+                        // TODO: run benchmark against primary and shadow namespaces
+                        // Requires: access to vector store for retrieval + labeled queries
+                        // Labeled queries for background eval come from the collection's
+                        // benchmark query store (to be defined when persistent storage lands).
+                        // For now, log and skip — manual promote via API is the path.
+                        tracing::info!(
+                            "background eval stub: use POST /collections/{}/experiments/{}/eval to trigger manually",
+                            collection_id, exp.id.0
+                        );
+                    }
+                }
+            });
+        }
+
         Ok(Arc::new(ArcanumEngine {
             config: self.config,
             ingestion,
             retrieval,
             collection,
+            experiment,
             audit,
             events,
             auth,

@@ -11,6 +11,7 @@ pub use services::{
     admin::AdminService,
     collection::CollectionService,
     eval::EvalService,
+    experiment::{ExperimentService, ExperimentMetrics, ExperimentStatus, ShadowExperiment},
     ingestion::{IngestionService, IngestRequest},
     retrieval::RetrievalService,
     source::IngestionSourceService,

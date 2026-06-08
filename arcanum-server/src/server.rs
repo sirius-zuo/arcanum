@@ -3,7 +3,7 @@ use arcanum_core::config::ArcanumConfig;
 use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
 use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
-use crate::routes::{api, health, admin, graph, collections};
+use crate::routes::{api, health, admin, graph, collections, experiments};
 use crate::routes::metrics as route_metrics;
 use crate::ws::ws_handler;
 use crate::portal::serve_portal;
@@ -40,6 +40,15 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/api/v1/chunk/inspect",    post(api::chunk_inspect))
         .route("/api/v1/chunk/benchmark",  post(api::chunk_benchmark))
         .route("/api/v1/upload", post(api::upload))
+        // Shadow experiments
+        .route("/api/v1/collections/:collection_id/experiments",
+            axum::routing::post(experiments::start_experiment))
+        .route("/api/v1/collections/:collection_id/experiments/:experiment_id",
+            axum::routing::get(experiments::get_experiment))
+        .route("/api/v1/collections/:collection_id/experiments/:experiment_id/promote",
+            axum::routing::post(experiments::promote_experiment))
+        .route("/api/v1/collections/:collection_id/experiments/:experiment_id",
+            axum::routing::delete(experiments::abandon_experiment))
         .route("/admin/sources",     get(admin::list_ingestion_sources))
         .route("/admin/audit",       get(admin::get_audit_logs))
         .route("/admin/rotate-keys", post(admin::rotate_keys))
