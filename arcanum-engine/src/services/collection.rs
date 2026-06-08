@@ -11,6 +11,7 @@ pub struct CollectionInfo {
     pub description: String,
     pub chunk_count: usize,
     pub chunker_config: Option<PerBackendChunkConfig>,
+    pub experiment: Option<ExperimentId>,  // active experiment ID if any
 }
 
 #[derive(Debug)]
@@ -35,7 +36,7 @@ impl CollectionService {
         if map.contains_key(&id.0) {
             return Err(ArcanumError::Storage(format!("collection '{}' already exists", id.0)));
         }
-        map.insert(id.0.clone(), CollectionInfo { id: id.clone(), description, chunk_count: 0, chunker_config: None });
+        map.insert(id.0.clone(), CollectionInfo { id: id.clone(), description, chunk_count: 0, chunker_config: None, experiment: None });
         self.audit.log(AuditEntry {
             operation: "create_collection".into(), user_id: claims.user_id.clone(),
             collection_id: id.0, result: "ok".into(),
@@ -64,6 +65,26 @@ impl CollectionService {
             operation: "delete_collection".into(), user_id: claims.user_id.clone(),
             collection_id: id.to_string(), result: "ok".into(),
         }).await;
+        Ok(())
+    }
+
+    /// Returns a collection by ID.
+    pub async fn get(&self, id: &str) -> Result<CollectionInfo> {
+        self.collections.read().await.get(id)
+            .cloned()
+            .ok_or_else(|| ArcanumError::NotFound(format!("collection '{}'", id)))
+    }
+
+    /// Update the chunker config for a collection (used by promote).
+    pub async fn set_chunker_config(
+        &self,
+        id: &str,
+        config: Option<PerBackendChunkConfig>,
+    ) -> Result<()> {
+        let mut map = self.collections.write().await;
+        let col = map.get_mut(id)
+            .ok_or_else(|| ArcanumError::NotFound(format!("collection '{}'", id)))?;
+        col.chunker_config = config;
         Ok(())
     }
 }
