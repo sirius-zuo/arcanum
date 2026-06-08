@@ -64,6 +64,7 @@ async fn starting_second_experiment_while_active_returns_conflict() {
 
 #[tokio::test]
 async fn promote_updates_collection_chunker_config() {
+    use arcanum_engine::services::experiment::ExperimentMetrics;
     let collections = mock_collection_service();
     let svc = ExperimentService::new(collections.clone());
     let col_id = CollectionId("test-col-3".into());
@@ -74,6 +75,11 @@ async fn promote_updates_collection_chunker_config() {
 
     let challenger = fixed_config(256);
     let exp = svc.start(col_id.clone(), challenger.clone()).await.unwrap();
+    // Set metrics so experiment transitions to ReadyToPromote
+    svc.update_metrics(&col_id.0, &exp.id, ExperimentMetrics {
+        champion_recall_at_5: 0.5, challenger_recall_at_5: 0.9,
+        sample_size: 100, computed_at: "2026-06-07T00:00:00Z".into(),
+    }).await.unwrap();
     svc.promote(&col_id.0, &exp.id).await.unwrap();
 
     let col_info = collections.get(&col_id.0).await.unwrap();
@@ -85,6 +91,7 @@ async fn promote_updates_collection_chunker_config() {
 
 #[tokio::test]
 async fn promote_closes_experiment() {
+    use arcanum_engine::services::experiment::ExperimentMetrics;
     let collections = mock_collection_service();
     let svc = ExperimentService::new(collections.clone());
     let col_id = CollectionId("test-col-4".into());
@@ -94,6 +101,11 @@ async fn promote_closes_experiment() {
     collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
 
     let exp = svc.start(col_id.clone(), fixed_config(256)).await.unwrap();
+    // Set metrics so experiment transitions to ReadyToPromote
+    svc.update_metrics(&col_id.0, &exp.id, ExperimentMetrics {
+        champion_recall_at_5: 0.5, challenger_recall_at_5: 0.9,
+        sample_size: 100, computed_at: "2026-06-07T00:00:00Z".into(),
+    }).await.unwrap();
     svc.promote(&col_id.0, &exp.id).await.unwrap();
 
     let closed = svc.get(&col_id.0, &exp.id).await.unwrap();
@@ -118,4 +130,95 @@ async fn abandon_closes_experiment_without_changing_config() {
 
     let closed = svc.get(&col_id.0, &exp.id).await.unwrap();
     assert_eq!(closed.status, ExperimentStatus::Closed);
+}
+
+#[tokio::test]
+async fn update_metrics_on_closed_experiment_returns_error() {
+    use arcanum_engine::services::experiment::ExperimentMetrics;
+    let collections = mock_collection_service();
+    let svc = ExperimentService::new(collections.clone());
+    let col_id = CollectionId("test-col-closed".into());
+    let claims = arcanum_engine::auth::ApiKeyClaims {
+        user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+    };
+    collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+    let exp = svc.start(col_id.clone(), fixed_config(256)).await.unwrap();
+    svc.abandon(&col_id.0, &exp.id).await.unwrap();
+
+    let metrics = ExperimentMetrics {
+        champion_recall_at_5:   0.5,
+        challenger_recall_at_5: 0.9,
+        sample_size:            100,
+        computed_at:            "2026-06-07T00:00:00Z".into(),
+    };
+    let result = svc.update_metrics(&col_id.0, &exp.id, metrics).await;
+    assert!(result.is_err(), "update_metrics on Closed experiment must fail");
+}
+
+#[tokio::test]
+async fn promote_active_experiment_returns_error() {
+    let collections = mock_collection_service();
+    let svc = ExperimentService::new(collections.clone());
+    let col_id = CollectionId("test-col-premature".into());
+    let claims = arcanum_engine::auth::ApiKeyClaims {
+        user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+    };
+    collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+    let exp = svc.start(col_id.clone(), fixed_config(256)).await.unwrap();
+    // Experiment is Active (not ReadyToPromote) — must fail
+    let result = svc.promote(&col_id.0, &exp.id).await;
+    assert!(result.is_err(), "promoting an Active experiment must fail");
+    let msg = result.unwrap_err().to_string();
+    assert!(
+        msg.contains("ReadyToPromote") || msg.contains("ready"),
+        "error must mention ReadyToPromote: {}", msg
+    );
+}
+
+#[tokio::test]
+async fn promote_clears_collection_experiment_field() {
+    let collections = mock_collection_service();
+    let svc = ExperimentService::new(collections.clone());
+    let col_id = CollectionId("test-col-clear".into());
+    let claims = arcanum_engine::auth::ApiKeyClaims {
+        user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+    };
+    collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+    let exp = svc.start(col_id.clone(), fixed_config(256)).await.unwrap();
+
+    // Verify experiment was set on collection after start
+    let col_info = collections.get(&col_id.0).await.unwrap();
+    assert_eq!(col_info.experiment, Some(exp.id.clone()), "start must set collection.experiment");
+
+    // Force ReadyToPromote so promote is allowed
+    use arcanum_engine::services::experiment::ExperimentMetrics;
+    svc.update_metrics(&col_id.0, &exp.id, ExperimentMetrics {
+        champion_recall_at_5: 0.5, challenger_recall_at_5: 0.9,
+        sample_size: 100, computed_at: "2026-06-07T00:00:00Z".into(),
+    }).await.unwrap();
+
+    svc.promote(&col_id.0, &exp.id).await.unwrap();
+
+    let col_info = collections.get(&col_id.0).await.unwrap();
+    assert!(col_info.experiment.is_none(), "promote must clear collection.experiment");
+}
+
+#[tokio::test]
+async fn abandon_clears_collection_experiment_field() {
+    let collections = mock_collection_service();
+    let svc = ExperimentService::new(collections.clone());
+    let col_id = CollectionId("test-col-abandon-clear".into());
+    let claims = arcanum_engine::auth::ApiKeyClaims {
+        user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+    };
+    collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+    let exp = svc.start(col_id.clone(), fixed_config(256)).await.unwrap();
+    svc.abandon(&col_id.0, &exp.id).await.unwrap();
+
+    let col_info = collections.get(&col_id.0).await.unwrap();
+    assert!(col_info.experiment.is_none(), "abandon must clear collection.experiment");
 }

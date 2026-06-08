@@ -87,4 +87,17 @@ impl CollectionService {
         col.chunker_config = config;
         Ok(())
     }
+
+    /// Set or clear the active experiment ID on a collection.
+    pub async fn set_experiment(
+        &self,
+        id: &str,
+        exp_id: Option<ExperimentId>,
+    ) -> Result<()> {
+        let mut map = self.collections.write().await;
+        let col = map.get_mut(id)
+            .ok_or_else(|| ArcanumError::NotFound(format!("collection '{}'", id)))?;
+        col.experiment = exp_id;
+        Ok(())
+    }
 }
