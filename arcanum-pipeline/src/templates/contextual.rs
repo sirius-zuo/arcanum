@@ -28,7 +28,12 @@ pub fn builder() -> TemplateBuilder {
                         deps.tree_store.clone(),
                     ))
                     .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
-                    .add_stage(make_vector_chunk_stage(state.clone(), deps.chunkers.vector.clone(), None))
+                    .add_stage(make_vector_chunk_stage(
+                    state.clone(),
+                    deps.chunkers.vector.clone(),
+                    deps.shadow.as_ref()
+                        .map(|s| (s.chunkers.vector.clone(), s.experiment_id.0.to_string())),
+                ))
                     .add_stage(make_graph_chunk_stage(state.clone(), deps.chunkers.graph.clone()))
                     .add_stage(make_tree_chunk_stage(state.clone(), deps.chunkers.tree.clone()))
                     .add_stage(make_context_enrich_stage(state.clone(), enricher.clone()))
