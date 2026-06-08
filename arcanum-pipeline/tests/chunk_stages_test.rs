@@ -178,3 +178,80 @@ async fn entity_extract_is_noop_when_graph_chunks_empty() {
     assert_eq!(upsert_count.load(Ordering::SeqCst), 0,
         "entity_extract must not call upsert_entities when graph_chunks is empty");
 }
+
+#[tokio::test]
+async fn shadow_write_ctx_writes_to_shadow_namespace() {
+    use arcanum_core::traits::{Embedder, VectorStore, VectorQuery, ScoredChunk, Chunker};
+    use arcanum_core::types::*;
+    use arcanum_pipeline::stages::{make_vector_chunk_stage, ShadowWriteContext};
+    use arcanum_middleware::CircuitBreaker;
+    use std::time::Duration;
+    use async_trait::async_trait;
+
+    struct RecordingVectorStore(Arc<std::sync::Mutex<Vec<String>>>);
+    #[async_trait]
+    impl VectorStore for RecordingVectorStore {
+        async fn upsert(&self, collection: &str, _chunks: Vec<IndexedChunk>) -> arcanum_core::Result<()> {
+            self.0.lock().unwrap().push(collection.to_string());
+            Ok(())
+        }
+        async fn search(&self, _: &str, _: &VectorQuery) -> arcanum_core::Result<Vec<ScoredChunk>> { Ok(vec![]) }
+        async fn delete(&self, _: &str, _: &[ChunkId]) -> arcanum_core::Result<()> { Ok(()) }
+        async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> { Ok(true) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> { Ok(()) }
+    }
+
+    struct ConstEmbedder;
+    #[async_trait]
+    impl Embedder for ConstEmbedder {
+        async fn embed(&self, texts: Vec<String>) -> arcanum_core::Result<Vec<Vector>> {
+            Ok(texts.iter().map(|_| Vector(vec![0.1])).collect())
+        }
+        fn dimension(&self) -> usize { 1 }
+    }
+
+    struct OneChunkChunker;
+    #[async_trait]
+    impl Chunker for OneChunkChunker {
+        async fn chunk(&self, doc: &RawDocument) -> arcanum_core::Result<Vec<Chunk>> {
+            Ok(vec![Chunk {
+                id: ChunkId::new(),
+                text: String::from_utf8_lossy(&doc.content).to_string(),
+                document_id: doc.id.clone(),
+                collection_id: CollectionId("placeholder".into()),
+                position: ChunkPosition { start: 0, end: doc.content.len(), index: 0 },
+                metadata: ChunkMetadata::default(),
+            }])
+        }
+    }
+
+    let shadow_namespaces: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(vec![]));
+    let recording_store = Arc::new(RecordingVectorStore(shadow_namespaces.clone()));
+
+    let doc = make_raw_doc("hello shadow world");
+    let state = make_state(doc);
+
+    let shadow_ctx = ShadowWriteContext {
+        chunker:              Arc::new(OneChunkChunker),
+        shadow_collection_id: "my-col__shadow_test-exp-id".to_string(),
+        embedder:             Arc::new(ConstEmbedder),
+        vector_store:         recording_store,
+        vector_store_cb:      Arc::new(CircuitBreaker::new("test", 5, Duration::from_secs(30))),
+    };
+
+    let stage = make_vector_chunk_stage(
+        state.clone(),
+        Arc::new(OneChunkChunker),
+        Some(shadow_ctx),
+    );
+    (stage.run)(std::collections::HashMap::new()).await.unwrap();
+
+    // Give the spawned shadow task a moment to complete
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let written = shadow_namespaces.lock().unwrap().clone();
+    assert!(
+        written.contains(&"my-col__shadow_test-exp-id".to_string()),
+        "shadow write must upsert to the shadow namespace; got: {:?}", written
+    );
+}

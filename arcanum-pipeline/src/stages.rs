@@ -4,9 +4,32 @@ use arcanum_ingestion::{
     LoaderRegistry, PreprocessorRegistry, MimeDetector,
     ContextEnricher, EntityExtractor,
 };
+use arcanum_middleware::CircuitBreaker;
 use arcanum_tree::RaptorBuilder;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Context passed to `make_vector_chunk_stage` for best-effort shadow writes.
+/// All writes go to `shadow_collection_id`; failure does not fail primary ingestion.
+pub struct ShadowWriteContext {
+    pub chunker:              Arc<dyn Chunker>,
+    pub shadow_collection_id: String,
+    pub embedder:             Arc<dyn Embedder>,
+    pub vector_store:         Arc<dyn VectorStore>,
+    pub vector_store_cb:      Arc<CircuitBreaker>,
+}
+
+impl Clone for ShadowWriteContext {
+    fn clone(&self) -> Self {
+        Self {
+            chunker:              self.chunker.clone(),
+            shadow_collection_id: self.shadow_collection_id.clone(),
+            embedder:             self.embedder.clone(),
+            vector_store:         self.vector_store.clone(),
+            vector_store_cb:      self.vector_store_cb.clone(),
+        }
+    }
+}
 
 fn skip(ctx: &StageContext) -> bool {
     ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false)
@@ -166,7 +189,7 @@ pub fn make_preprocess_stage(
 pub fn make_vector_chunk_stage(
     state: Arc<Mutex<IngestionState>>,
     chunker: Arc<dyn Chunker>,
-    shadow_chunker: Option<(Arc<dyn Chunker>, String)>, // (chunker, shadow_collection_id)
+    shadow: Option<ShadowWriteContext>, // was: Option<(Arc<dyn Chunker>, String)>
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_chunk",
@@ -174,7 +197,7 @@ pub fn make_vector_chunk_stage(
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let chunker = chunker.clone();
-            let shadow = shadow_chunker.clone();
+            let shadow = shadow.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_chunk", "executing vector chunk stage");
                 if skip(&ctx) { return Ok(ctx); }
@@ -200,27 +223,57 @@ pub fn make_vector_chunk_stage(
                 }
                 state.lock().await.chunks = chunks;
 
-                // Shadow chunking — best-effort, failure does not fail primary
-                if let Some((shadow_ch, shadow_coll_id)) = shadow {
+                // Shadow write — best-effort, detached task, failure does not fail primary.
+                // Writes to shadow_collection_id; uses shadow's chunker + embedder + vector_store.
+                if let Some(sw) = shadow {
                     let shadow_doc = doc.clone();
-                    let shadow_collection = CollectionId(shadow_coll_id);
                     tokio::spawn(async move {
-                        match shadow_ch.chunk(&shadow_doc).await {
+                        match sw.chunker.chunk(&shadow_doc).await {
                             Ok(mut shadow_chunks) => {
                                 for c in &mut shadow_chunks {
-                                    c.collection_id = shadow_collection.clone();
+                                    c.collection_id = CollectionId(sw.shadow_collection_id.clone());
                                     c.metadata.0.insert(
                                         "source_uri".to_string(),
                                         serde_json::Value::String(shadow_doc.source_uri.clone()),
                                     );
                                 }
-                                tracing::debug!(
-                                    shadow_chunk_count = shadow_chunks.len(),
-                                    "shadow vector chunks produced"
-                                );
+                                let texts: Vec<String> =
+                                    shadow_chunks.iter().map(|c| c.text.clone()).collect();
+                                if !sw.vector_store_cb.allow_request() {
+                                    tracing::warn!(
+                                        "shadow: vector_store circuit open — skipping shadow write"
+                                    );
+                                    return;
+                                }
+                                match sw.embedder.embed(texts).await {
+                                    Ok(vectors) => {
+                                        sw.vector_store_cb.record_success();
+                                        let indexed: Vec<IndexedChunk> = shadow_chunks
+                                            .into_iter()
+                                            .zip(vectors)
+                                            .map(|(chunk, vector)| IndexedChunk {
+                                                chunk,
+                                                vector,
+                                                token_vectors: None,
+                                                store_id:      String::new(),
+                                            })
+                                            .collect();
+                                        if let Err(e) = sw.vector_store
+                                            .upsert(&sw.shadow_collection_id, indexed)
+                                            .await
+                                        {
+                                            tracing::warn!(err = ?e,
+                                                "shadow vector write failed — ignoring");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(err = ?e,
+                                            "shadow embedding failed — ignoring");
+                                    }
+                                }
                             }
                             Err(e) => {
-                                tracing::warn!(err = ?e, "shadow vector chunking failed — ignoring");
+                                tracing::warn!(err = ?e, "shadow chunking failed — ignoring");
                             }
                         }
                     });

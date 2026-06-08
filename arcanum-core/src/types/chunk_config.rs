@@ -34,6 +34,16 @@ pub struct PerBackendChunkers {
     pub tree:   Arc<dyn Chunker>,
 }
 
+impl Clone for PerBackendChunkers {
+    fn clone(&self) -> Self {
+        Self {
+            vector: self.vector.clone(),
+            graph:  self.graph.clone(),
+            tree:   self.tree.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ExperimentId(pub uuid::Uuid);
 
@@ -48,6 +58,19 @@ impl Default for ExperimentId {
 }
 
 pub struct ShadowContext {
-    pub experiment_id: ExperimentId,
-    pub chunkers:      PerBackendChunkers,
+    pub experiment_id:       ExperimentId,
+    pub chunkers:            PerBackendChunkers,
+    /// Pre-computed shadow namespace: "{{collection_id}}__shadow_{{experiment_id}}".
+    /// Computed once by the resolver so stages never need the collection_id at hand.
+    pub shadow_collection_id: String,
+}
+
+impl Clone for ShadowContext {
+    fn clone(&self) -> Self {
+        Self {
+            experiment_id:       self.experiment_id.clone(),
+            chunkers:            self.chunkers.clone(),
+            shadow_collection_id: self.shadow_collection_id.clone(),
+        }
+    }
 }
