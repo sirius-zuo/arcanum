@@ -1,11 +1,13 @@
-use arcanum_core::traits::{Chunker, Source};
+use arcanum_core::traits::{Chunker, GraphStore, Source, TextEnricher};
 use arcanum_core::types::*;
+use arcanum_core::types::{EnrichRequest, EnrichedText};
 use arcanum_ingestion::{FixedSizeChunker, SemanticChunker};
 use arcanum_pipeline::{
     ingestion_state::IngestionState,
     stages::{make_vector_chunk_stage, make_graph_chunk_stage, make_tree_chunk_stage},
 };
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
 
 fn make_raw_doc(text: &str) -> RawDocument {
@@ -129,4 +131,50 @@ async fn vector_and_graph_stages_produce_different_chunk_counts_with_different_c
         "different chunkers should produce different chunk counts: vector={}, graph={}",
         vector_count, graph_count
     );
+}
+
+#[tokio::test]
+async fn entity_extract_is_noop_when_graph_chunks_empty() {
+    use arcanum_core::traits::TextEnricher;
+    use arcanum_core::types::*;
+    use arcanum_pipeline::stages::make_entity_extract_stage;
+    use async_trait::async_trait;
+
+    struct CountingGraphStore(Arc<AtomicUsize>);
+    #[async_trait]
+    impl GraphStore for CountingGraphStore {
+        async fn upsert_entities(&self, _: &str, _: Vec<Entity>) -> arcanum_core::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        async fn upsert_relations(&self, _: &str, _: Vec<Relation>) -> arcanum_core::Result<()> { Ok(()) }
+        async fn query(&self, _: &str, _: &arcanum_core::traits::GraphQuery) -> arcanum_core::Result<Vec<Entity>> { Ok(vec![]) }
+        async fn get_relations(&self, _: &EntityId) -> arcanum_core::Result<Vec<Relation>> { Ok(vec![]) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> { Ok(()) }
+    }
+
+    struct NoopEnricher;
+    #[async_trait]
+    impl TextEnricher for NoopEnricher {
+        async fn enrich(&self, req: EnrichRequest) -> arcanum_core::Result<EnrichedText> {
+            Ok(EnrichedText(req.text))
+        }
+    }
+
+    let doc = make_raw_doc("some text");
+    let state = make_state(doc);
+    // graph_chunks is empty — entity extract must skip, not fall back to vector chunks
+    assert!(state.lock().await.graph_chunks.is_empty());
+
+    let upsert_count = Arc::new(AtomicUsize::new(0));
+    let graph_store = Arc::new(CountingGraphStore(upsert_count.clone()));
+    let stage = make_entity_extract_stage(
+        state.clone(),
+        Arc::new(NoopEnricher),
+        graph_store,
+    );
+    (stage.run)(std::collections::HashMap::new()).await.unwrap();
+
+    assert_eq!(upsert_count.load(Ordering::SeqCst), 0,
+        "entity_extract must not call upsert_entities when graph_chunks is empty");
 }

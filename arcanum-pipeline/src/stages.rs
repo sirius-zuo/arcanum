@@ -362,8 +362,12 @@ pub fn make_entity_extract_stage(
                 let extractor = EntityExtractor::new(enricher);
                 let (chunks, collection_id) = {
                     let g = state.lock().await;
-                    let chunks = if g.graph_chunks.is_empty() { g.chunks.clone() } else { g.graph_chunks.clone() };
-                    (chunks, g.collection_id.clone())
+                    if g.graph_chunks.is_empty() {
+                        // No graph chunks produced — skip entity extraction rather than using
+                        // vector chunks at the wrong granularity (finding #8).
+                        return Ok(ctx);
+                    }
+                    (g.graph_chunks.clone(), g.collection_id.clone())
                 };
                 let mut all_entities = Vec::new();
                 let mut all_relations = Vec::new();
