@@ -2,6 +2,7 @@ pub mod audit;
 pub mod auth;
 pub mod engine;
 pub mod event_bus;
+pub mod ingestion_deps_resolver;
 pub mod rate_limit;
 pub mod secret_store;
 pub mod services;

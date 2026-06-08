@@ -1,7 +1,8 @@
 use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry},
+             CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry,
+             IngestionDepsOverrideResolver},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -232,6 +233,10 @@ impl ArcanumEngineBuilder {
         let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
         let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
 
+        // Collection and experiment services — needed early for per-job resolver.
+        let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
+        let experiment = Arc::new(ExperimentService::new(collection.clone()));
+
         // Shared queue — passed to both IngestionService (push) and workers (pop).
         let queue = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
 
@@ -240,6 +245,15 @@ impl ArcanumEngineBuilder {
             events.clone(),
             audit.clone(),
         ));
+
+        // Per-job deps resolver: enables per-collection chunker overrides and
+        // active shadow experiment resolution for each ingestion worker.
+        use crate::ingestion_deps_resolver::EngineIngestionDepsResolver;
+        let deps_resolver = Arc::new(EngineIngestionDepsResolver {
+            collection_service: collection.clone(),
+            experiment_service: experiment.clone(),
+            global_chunking:    self.config.ingestion.chunking.clone(),
+        }) as Arc<dyn IngestionDepsOverrideResolver>;
 
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
@@ -276,7 +290,7 @@ impl ArcanumEngineBuilder {
             for _ in 0..self.config.ingestion.worker_pool_size {
                 let worker = IngestionWorker::new(
                     registry.clone(), deps.clone(), emitter.clone(), queue.clone(),
-                );
+                ).with_resolver(deps_resolver.clone());
                 tokio::spawn(async move {
                     while let Some(_) = worker.process_next().await {}
                 });
@@ -342,8 +356,6 @@ impl ArcanumEngineBuilder {
             audit.clone(),
             vector_store_cb.clone(),
         ));
-        let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
-        let experiment = Arc::new(ExperimentService::new(collection.clone()));
         let eval       = Arc::new(EvalService::new());
         let source     = Arc::new(IngestionSourceService::new());
         let admin      = Arc::new(AdminService::new(audit.clone()));

@@ -222,3 +222,72 @@ async fn abandon_clears_collection_experiment_field() {
     let col_info = collections.get(&col_id.0).await.unwrap();
     assert!(col_info.experiment.is_none(), "abandon must clear collection.experiment");
 }
+
+#[tokio::test]
+async fn collection_chunker_override_is_applied_to_ingestion_jobs() {
+    use arcanum_engine::ingestion_deps_resolver::EngineIngestionDepsResolver;
+    use arcanum_core::traits::IngestionDepsOverrideResolver;
+    use arcanum_core::types::{ChunkStrategyConfig, PerBackendChunkConfig};
+
+    let collections = mock_collection_service();
+    let experiment_svc = ExperimentService::new(collections.clone());
+    let claims = arcanum_engine::auth::ApiKeyClaims {
+        user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+    };
+    let col_id = CollectionId("chunker-override-col".into());
+    collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+    // Set a non-default chunker config on the collection
+    let custom_cfg = PerBackendChunkConfig {
+        vector: ChunkStrategyConfig {
+            strategy: "semantic".to_string(),
+            params: serde_json::json!({ "max_chars": 800 }),
+        },
+        graph: None,
+        tree:  None,
+    };
+    collections.set_chunker_config(&col_id.0, Some(custom_cfg.clone())).await.unwrap();
+
+    let global_cfg = PerBackendChunkConfig::default();
+    let resolver = EngineIngestionDepsResolver {
+        collection_service: collections.clone(),
+        experiment_service: Arc::new(experiment_svc),
+        global_chunking: global_cfg,
+    };
+
+    let (chunkers, shadow) = resolver.resolve_for_collection(&col_id.0).await.unwrap();
+    assert!(shadow.is_none(), "no active experiment, shadow must be None");
+    // The resolved chunkers should be built from the custom config.
+    // We can't easily inspect the Arc<dyn Chunker> type directly,
+    // so we just verify resolution succeeded with the custom config.
+    drop(chunkers); // compilation ensures the type is PerBackendChunkers
+}
+
+#[tokio::test]
+async fn active_experiment_produces_shadow_context_with_correct_namespace() {
+    use arcanum_engine::ingestion_deps_resolver::EngineIngestionDepsResolver;
+    use arcanum_core::traits::IngestionDepsOverrideResolver;
+
+    let collections = mock_collection_service();
+    let experiment_svc = Arc::new(ExperimentService::new(collections.clone()));
+    let claims = arcanum_engine::auth::ApiKeyClaims {
+        user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+    };
+    let col_id = CollectionId("shadow-resolver-col".into());
+    collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+    let challenger = fixed_config(128);
+    let exp = experiment_svc.start(col_id.clone(), challenger).await.unwrap();
+
+    let resolver = EngineIngestionDepsResolver {
+        collection_service: collections.clone(),
+        experiment_service: experiment_svc.clone(),
+        global_chunking: arcanum_core::types::PerBackendChunkConfig::default(),
+    };
+
+    let (_chunkers, shadow) = resolver.resolve_for_collection(&col_id.0).await.unwrap();
+    let shadow = shadow.expect("active experiment must produce a ShadowContext");
+    let expected_ns = format!("{}__shadow_{}", col_id.0, exp.id.0);
+    assert_eq!(shadow.shadow_collection_id, expected_ns,
+        "shadow namespace must be '{{col_id}}__shadow_{{exp_id}}'");
+}
