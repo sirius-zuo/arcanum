@@ -54,21 +54,6 @@ impl ExperimentService {
         collection_id: arcanum_core::types::CollectionId,
         challenger_config: PerBackendChunkConfig,
     ) -> Result<ShadowExperiment> {
-        // Check no Active experiment already exists for this collection
-        {
-            let map = self.experiments.read().await;
-            let has_active = map.iter().any(|(k, exp)| {
-                k.starts_with(&format!("{}:", collection_id.0))
-                    && exp.status == ExperimentStatus::Active
-            });
-            if has_active {
-                return Err(ArcanumError::Storage(format!(
-                    "collection '{}' already has an active experiment",
-                    collection_id.0
-                )));
-            }
-        }
-
         let exp = ShadowExperiment {
             id: ExperimentId::new(),
             challenger_config,
@@ -76,9 +61,27 @@ impl ExperimentService {
             status: ExperimentStatus::Active,
             metrics: None,
         };
-
         let key = format!("{}:{}", collection_id.0, exp.id.0);
-        self.experiments.write().await.insert(key, exp.clone());
+
+        // Single write lock for atomic check-then-insert — eliminates TOCTOU race (finding #7).
+        {
+            let mut map = self.experiments.write().await;
+            let has_active = map.iter().any(|(k, e)| {
+                k.starts_with(&format!("{}:", collection_id.0))
+                    && e.status == ExperimentStatus::Active
+            });
+            if has_active {
+                return Err(ArcanumError::Storage(format!(
+                    "collection '{}' already has an active experiment",
+                    collection_id.0
+                )));
+            }
+            map.insert(key, exp.clone());
+        }
+
+        // Link experiment to collection so the per-job resolver can find it.
+        self.collections.set_experiment(&collection_id.0, Some(exp.id.clone())).await?;
+
         Ok(exp)
     }
 
@@ -95,16 +98,21 @@ impl ExperimentService {
             let map = self.experiments.read().await;
             let exp = map.get(&key)
                 .ok_or_else(|| ArcanumError::NotFound(format!("experiment '{}'", exp_id.0)))?;
+            // Guard: must be ReadyToPromote — prevents promoting an untested experiment (finding #6).
+            if exp.status != ExperimentStatus::ReadyToPromote {
+                return Err(ArcanumError::Storage(format!(
+                    "experiment '{}' cannot be promoted from status {:?}; status must be ReadyToPromote",
+                    exp_id.0, exp.status
+                )));
+            }
             exp.challenger_config.clone()
         };
 
-        // Update collection's chunker_config
-        self.collections.set_chunker_config(
-            collection_id,
-            Some(challenger_config),
-        ).await?;
+        self.collections.set_chunker_config(collection_id, Some(challenger_config)).await?;
 
-        // Close the experiment
+        // Clear the experiment link on the collection before closing the experiment (finding #10).
+        self.collections.set_experiment(collection_id, None).await?;
+
         let mut map = self.experiments.write().await;
         if let Some(exp) = map.get_mut(&key) {
             exp.status = ExperimentStatus::Closed;
@@ -114,6 +122,10 @@ impl ExperimentService {
 
     pub async fn abandon(&self, collection_id: &str, exp_id: &ExperimentId) -> Result<()> {
         let key = format!("{}:{}", collection_id, exp_id.0);
+
+        // Clear the experiment link on the collection first.
+        self.collections.set_experiment(collection_id, None).await?;
+
         let mut map = self.experiments.write().await;
         let exp = map.get_mut(&key)
             .ok_or_else(|| ArcanumError::NotFound(format!("experiment '{}'", exp_id.0)))?;
@@ -132,9 +144,16 @@ impl ExperimentService {
         let exp = map.get_mut(&key)
             .ok_or_else(|| ArcanumError::NotFound(format!("experiment '{}'", exp_id.0)))?;
 
+        // Guard: a closed experiment must not be re-opened by a delayed eval run (finding #9).
+        if exp.status == ExperimentStatus::Closed {
+            return Err(ArcanumError::Storage(format!(
+                "experiment '{}' is already closed and cannot receive metric updates",
+                exp_id.0
+            )));
+        }
+
         exp.metrics = Some(metrics.clone());
 
-        // Auto-flag as ready to promote when challenger leads by >=5% over >=50 docs
         if metrics.sample_size >= 50
             && metrics.challenger_recall_at_5 > metrics.champion_recall_at_5 + 0.05
         {
@@ -149,7 +168,9 @@ impl ExperimentService {
             .iter()
             .filter(|(_, exp)| exp.status == ExperimentStatus::Active)
             .map(|(k, exp)| {
-                let col_id = k.split(':').next().unwrap_or("").to_string();
+                // Key format is "{col_id}:{exp_id}" where exp_id is a UUID (no colons).
+                // Split at the last ':' so collection IDs containing colons are preserved.
+                let col_id = k.rsplitn(2, ':').nth(1).unwrap_or("").to_string();
                 (col_id, exp.clone())
             })
             .collect()

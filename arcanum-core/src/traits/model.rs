@@ -1,6 +1,16 @@
 use async_trait::async_trait;
-use crate::types::*;
+use crate::types::{PerBackendChunkers, ShadowContext, *};
 use crate::Result;
+
+/// Implemented by the engine; called by each ingestion worker before running a task
+/// to resolve per-collection chunkers and shadow context.
+#[async_trait]
+pub trait IngestionDepsOverrideResolver: Send + Sync {
+    async fn resolve_for_collection(
+        &self,
+        collection_id: &str,
+    ) -> Result<(PerBackendChunkers, Option<ShadowContext>)>;
+}
 
 #[async_trait]
 pub trait TextEnricher: Send + Sync {

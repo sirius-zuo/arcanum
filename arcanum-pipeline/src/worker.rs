@@ -20,6 +20,7 @@ pub struct IngestionWorker {
     deps:     Arc<PipelineDeps>,
     emitter:  Arc<dyn ProgressEmitter>,
     queue:    Arc<BoundedQueue<IngestionTask>>,
+    resolver: Option<Arc<dyn arcanum_core::traits::IngestionDepsOverrideResolver>>,
 }
 
 impl IngestionWorker {
@@ -29,23 +30,67 @@ impl IngestionWorker {
         emitter:  Arc<dyn ProgressEmitter>,
         queue:    Arc<BoundedQueue<IngestionTask>>,
     ) -> Self {
-        Self { registry, deps, emitter, queue }
+        Self { registry, deps, emitter, queue, resolver: None }
+    }
+
+    /// Attach a per-job resolver. Workers without a resolver use the shared base deps.
+    pub fn with_resolver(
+        mut self,
+        resolver: Arc<dyn arcanum_core::traits::IngestionDepsOverrideResolver>,
+    ) -> Self {
+        self.resolver = Some(resolver);
+        self
     }
 
     /// Pop one task off the queue and run it. Returns `None` when the queue is closed.
     #[instrument(skip(self))]
     pub async fn process_next(&self) -> Option<Result<()>> {
         let task = self.queue.pop().await?;
+        let deps = self.resolve_task_deps(&task.collection_id.0).await;
         Some(
             run_task(
                 task,
                 self.registry.clone(),
-                self.deps.clone(),
+                deps,
                 self.emitter.clone(),
                 self.queue.clone(),
             )
             .await,
         )
+    }
+
+    async fn resolve_task_deps(&self, collection_id: &str) -> Arc<PipelineDeps> {
+        let Some(resolver) = &self.resolver else { return self.deps.clone(); };
+        match resolver.resolve_for_collection(collection_id).await {
+            Ok((chunkers, shadow)) => {
+                Arc::new(PipelineDeps {
+                    chunkers,
+                    shadow,
+                    // All other fields are cheap Arc clones from the shared base deps.
+                    loaders:           self.deps.loaders.clone(),
+                    preprocessors:     self.deps.preprocessors.clone(),
+                    context_enricher:  self.deps.context_enricher.clone(),
+                    entity_extractor:  self.deps.entity_extractor.clone(),
+                    embedder:          self.deps.embedder.clone(),
+                    vector_store:      self.deps.vector_store.clone(),
+                    graph_store:       self.deps.graph_store.clone(),
+                    tree_store:        self.deps.tree_store.clone(),
+                    document_registry: self.deps.document_registry.clone(),
+                    retry_policy:      self.deps.retry_policy.clone(),
+                    cache_invalidator: self.deps.cache_invalidator.clone(),
+                    embedding_cb:      self.deps.embedding_cb.clone(),
+                    vector_store_cb:   self.deps.vector_store_cb.clone(),
+                })
+            }
+            Err(e) => {
+                tracing::warn!(
+                    collection_id = %collection_id,
+                    err = ?e,
+                    "per-job deps resolution failed — falling back to global defaults"
+                );
+                self.deps.clone()
+            }
+        }
     }
 }
 

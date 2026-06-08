@@ -4,9 +4,32 @@ use arcanum_ingestion::{
     LoaderRegistry, PreprocessorRegistry, MimeDetector,
     ContextEnricher, EntityExtractor,
 };
+use arcanum_middleware::CircuitBreaker;
 use arcanum_tree::RaptorBuilder;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Context passed to `make_vector_chunk_stage` for best-effort shadow writes.
+/// All writes go to `shadow_collection_id`; failure does not fail primary ingestion.
+pub struct ShadowWriteContext {
+    pub chunker:              Arc<dyn Chunker>,
+    pub shadow_collection_id: String,
+    pub embedder:             Arc<dyn Embedder>,
+    pub vector_store:         Arc<dyn VectorStore>,
+    pub vector_store_cb:      Arc<CircuitBreaker>,
+}
+
+impl Clone for ShadowWriteContext {
+    fn clone(&self) -> Self {
+        Self {
+            chunker:              self.chunker.clone(),
+            shadow_collection_id: self.shadow_collection_id.clone(),
+            embedder:             self.embedder.clone(),
+            vector_store:         self.vector_store.clone(),
+            vector_store_cb:      self.vector_store_cb.clone(),
+        }
+    }
+}
 
 fn skip(ctx: &StageContext) -> bool {
     ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false)
@@ -166,7 +189,7 @@ pub fn make_preprocess_stage(
 pub fn make_vector_chunk_stage(
     state: Arc<Mutex<IngestionState>>,
     chunker: Arc<dyn Chunker>,
-    shadow_chunker: Option<(Arc<dyn Chunker>, String)>, // (chunker, shadow_collection_id)
+    shadow: Option<ShadowWriteContext>, // was: Option<(Arc<dyn Chunker>, String)>
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_chunk",
@@ -174,7 +197,7 @@ pub fn make_vector_chunk_stage(
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let chunker = chunker.clone();
-            let shadow = shadow_chunker.clone();
+            let shadow = shadow.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_chunk", "executing vector chunk stage");
                 if skip(&ctx) { return Ok(ctx); }
@@ -200,27 +223,57 @@ pub fn make_vector_chunk_stage(
                 }
                 state.lock().await.chunks = chunks;
 
-                // Shadow chunking — best-effort, failure does not fail primary
-                if let Some((shadow_ch, shadow_coll_id)) = shadow {
+                // Shadow write — best-effort, detached task, failure does not fail primary.
+                // Writes to shadow_collection_id; uses shadow's chunker + embedder + vector_store.
+                if let Some(sw) = shadow {
                     let shadow_doc = doc.clone();
-                    let shadow_collection = CollectionId(shadow_coll_id);
                     tokio::spawn(async move {
-                        match shadow_ch.chunk(&shadow_doc).await {
+                        match sw.chunker.chunk(&shadow_doc).await {
                             Ok(mut shadow_chunks) => {
                                 for c in &mut shadow_chunks {
-                                    c.collection_id = shadow_collection.clone();
+                                    c.collection_id = CollectionId(sw.shadow_collection_id.clone());
                                     c.metadata.0.insert(
                                         "source_uri".to_string(),
                                         serde_json::Value::String(shadow_doc.source_uri.clone()),
                                     );
                                 }
-                                tracing::debug!(
-                                    shadow_chunk_count = shadow_chunks.len(),
-                                    "shadow vector chunks produced"
-                                );
+                                let texts: Vec<String> =
+                                    shadow_chunks.iter().map(|c| c.text.clone()).collect();
+                                if !sw.vector_store_cb.allow_request() {
+                                    tracing::warn!(
+                                        "shadow: vector_store circuit open — skipping shadow write"
+                                    );
+                                    return;
+                                }
+                                match sw.embedder.embed(texts).await {
+                                    Ok(vectors) => {
+                                        sw.vector_store_cb.record_success();
+                                        let indexed: Vec<IndexedChunk> = shadow_chunks
+                                            .into_iter()
+                                            .zip(vectors)
+                                            .map(|(chunk, vector)| IndexedChunk {
+                                                chunk,
+                                                vector,
+                                                token_vectors: None,
+                                                store_id:      String::new(),
+                                            })
+                                            .collect();
+                                        if let Err(e) = sw.vector_store
+                                            .upsert(&sw.shadow_collection_id, indexed)
+                                            .await
+                                        {
+                                            tracing::warn!(err = ?e,
+                                                "shadow vector write failed — ignoring");
+                                        }
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(err = ?e,
+                                            "shadow embedding failed — ignoring");
+                                    }
+                                }
                             }
                             Err(e) => {
-                                tracing::warn!(err = ?e, "shadow vector chunking failed — ignoring");
+                                tracing::warn!(err = ?e, "shadow chunking failed — ignoring");
                             }
                         }
                     });
@@ -362,8 +415,12 @@ pub fn make_entity_extract_stage(
                 let extractor = EntityExtractor::new(enricher);
                 let (chunks, collection_id) = {
                     let g = state.lock().await;
-                    let chunks = if g.graph_chunks.is_empty() { g.chunks.clone() } else { g.graph_chunks.clone() };
-                    (chunks, g.collection_id.clone())
+                    if g.graph_chunks.is_empty() {
+                        // No graph chunks produced — skip entity extraction rather than using
+                        // vector chunks at the wrong granularity (finding #8).
+                        return Ok(ctx);
+                    }
+                    (g.graph_chunks.clone(), g.collection_id.clone())
                 };
                 let mut all_entities = Vec::new();
                 let mut all_relations = Vec::new();
@@ -431,6 +488,47 @@ pub fn make_embed_stage_after(
     let mut stage = make_embed_stage(state, embedder, embedding_cb);
     stage.deps = vec![dep];
     stage
+}
+
+pub fn make_tree_embed_stage(
+    state: Arc<Mutex<IngestionState>>,
+    embedder: Arc<dyn Embedder>,
+    embedding_cb: Arc<arcanum_middleware::CircuitBreaker>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "tree_embed",
+        deps: vec!["tree_chunk"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let embedder = embedder.clone();
+            let cb = embedding_cb.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "tree_embed", "executing tree_embed stage");
+                if skip(&ctx) { return Ok(ctx); }
+                let texts: Vec<String> = state.lock().await.tree_chunks.iter()
+                    .map(|c| c.text.clone()).collect();
+                if texts.is_empty() {
+                    return Ok(ctx); // no tree chunks — leave tree_vectors empty
+                }
+                if !cb.allow_request() {
+                    return Err(arcanum_core::ArcanumError::Embedding(
+                        "circuit open: tree embedding unavailable".into()
+                    ));
+                }
+                match embedder.embed(texts).await {
+                    Ok(vectors) => {
+                        cb.record_success();
+                        state.lock().await.tree_vectors = vectors;
+                        Ok(ctx)
+                    }
+                    Err(e) => {
+                        cb.record_failure();
+                        Err(e)
+                    }
+                }
+            })
+        }),
+    }
 }
 
 pub fn make_vector_write_stage(
@@ -512,6 +610,7 @@ mod test_chunk_source_uri {
             graph_chunks: vec![],
             tree_chunks: vec![],
             vectors: vec![],
+            tree_vectors: vec![],
         }));
         let chunker = Arc::new(FixedSizeChunker::new(512, 0));
         let stage = make_vector_chunk_stage(state.clone(), chunker, None);
@@ -534,7 +633,7 @@ pub fn make_raptor_build_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "raptor_build",
-        deps: vec!["embed"],
+        deps: vec!["tree_embed"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let tree_store = tree_store.clone();
@@ -543,11 +642,28 @@ pub fn make_raptor_build_stage(
                 if skip(&ctx) { return Ok(ctx); }
                 let (leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
-                    let chunks = if g.tree_chunks.is_empty() { g.chunks.clone() } else { g.tree_chunks.clone() };
+                    // Use tree-specific chunks and embeddings when available (per-backend chunkers).
+                    // Fall back to primary vector chunks only when tree backend uses the same
+                    // chunker and tree_chunks was not separately populated (backward-compatible).
+                    let (chunks, vectors) = if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
+                        (g.tree_chunks.clone(), g.tree_vectors.clone())
+                    } else {
+                        (g.chunks.clone(), g.vectors.clone())
+                    };
+                    if chunks.len() != vectors.len() {
+                        return Err(arcanum_core::ArcanumError::Pipeline {
+                            stage: "raptor_build".into(),
+                            message: format!(
+                                "chunk/vector count mismatch: {} chunks vs {} vectors — \
+                                 ensure make_tree_embed_stage runs before make_raptor_build_stage",
+                                chunks.len(), vectors.len()
+                            ),
+                        });
+                    }
                     let leaves: Vec<(String, Vector)> = chunks
                         .iter()
                         .map(|c| c.text.clone())
-                        .zip(g.vectors.iter().cloned())
+                        .zip(vectors.into_iter())
                         .collect();
                     let source_uri = g.doc.as_ref()
                         .map(|d| d.source_uri.clone())

@@ -7,11 +7,16 @@ pub struct IngestionState {
     pub chunks:        Vec<Chunk>,       // vector chunks (primary)
     pub graph_chunks:  Vec<Chunk>,       // graph backend chunks
     pub tree_chunks:   Vec<Chunk>,       // tree backend chunks
-    pub vectors:       Vec<Vector>,
+    pub vectors:       Vec<Vector>,      // embeddings for state.chunks
+    pub tree_vectors:  Vec<Vector>,      // embeddings for state.tree_chunks
 }
 
 impl IngestionState {
     pub fn new(source: Source, collection_id: CollectionId) -> Self {
-        Self { source, collection_id, doc: None, chunks: vec![], graph_chunks: vec![], tree_chunks: vec![], vectors: vec![] }
+        Self {
+            source, collection_id, doc: None,
+            chunks: vec![], graph_chunks: vec![], tree_chunks: vec![],
+            vectors: vec![], tree_vectors: vec![],
+        }
     }
 }

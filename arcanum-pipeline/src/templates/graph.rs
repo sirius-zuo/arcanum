@@ -3,7 +3,7 @@ use crate::{
     deps::PipelineDeps,
     ingestion_state::IngestionState,
     registry::TemplateBuilder,
-    stages::*,
+    stages::{self, *},
     templates::standard,
 };
 use std::sync::Arc;
@@ -25,11 +25,16 @@ pub fn builder() -> TemplateBuilder {
                     ))
                     .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
                     .add_stage(make_vector_chunk_stage(
-                    state.clone(),
-                    deps.chunkers.vector.clone(),
-                    deps.shadow.as_ref()
-                        .map(|s| (s.chunkers.vector.clone(), s.experiment_id.0.to_string())),
-                ))
+                        state.clone(),
+                        deps.chunkers.vector.clone(),
+                        deps.shadow.as_ref().map(|s| stages::ShadowWriteContext {
+                            chunker:              s.chunkers.vector.clone(),
+                            shadow_collection_id: s.shadow_collection_id.clone(),
+                            embedder:             deps.embedder.clone(),
+                            vector_store:         deps.vector_store.clone(),
+                            vector_store_cb:      deps.vector_store_cb.clone(),
+                        }),
+                    ))
                     .add_stage(make_graph_chunk_stage(state.clone(), deps.chunkers.graph.clone()))
                     .add_stage(make_tree_chunk_stage(state.clone(), deps.chunkers.tree.clone()))
                     .add_stage(make_entity_extract_stage(state.clone(), extractor.clone(), graph_store.clone()))
