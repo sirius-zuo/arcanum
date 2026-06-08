@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::sync::Arc;
 use arcanum_core::types::{Query, CollectionId};
 use arcanum_engine::ArcanumEngine;
+use arcanum_chunk_eval::{inspect, InspectRequest, BenchmarkJob, run_benchmark};
 use metrics::{counter, histogram};
 use crate::routes::auth::validate_bearer;
 
@@ -168,6 +169,54 @@ pub async fn upload(
     let status = if response.status() == StatusCode::ACCEPTED { "ok" } else { "error" };
     counter!("arcanum_requests_total", "endpoint" => "upload", "status" => status).increment(1);
     histogram!("arcanum_request_duration_seconds", "endpoint" => "upload").record(elapsed);
+    response
+}
+
+/// POST /api/v1/chunk/inspect — compare multiple chunking strategies on a text blob.
+#[tracing::instrument(skip_all)]
+pub async fn chunk_inspect(
+    _headers: HeaderMap,
+    Json(req): Json<InspectRequest>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        match inspect(&req.text, &req.strategies).await {
+            Ok(results) => (StatusCode::OK, axum::Json(serde_json::json!({ "results": results }))).into_response(),
+            Err(e) => (StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "chunk_inspect", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "chunk_inspect").record(elapsed);
+    response
+}
+
+/// POST /api/v1/chunk/benchmark — run offline benchmark on a corpus.
+#[tracing::instrument(skip_all)]
+pub async fn chunk_benchmark(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Json(req): Json<BenchmarkJob>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let _claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        // Benchmark is synchronous for typical test corpora.
+        match run_benchmark(req).await {
+            Ok(metrics) => (StatusCode::OK, axum::Json(serde_json::json!({ "metrics": metrics }))).into_response(),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+                axum::Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "chunk_benchmark", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "chunk_benchmark").record(elapsed);
     response
 }
 

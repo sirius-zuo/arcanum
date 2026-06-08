@@ -34,8 +34,11 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/ready",  get(health::readiness))
         .route("/metrics", get(route_metrics::get_metrics))
         .route("/api/v1/search", post(api::search))
-        .route("/api/v1/ingest", post(api::ingest))
-        .route("/api/v1/graph",  get(graph::get_graph))
+        .route("/api/v1/ingest",    post(api::ingest))
+        .route("/api/v1/graph",     get(graph::get_graph))
+        // Chunk eval
+        .route("/api/v1/chunk/inspect",    post(api::chunk_inspect))
+        .route("/api/v1/chunk/benchmark",  post(api::chunk_benchmark))
         .route("/api/v1/upload", post(api::upload))
         .route("/admin/sources",     get(admin::list_ingestion_sources))
         .route("/admin/audit",       get(admin::get_audit_logs))

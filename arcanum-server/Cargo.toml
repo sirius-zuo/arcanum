@@ -4,8 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-arcanum-core   = { path = "../arcanum-core" }
-arcanum-engine = { path = "../arcanum-engine" }
+arcanum-core       = { path = "../arcanum-core" }
+arcanum-engine     = { path = "../arcanum-engine" }
+arcanum-chunk-eval = { path = "../arcanum-chunk-eval" }
 async-trait    = { workspace = true }
 tokio          = { workspace = true }
 serde          = { workspace = true }
