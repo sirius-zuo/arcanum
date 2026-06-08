@@ -33,6 +33,7 @@ fn make_state(doc: RawDocument) -> Arc<Mutex<IngestionState>> {
         graph_chunks: vec![],
         tree_chunks: vec![],
         vectors: vec![],
+        tree_vectors: vec![],
     }))
 }
 
@@ -254,4 +255,86 @@ async fn shadow_write_ctx_writes_to_shadow_namespace() {
         written.contains(&"my-col__shadow_test-exp-id".to_string()),
         "shadow write must upsert to the shadow namespace; got: {:?}", written
     );
+}
+
+#[tokio::test]
+async fn raptor_build_uses_tree_vectors_not_vector_embeddings() {
+    use arcanum_core::traits::{Embedder, TreeStore};
+    use arcanum_core::types::*;
+    use arcanum_pipeline::stages::{make_tree_embed_stage, make_raptor_build_stage};
+    use arcanum_middleware::CircuitBreaker;
+    use std::time::Duration;
+    use async_trait::async_trait;
+
+    // TreeStore that records what leaf texts (level 0 nodes) it received
+    struct RecordingTreeStore(Arc<std::sync::Mutex<Vec<String>>>);
+    #[async_trait]
+    impl TreeStore for RecordingTreeStore {
+        async fn insert_node(&self, _: &str, node: TreeNode) -> arcanum_core::Result<()> {
+            if node.level == 0 {
+                self.0.lock().unwrap().push(node.text);
+            }
+            Ok(())
+        }
+        async fn get_level(&self, _: &str, _: u32) -> arcanum_core::Result<Vec<TreeNode>> { Ok(vec![]) }
+        async fn get_children(&self, _: &TreeNodeId) -> arcanum_core::Result<Vec<TreeNode>> { Ok(vec![]) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> { Ok(()) }
+    }
+
+    struct DistinctEmbedder;
+    #[async_trait]
+    impl Embedder for DistinctEmbedder {
+        async fn embed(&self, texts: Vec<String>) -> arcanum_core::Result<Vec<Vector>> {
+            // Return a unique vector per text based on its index in the batch
+            Ok(texts.iter().enumerate().map(|(i, _)| Vector(vec![i as f32])).collect())
+        }
+        fn dimension(&self) -> usize { 1 }
+    }
+
+    let tree_chunk_texts = vec!["tree-chunk-A".to_string(), "tree-chunk-B".to_string()];
+
+    let state = Arc::new(Mutex::new(IngestionState {
+        source: Source::Raw {
+            content: b"hello".to_vec(),
+            mime_hint: Some("text/plain".to_string()),
+            uri: "test://doc".to_string(),
+        },
+        collection_id: CollectionId("col".into()),
+        doc: Some(RawDocument {
+            id: DocumentId::new(),
+            content: b"hello".to_vec(),
+            mime_type: "text/plain".to_string(),
+            source_uri: "test://doc".to_string(),
+            metadata: Default::default(),
+        }),
+        chunks:       vec![],
+        graph_chunks: vec![],
+        // tree_chunks has 2 entries
+        tree_chunks: tree_chunk_texts.iter().map(|t| Chunk {
+            id: ChunkId::new(),
+            text: t.clone(),
+            document_id: DocumentId::new(),
+            collection_id: CollectionId("col".into()),
+            position: ChunkPosition { start: 0, end: t.len(), index: 0 },
+            metadata: ChunkMetadata::default(),
+        }).collect(),
+        vectors:       vec![Vector(vec![99.0]), Vector(vec![99.0])],  // 2 wrong vector embeddings
+        tree_vectors:  vec![],  // will be filled by tree_embed_stage
+    }));
+
+    let cb = Arc::new(CircuitBreaker::new("test", 5, Duration::from_secs(30)));
+    let received_texts: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(vec![]));
+    let tree_store = Arc::new(RecordingTreeStore(received_texts.clone()));
+
+    // Run tree_embed_stage first
+    let embed_stage = make_tree_embed_stage(state.clone(), Arc::new(DistinctEmbedder), cb.clone());
+    (embed_stage.run)(std::collections::HashMap::new()).await.unwrap();
+
+    // Then run raptor_build_stage
+    let raptor_stage = make_raptor_build_stage(state.clone(), tree_store, 1);
+    (raptor_stage.run)(std::collections::HashMap::new()).await.unwrap();
+
+    let got = received_texts.lock().unwrap().clone();
+    assert_eq!(got, tree_chunk_texts,
+        "raptor must receive tree chunk texts (not vector chunks); got: {:?}", got);
 }

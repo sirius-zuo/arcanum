@@ -490,6 +490,47 @@ pub fn make_embed_stage_after(
     stage
 }
 
+pub fn make_tree_embed_stage(
+    state: Arc<Mutex<IngestionState>>,
+    embedder: Arc<dyn Embedder>,
+    embedding_cb: Arc<arcanum_middleware::CircuitBreaker>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "tree_embed",
+        deps: vec!["tree_chunk"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let embedder = embedder.clone();
+            let cb = embedding_cb.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "tree_embed", "executing tree_embed stage");
+                if skip(&ctx) { return Ok(ctx); }
+                let texts: Vec<String> = state.lock().await.tree_chunks.iter()
+                    .map(|c| c.text.clone()).collect();
+                if texts.is_empty() {
+                    return Ok(ctx); // no tree chunks — leave tree_vectors empty
+                }
+                if !cb.allow_request() {
+                    return Err(arcanum_core::ArcanumError::Embedding(
+                        "circuit open: tree embedding unavailable".into()
+                    ));
+                }
+                match embedder.embed(texts).await {
+                    Ok(vectors) => {
+                        cb.record_success();
+                        state.lock().await.tree_vectors = vectors;
+                        Ok(ctx)
+                    }
+                    Err(e) => {
+                        cb.record_failure();
+                        Err(e)
+                    }
+                }
+            })
+        }),
+    }
+}
+
 pub fn make_vector_write_stage(
     state: Arc<Mutex<IngestionState>>,
     vector_store: Arc<dyn VectorStore>,
@@ -569,6 +610,7 @@ mod test_chunk_source_uri {
             graph_chunks: vec![],
             tree_chunks: vec![],
             vectors: vec![],
+            tree_vectors: vec![],
         }));
         let chunker = Arc::new(FixedSizeChunker::new(512, 0));
         let stage = make_vector_chunk_stage(state.clone(), chunker, None);
@@ -591,7 +633,7 @@ pub fn make_raptor_build_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "raptor_build",
-        deps: vec!["embed"],
+        deps: vec!["tree_embed"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let tree_store = tree_store.clone();
@@ -600,11 +642,28 @@ pub fn make_raptor_build_stage(
                 if skip(&ctx) { return Ok(ctx); }
                 let (leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
-                    let chunks = if g.tree_chunks.is_empty() { g.chunks.clone() } else { g.tree_chunks.clone() };
+                    // Use tree-specific chunks and embeddings when available (per-backend chunkers).
+                    // Fall back to primary vector chunks only when tree backend uses the same
+                    // chunker and tree_chunks was not separately populated (backward-compatible).
+                    let (chunks, vectors) = if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
+                        (g.tree_chunks.clone(), g.tree_vectors.clone())
+                    } else {
+                        (g.chunks.clone(), g.vectors.clone())
+                    };
+                    if chunks.len() != vectors.len() {
+                        return Err(arcanum_core::ArcanumError::Pipeline {
+                            stage: "raptor_build".into(),
+                            message: format!(
+                                "chunk/vector count mismatch: {} chunks vs {} vectors — \
+                                 ensure make_tree_embed_stage runs before make_raptor_build_stage",
+                                chunks.len(), vectors.len()
+                            ),
+                        });
+                    }
                     let leaves: Vec<(String, Vector)> = chunks
                         .iter()
                         .map(|c| c.text.clone())
-                        .zip(g.vectors.iter().cloned())
+                        .zip(vectors.into_iter())
                         .collect();
                     let source_uri = g.doc.as_ref()
                         .map(|d| d.source_uri.clone())

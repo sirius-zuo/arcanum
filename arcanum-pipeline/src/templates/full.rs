@@ -53,6 +53,9 @@ pub fn builder() -> TemplateBuilder {
         }
 
         if let Some(ts) = &deps.tree_store {
+            dag = dag.add_stage(make_tree_embed_stage(
+                state.clone(), deps.embedder.clone(), deps.embedding_cb.clone(),
+            ));
             dag = dag.add_stage(make_raptor_build_stage(state.clone(), ts.clone(), DEFAULT_RAPTOR_DEPTH));
         }
 
