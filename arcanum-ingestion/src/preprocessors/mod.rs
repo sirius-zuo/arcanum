@@ -1,3 +1,4 @@
+mod docling;
 mod html;
 mod pdf;
 mod epub;
