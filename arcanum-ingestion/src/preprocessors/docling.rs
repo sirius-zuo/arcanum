@@ -128,6 +128,7 @@ impl DoclingPreprocessor {
             req = req.header("X-Api-Key", key.as_str());
         }
 
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         let resp = req
             .send()
             .await
@@ -142,7 +143,7 @@ impl DoclingPreprocessor {
         }
 
         if use_async {
-            self.poll_and_fetch(resp, base_url, api_key, timeout_secs, poll_interval_ms, doc)
+            self.poll_and_fetch(resp, base_url, api_key, deadline, poll_interval_ms, doc)
                 .await
         } else {
             let md = Self::extract_md(resp).await?;
@@ -159,7 +160,7 @@ impl DoclingPreprocessor {
         submit_resp: reqwest::Response,
         base_url: &str,
         api_key: &Option<String>,
-        timeout_secs: u64,
+        deadline: Instant,
         poll_interval_ms: u64,
         doc: RawDocument,
     ) -> Result<RawDocument> {
@@ -180,20 +181,21 @@ impl DoclingPreprocessor {
             .map_err(|e| ArcanumError::Ingestion(format!("docling async submit parse error: {e}")))?;
 
         let task_id = submit.task_id;
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
 
         loop {
             if Instant::now() > deadline {
                 return Err(ArcanumError::Ingestion(format!(
-                    "docling async conversion timed out after {timeout_secs}s (task {task_id})"
+                    "docling async conversion timed out (task {task_id})"
                 )));
             }
 
             tokio::time::sleep(Duration::from_millis(poll_interval_ms)).await;
 
+            let remaining = deadline.saturating_duration_since(Instant::now());
             let mut poll_req = self
                 .client
-                .get(format!("{base_url}/v1/status/poll/{task_id}"));
+                .get(format!("{base_url}/v1/status/poll/{task_id}"))
+                .timeout(remaining);
             if let Some(key) = api_key {
                 poll_req = poll_req.header("X-Api-Key", key.as_str());
             }
@@ -219,9 +221,11 @@ impl DoclingPreprocessor {
             }
         }
 
+        let remaining = deadline.saturating_duration_since(Instant::now());
         let mut result_req = self
             .client
-            .get(format!("{base_url}/v1/result/{task_id}"));
+            .get(format!("{base_url}/v1/result/{task_id}"))
+            .timeout(remaining);
         if let Some(key) = api_key {
             result_req = result_req.header("X-Api-Key", key.as_str());
         }
