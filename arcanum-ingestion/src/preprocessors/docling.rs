@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Preprocessor, types::RawDocument, Result, ArcanumError};
+use arcanum_core::{traits::Preprocessor, types::RawDocument, ArcanumError, Result};
 use async_trait::async_trait;
 
 pub enum DoclingBackend {
@@ -21,7 +21,10 @@ pub struct DoclingPreprocessor {
 
 impl DoclingPreprocessor {
     pub fn new(backend: DoclingBackend) -> Self {
-        Self { backend, client: reqwest::Client::new() }
+        Self {
+            backend,
+            client: reqwest::Client::new(),
+        }
     }
 }
 
@@ -60,26 +63,47 @@ impl Preprocessor for DoclingPreprocessor {
             return Ok(doc);
         }
         match &self.backend {
-            DoclingBackend::Http { base_url, api_key, timeout_secs, use_async, poll_interval_ms } => {
-                self.convert_via_http(doc, base_url, api_key, *timeout_secs, *use_async, *poll_interval_ms).await
+            DoclingBackend::Http {
+                base_url,
+                api_key,
+                timeout_secs,
+                use_async,
+                poll_interval_ms,
+            } => {
+                self.convert_via_http(
+                    doc,
+                    base_url,
+                    api_key,
+                    *timeout_secs,
+                    *use_async,
+                    *poll_interval_ms,
+                )
+                .await
             }
-            DoclingBackend::Cli { command } => {
-                self.convert_via_cli(doc, command).await
-            }
+            DoclingBackend::Cli { command } => self.convert_via_cli(doc, command).await,
         }
     }
 }
 
 impl DoclingPreprocessor {
     async fn convert_via_http(
-        &self, doc: RawDocument, _base_url: &str, _api_key: &Option<String>,
-        _timeout_secs: u64, _use_async: bool, _poll_interval_ms: u64,
+        &self,
+        doc: RawDocument,
+        _base_url: &str,
+        _api_key: &Option<String>,
+        _timeout_secs: u64,
+        _use_async: bool,
+        _poll_interval_ms: u64,
     ) -> Result<RawDocument> {
-        Err(ArcanumError::Ingestion("DoclingPreprocessor HTTP backend not yet implemented".into()))
+        Err(ArcanumError::Ingestion(
+            "DoclingPreprocessor HTTP backend not yet implemented".into(),
+        ))
     }
 
     async fn convert_via_cli(&self, doc: RawDocument, _command: &str) -> Result<RawDocument> {
-        Err(ArcanumError::Ingestion("DoclingPreprocessor CLI backend not yet implemented".into()))
+        Err(ArcanumError::Ingestion(
+            "DoclingPreprocessor CLI backend not yet implemented".into(),
+        ))
     }
 }
 
