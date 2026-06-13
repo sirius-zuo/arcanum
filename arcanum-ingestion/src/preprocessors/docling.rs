@@ -1,3 +1,4 @@
+use std::io::Write as IoWrite;
 use std::time::{Duration, Instant};
 
 use arcanum_core::{traits::Preprocessor, types::RawDocument, ArcanumError, Result};
@@ -267,10 +268,69 @@ impl DoclingPreprocessor {
             })
     }
 
-    async fn convert_via_cli(&self, doc: RawDocument, _command: &str) -> Result<RawDocument> {
-        Err(ArcanumError::Ingestion(
-            "DoclingPreprocessor CLI backend not yet implemented".into(),
-        ))
+    async fn convert_via_cli(&self, doc: RawDocument, command: &str) -> Result<RawDocument> {
+        let ext = mime_to_ext(&doc.mime_type);
+
+        let mut input_file = tempfile::Builder::new()
+            .suffix(&format!(".{ext}"))
+            .tempfile()
+            .map_err(|e| ArcanumError::Ingestion(format!("failed to create temp file: {e}")))?;
+
+        IoWrite::write_all(&mut input_file, &doc.content)
+            .map_err(|e| ArcanumError::Ingestion(format!("failed to write temp file: {e}")))?;
+        IoWrite::flush(&mut input_file)
+            .map_err(|e| ArcanumError::Ingestion(format!("failed to flush temp file: {e}")))?;
+
+        let output_dir = tempfile::TempDir::new()
+            .map_err(|e| ArcanumError::Ingestion(format!("failed to create temp dir: {e}")))?;
+
+        let input_path = input_file.path().to_path_buf();
+        let stem = input_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .ok_or_else(|| ArcanumError::Ingestion("invalid temp file stem".into()))?
+            .to_string();
+        let output_path = output_dir.path().join(format!("{stem}.md"));
+
+        let output = tokio::process::Command::new(command)
+            .args([
+                "convert",
+                input_path.to_str().unwrap_or(""),
+                "--to",
+                "md",
+                "--output",
+                output_dir.path().to_str().unwrap_or(""),
+            ])
+            .output()
+            .await
+            .map_err(|e| ArcanumError::Ingestion(format!("failed to spawn docling CLI: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ArcanumError::Ingestion(format!(
+                "docling CLI exited {}: {stderr}",
+                output.status.code().unwrap_or(-1)
+            )));
+        }
+
+        let md_bytes = tokio::fs::read(&output_path).await.map_err(|e| {
+            ArcanumError::Ingestion(format!(
+                "failed to read docling output at {}: {e}",
+                output_path.display()
+            ))
+        })?;
+
+        if md_bytes.is_empty() {
+            return Err(ArcanumError::Ingestion(
+                "docling CLI produced empty markdown output".into(),
+            ));
+        }
+
+        Ok(RawDocument {
+            content: md_bytes,
+            mime_type: "text/markdown".to_string(),
+            ..doc
+        })
     }
 }
 
@@ -517,5 +577,54 @@ mod tests {
         let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
         let err = p.process(doc).await.unwrap_err();
         assert!(err.to_string().contains("unsupported encoding"), "got: {err}");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_cli_backend_converts_pdf_to_markdown() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Create a stub script that mimics `docling convert`
+        // Args: convert <input_file> --to md --output <output_dir>
+        // ($1=convert $2=input_file $3=--to $4=md $5=--output $6=output_dir)
+        let script = tempfile::Builder::new().suffix(".sh").tempfile().unwrap();
+        let script_path = script.path().to_path_buf();
+        std::fs::write(&script_path, b"#!/bin/sh\nINPUT=\"$2\"\nOUTDIR=\"$6\"\nSTEM=$(basename \"${INPUT%.*}\")\nmkdir -p \"$OUTDIR\"\nprintf '# Stub Heading\\n\\nStub body.\\n' > \"$OUTDIR/$STEM.md\"\n").unwrap();
+        std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let p = DoclingPreprocessor::new(DoclingBackend::Cli {
+            command: script_path.to_str().unwrap().to_string(),
+        });
+        let doc = raw_doc(b"%PDF-1.4 fake content".to_vec(), "application/pdf");
+        let out = p.process(doc).await.unwrap();
+        assert_eq!(out.mime_type, "text/markdown");
+        let text = String::from_utf8(out.content).unwrap();
+        assert!(text.contains("# Stub Heading"), "expected heading: got {text:?}");
+        assert!(text.contains("Stub body."), "expected body: got {text:?}");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_cli_backend_error_on_nonzero_exit() {
+        let p = DoclingPreprocessor::new(DoclingBackend::Cli {
+            command: "false".into(), // always exits 1
+        });
+        let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+        let err = p.process(doc).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("exited") || msg.contains("failed") || msg.contains("spawn"),
+            "error message should describe failure: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_cli_backend_error_on_missing_command() {
+        let p = DoclingPreprocessor::new(DoclingBackend::Cli {
+            command: "/nonexistent/docling".into(),
+        });
+        let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+        assert!(p.process(doc).await.is_err());
     }
 }
