@@ -91,6 +91,8 @@ pub struct IngestionConfig {
     pub retry_base_delay_ms: u64,
     #[serde(default)]
     pub chunking:            PerBackendChunkConfig,
+    #[serde(default)]
+    pub docling:             Option<DoclingConfig>,
 }
 
 impl Default for IngestionConfig {
@@ -101,6 +103,48 @@ impl Default for IngestionConfig {
             retry_max_attempts:  3,
             retry_base_delay_ms: 1_000,
             chunking: PerBackendChunkConfig::default(),
+            docling: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoclingConfig {
+    pub enabled: bool,
+    #[serde(default)]
+    pub backend: DoclingBackendConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DoclingBackendConfig {
+    Http {
+        base_url: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        #[serde(default = "default_timeout")]
+        timeout_secs: u64,
+        #[serde(default)]
+        use_async: bool,
+        #[serde(default = "default_poll_interval")]
+        poll_interval_ms: u64,
+    },
+    Cli {
+        command: String,
+    },
+}
+
+fn default_timeout() -> u64 { 300 }
+fn default_poll_interval() -> u64 { 2000 }
+
+impl Default for DoclingBackendConfig {
+    fn default() -> Self {
+        Self::Http {
+            base_url: "http://localhost:5001".to_string(),
+            api_key: None,
+            timeout_secs: 300,
+            use_async: false,
+            poll_interval_ms: 2000,
         }
     }
 }
@@ -426,5 +470,94 @@ retry_base_delay_ms = 1000
             serde_json::to_value(&pbc).unwrap(),
             "IngestionConfig::default().chunking must equal PerBackendChunkConfig::default()"
         );
+    }
+
+    #[test]
+    fn test_docling_config_http_deserializes() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling]
+enabled = true
+
+[ingestion.docling.backend]
+type = "http"
+base_url = "http://localhost:5001"
+timeout_secs = 300
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        let docling = cfg.ingestion.docling.unwrap();
+        assert!(docling.enabled);
+        assert!(matches!(
+            docling.backend,
+            DoclingBackendConfig::Http { ref base_url, .. } if base_url == "http://localhost:5001"
+        ));
+    }
+
+    #[test]
+    fn test_docling_config_cli_deserializes() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling]
+enabled = true
+
+[ingestion.docling.backend]
+type = "cli"
+command = "docling"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        let docling = cfg.ingestion.docling.unwrap();
+        assert!(matches!(
+            docling.backend,
+            DoclingBackendConfig::Cli { ref command } if command == "docling"
+        ));
+    }
+
+    #[test]
+    fn test_docling_config_http_async_deserializes() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling]
+enabled = true
+
+[ingestion.docling.backend]
+type = "http"
+base_url = "http://localhost:5001"
+use_async = true
+poll_interval_ms = 3000
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        let dc = cfg.ingestion.docling.unwrap();
+        assert!(matches!(
+            dc.backend,
+            DoclingBackendConfig::Http { use_async: true, poll_interval_ms: 3000, .. }
+        ));
+    }
+
+    #[test]
+    fn test_docling_config_absent_leaves_default_none() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.ingestion.docling.is_none());
     }
 }
