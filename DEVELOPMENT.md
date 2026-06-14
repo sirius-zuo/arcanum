@@ -49,6 +49,13 @@ queue_capacity      = 50000
 retry_max_attempts  = 5
 retry_base_delay_ms = 500
 
+# Optional — omit to use the built-in parsers (PDF, HTML, EPUB, DOCX)
+[ingestion.docling.backend]
+type             = "http"
+base_url         = "http://docling-serve:5001"
+timeout_secs     = 300
+use_async        = false
+
 [ingestion.chunking.vector]
 strategy = "semantic"
 params   = { max_chars = 800 }
@@ -348,7 +355,54 @@ Deduplication happens before any expensive model calls — a full corpus re-craw
 
 ---
 
-## 7. Configuring Chunking per Collection
+## 7. Choosing a Preprocessor Backend
+
+Before chunking, each document passes through a preprocessor chain that converts raw bytes to clean text. Arcanum ships two preprocessor sets:
+
+| Set | Covered formats | Dependency |
+|---|---|---|
+| Built-in (`default_chains`) | PDF, HTML, XHTML, EPUB, DOCX | None — bundled parsers |
+| `DoclingPreprocessor` | PDF, DOCX, PPTX, XLSX, EPUB, HTML, XHTML, PNG, JPEG, TIFF | docling-serve or `docling` CLI |
+
+Use the built-in set for the five common formats with no added infrastructure. Switch to `DoclingPreprocessor` when you need to handle presentations, spreadsheets, or images.
+
+The engine reads `[ingestion.docling]` at startup. If the section is present, it builds a `DoclingPreprocessor` and wires it to all 10 MIME types via `PreprocessorRegistry::docling_chains()`. If the section is absent, `default_chains()` is used.
+
+### HTTP backend (docling-serve)
+
+Run a [docling-serve](https://github.com/DS4SD/docling-serve) instance and point Arcanum at it:
+
+```toml
+[ingestion.docling.backend]
+type             = "http"
+base_url         = "http://docling-serve:5001"
+api_key          = "optional-bearer-token"
+timeout_secs     = 300    # total budget for upload + polling; default 300
+use_async        = true   # false = blocking POST; true = submit then poll
+poll_interval_ms = 2000   # polling cadence when use_async = true; default 2000
+```
+
+Both `use_async = false` (synchronous) and `use_async = true` (poll-based) share the same `timeout_secs` budget. Choose `use_async = true` for large documents or batch workloads where a synchronous POST would time out upstream.
+
+### CLI backend
+
+Shell out to a local `docling` binary. Useful for air-gapped environments or local development without a server process:
+
+```toml
+[ingestion.docling.backend]
+type    = "cli"
+command = "docling"   # path or name on $PATH
+```
+
+The CLI backend writes the document to a temporary file, runs the command, and reads Markdown output from stdout.
+
+### Format gap in built-in preprocessing
+
+If you stay with the built-in preprocessors, note that PPTX, XLSX, PNG, JPEG, and TIFF files pass through as raw bytes — no text is extracted. These documents will produce empty or near-empty chunks. Enable `DoclingPreprocessor` when your corpus includes these formats.
+
+---
+
+## 8. Configuring Chunking per Collection
 
 Two-tier precedence:
 
@@ -396,7 +450,7 @@ Note: updating the config only affects new ingestion jobs. Re-ingest existing do
 
 ---
 
-## 8. Retrieval
+## 9. Retrieval
 
 Retrieval is request-scoped and stateless. The `RetrievalService` selects a retrieval strategy based on the orchestration mode configured in `config.toml`.
 
@@ -454,7 +508,7 @@ curl -X POST /api/v1/search \
 
 ---
 
-## 9. Optimising Chunking with Shadow Experiments
+## 10. Optimising Chunking with Shadow Experiments
 
 Shadow experiments let you test a challenger chunking strategy on live ingestion traffic without affecting queries. New documents are written to both the live collection and a shadow namespace. An automated eval loop computes recall metrics for both sides. When the challenger shows a statistically meaningful win, it becomes `ReadyToPromote`.
 
@@ -540,7 +594,7 @@ Shadow writes are best-effort — a failure to write to the shadow namespace nev
 
 ---
 
-## 10. Retrieval Quality Evaluation
+## 11. Retrieval Quality Evaluation
 
 `arcanum-eval` provides scheduled, automated measurement of retrieval quality against golden datasets.
 
@@ -576,7 +630,7 @@ Via MCP (for AI assistants):
 
 ---
 
-## 11. Authentication
+## 12. Authentication
 
 Generate API keys via the admin API:
 
@@ -609,7 +663,7 @@ Assign a role at key creation to restrict what an admin user can do:
 
 ---
 
-## 12. Running the HTTP Server
+## 13. Running the HTTP Server
 
 The `arcanum-server` crate exposes the REST API, admin portal, and WebSocket event bus.
 
@@ -655,7 +709,7 @@ cargo run -p arcanum-server
 
 ---
 
-## 13. MCP Integration
+## 14. MCP Integration
 
 Mount the MCP server alongside your HTTP server to expose search and ingestion to AI assistants:
 
@@ -685,7 +739,7 @@ Claude can then call `search`, `ingest`, `list_collections`, and `eval_run` dire
 
 ---
 
-## 14. Observability
+## 15. Observability
 
 `arcanum-telemetry` exposes structured traces and Prometheus-compatible metrics.
 
@@ -729,7 +783,7 @@ The Grafana dashboard stack ships in `arcanum-telemetry/grafana/`. Import the JS
 
 ---
 
-## 15. Production Deployment
+## 16. Production Deployment
 
 ### Docker
 
@@ -807,7 +861,7 @@ Use `/health/ready` as the Kubernetes readiness probe. It checks the vector stor
 
 ---
 
-## 16. Common Pitfalls
+## 17. Common Pitfalls
 
 **Changing chunker config without re-ingesting.** Updating a collection's `chunker_config` affects only future ingestion jobs. Existing chunks were produced by the old strategy and remain in the store. To apply the new strategy to existing documents, ingest them again with `force: true`. Shadow experiments exist precisely to validate a new strategy before committing to a full re-ingest.
 

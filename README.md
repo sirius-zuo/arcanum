@@ -116,6 +116,38 @@ Performs a coarse ANN pass followed by a MaxSim token-vector re-rank. Falls back
 
 Pipelines are DAGs of typed stages. The stage runner is async and supports concurrent stages with explicit dependency declarations.
 
+### Document Preprocessing
+
+Before chunking, every document passes through a preprocessor chain that converts raw bytes to clean text. Arcanum ships two preprocessor sets:
+
+| Preprocessor set | Covered MIME types | When used |
+|---|---|---|
+| `default_chains` (built-in) | PDF, HTML, XHTML, EPUB, DOCX | No `[ingestion.docling]` config |
+| `DoclingPreprocessor` (docling) | PDF, DOCX, PPTX, XLSX, EPUB, HTML, XHTML, PNG, JPEG, TIFF | `[ingestion.docling]` present in config |
+
+`DoclingPreprocessor` integrates with [docling-serve](https://github.com/DS4SD/docling-serve) and extends format coverage to presentations, spreadsheets, and images — formats the built-in parsers do not handle.
+
+**HTTP backend** — posts each document to a running docling-serve instance. Supports synchronous and asynchronous (poll-based) modes:
+
+```toml
+[ingestion.docling.backend]
+type             = "http"
+base_url         = "http://docling-serve:5001"
+timeout_secs     = 300
+use_async        = true   # poll for completion instead of blocking
+poll_interval_ms = 2000
+```
+
+**CLI backend** — shells out to a local `docling` binary. Useful for air-gapped environments or local development without a server:
+
+```toml
+[ingestion.docling.backend]
+type    = "cli"
+command = "docling"
+```
+
+When `[ingestion.docling]` is absent, the engine falls back to `default_chains`, which covers the five most common formats without any external dependency.
+
 ### Per-Backend Chunking
 
 Every pipeline template runs three independent chunking branches from the same preprocessed document:
@@ -420,6 +452,13 @@ queue_capacity      = 10000
 retry_max_attempts  = 3
 retry_base_delay_ms = 1000
 
+# Docling preprocessor — omit this section to use the built-in parsers
+[ingestion.docling.backend]
+type             = "http"
+base_url         = "http://docling-serve:5001"
+timeout_secs     = 300
+use_async        = false
+
 # Global default chunker — per-collection overrides take precedence
 [ingestion.chunking.vector]
 strategy = "semantic"
@@ -471,7 +510,7 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 | `arcanum-graph` | Neo4j driver and in-memory graph store |
 | `arcanum-tree` | RAPTOR tree builder, Postgres and in-memory stores |
 | `arcanum-models` | HTTP embedding clients (Ollama, OpenAI), Redis cache |
-| `arcanum-ingestion` | Loaders, preprocessors (HTML/PDF/EPUB), chunkers, ChunkRegistry |
+| `arcanum-ingestion` | Loaders, preprocessors (HTML/PDF/EPUB/DOCX + DoclingPreprocessor for PPTX/XLSX/images), chunkers, ChunkRegistry |
 | `arcanum-middleware` | Circuit breaker, retry policy, bounded queue |
 | `arcanum-pipeline` | DAG stage runner and built-in pipeline templates |
 | `arcanum-retrieval` | Multi-strategy orchestrator and all Retriever impls |
