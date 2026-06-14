@@ -1,4 +1,5 @@
 mod docling;
+pub use docling::{DoclingPreprocessor, DoclingBackend};
 mod html;
 mod pdf;
 mod epub;

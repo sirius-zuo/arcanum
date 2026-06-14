@@ -286,3 +286,52 @@ async fn test_default_chains_routes_html() {
     let out = registry.process(doc).await.unwrap();
     assert_eq!(out.mime_type, "text/plain");
 }
+
+// ── DoclingPreprocessor + docling_chains ─────────────────────────────────────
+
+use arcanum_ingestion::{DoclingPreprocessor, DoclingBackend};
+
+#[tokio::test]
+async fn test_docling_chains_passes_through_unsupported_mime() {
+    let preprocessor = Arc::new(DoclingPreprocessor::new(DoclingBackend::Http {
+        base_url: "http://localhost:9999".into(), // won't be called
+        api_key: None,
+        timeout_secs: 5,
+        use_async: false,
+        poll_interval_ms: 2000,
+    }));
+    let registry = PreprocessorRegistry::docling_chains(preprocessor);
+    let doc = raw_doc(b"plain text".to_vec(), "text/plain");
+    let out = registry.process(doc).await.unwrap();
+    assert_eq!(out.mime_type, "text/plain");
+    assert_eq!(out.content, b"plain text");
+}
+
+#[tokio::test]
+async fn test_docling_chains_registered_for_pdf() {
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/convert/file"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "document": { "md_content": "# PDF content" },
+            "status": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let preprocessor = Arc::new(DoclingPreprocessor::new(DoclingBackend::Http {
+        base_url: server.uri(),
+        api_key: None,
+        timeout_secs: 10,
+        use_async: false,
+        poll_interval_ms: 2000,
+    }));
+    let registry = PreprocessorRegistry::docling_chains(preprocessor);
+    let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+    let out = registry.process(doc).await.unwrap();
+    assert_eq!(out.mime_type, "text/markdown");
+    assert!(String::from_utf8(out.content).unwrap().contains("PDF content"));
+}

@@ -23,6 +23,29 @@ impl PreprocessorRegistry {
         Ok(out)
     }
 
+    pub fn docling_chains(preprocessor: Arc<dyn Preprocessor>) -> Self {
+        Self::new()
+            .register("application/pdf", preprocessor.clone())
+            .register(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                preprocessor.clone(),
+            )
+            .register(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                preprocessor.clone(),
+            )
+            .register(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                preprocessor.clone(),
+            )
+            .register("application/epub+zip", preprocessor.clone())
+            .register("text/html", preprocessor.clone())
+            .register("application/xhtml+xml", preprocessor.clone())
+            .register("image/png", preprocessor.clone())
+            .register("image/jpeg", preprocessor.clone())
+            .register("image/tiff", preprocessor.clone())
+    }
+
     pub fn default_chains() -> Self {
         use crate::preprocessors::{HtmlCleaner, PdfParser, EpubParser, DocxPreprocessor};
         const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
