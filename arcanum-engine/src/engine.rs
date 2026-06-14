@@ -8,7 +8,8 @@ use arcanum_core::{
 };
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
-                        RawLoader, FileLoader, HttpLoader, default_registry};
+                        RawLoader, FileLoader, HttpLoader, default_registry,
+                        DoclingPreprocessor, DoclingBackend};
 use arcanum_core::types::{PerBackendChunkConfig, PerBackendChunkers};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
@@ -264,7 +265,15 @@ impl ArcanumEngineBuilder {
                         .register(Arc::new(FileLoader::new()))
                         .register(Arc::new(HttpLoader::new())),
                 ),
-                preprocessors:     Arc::new(PreprocessorRegistry::new()),
+                preprocessors:     Arc::new(match &self.config.ingestion.docling {
+                    Some(dc) => {
+                        let backend = DoclingBackend::from(&dc.backend);
+                        PreprocessorRegistry::docling_chains(Arc::new(
+                            DoclingPreprocessor::new(backend),
+                        ))
+                    }
+                    None => PreprocessorRegistry::new(),
+                }),
                 chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
                 shadow:            None,
                 context_enricher:  self.enricher.clone(),

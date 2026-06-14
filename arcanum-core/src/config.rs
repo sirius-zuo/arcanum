@@ -91,6 +91,8 @@ pub struct IngestionConfig {
     pub retry_base_delay_ms: u64,
     #[serde(default)]
     pub chunking:            PerBackendChunkConfig,
+    #[serde(default)]
+    pub docling:             Option<DoclingConfig>,
 }
 
 impl Default for IngestionConfig {
@@ -101,6 +103,50 @@ impl Default for IngestionConfig {
             retry_max_attempts:  3,
             retry_base_delay_ms: 1_000,
             chunking: PerBackendChunkConfig::default(),
+            docling: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoclingConfig {
+    #[serde(default)]
+    pub backend: DoclingBackendConfig,
+}
+
+// TOML note: the `type` discriminant is case-sensitive and must be lowercase:
+//   type = "http"   (not "Http" or "HTTP")
+//   type = "cli"    (not "Cli" or "CLI")
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum DoclingBackendConfig {
+    Http {
+        base_url: String,
+        #[serde(default)]
+        api_key: Option<String>,
+        #[serde(default = "default_timeout")]
+        timeout_secs: u64,
+        #[serde(default)]
+        use_async: bool,
+        #[serde(default = "default_poll_interval")]
+        poll_interval_ms: u64,
+    },
+    Cli {
+        command: String,
+    },
+}
+
+fn default_timeout() -> u64 { 300 }
+fn default_poll_interval() -> u64 { 2000 }
+
+impl Default for DoclingBackendConfig {
+    fn default() -> Self {
+        Self::Http {
+            base_url: "http://localhost:5001".to_string(),
+            api_key: None,
+            timeout_secs: 300,
+            use_async: false,
+            poll_interval_ms: 2000,
         }
     }
 }
@@ -302,6 +348,42 @@ impl ArcanumConfig {
                     .into(),
             ));
         }
+
+        if let Some(dc) = &self.ingestion.docling {
+            match &dc.backend {
+                DoclingBackendConfig::Http {
+                    base_url,
+                    timeout_secs,
+                    poll_interval_ms,
+                    use_async,
+                    ..
+                } => {
+                    if base_url.is_empty() {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.base_url must not be empty".into(),
+                        ));
+                    }
+                    if *timeout_secs == 0 {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.timeout_secs must be > 0".into(),
+                        ));
+                    }
+                    if *use_async && *poll_interval_ms == 0 {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.poll_interval_ms must be > 0 when use_async is true".into(),
+                        ));
+                    }
+                }
+                DoclingBackendConfig::Cli { command } => {
+                    if command.is_empty() {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.command must not be empty".into(),
+                        ));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -426,5 +508,174 @@ retry_base_delay_ms = 1000
             serde_json::to_value(&pbc).unwrap(),
             "IngestionConfig::default().chunking must equal PerBackendChunkConfig::default()"
         );
+    }
+
+    #[test]
+    fn test_docling_config_http_deserializes() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling.backend]
+type = "http"
+base_url = "http://localhost:5001"
+timeout_secs = 300
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        let docling = cfg.ingestion.docling.unwrap();
+        assert!(matches!(
+            docling.backend,
+            DoclingBackendConfig::Http { ref base_url, .. } if base_url == "http://localhost:5001"
+        ));
+    }
+
+    #[test]
+    fn test_docling_config_cli_deserializes() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling.backend]
+type = "cli"
+command = "docling"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        let docling = cfg.ingestion.docling.unwrap();
+        assert!(matches!(
+            docling.backend,
+            DoclingBackendConfig::Cli { ref command } if command == "docling"
+        ));
+    }
+
+    #[test]
+    fn test_docling_config_http_async_deserializes() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling.backend]
+type = "http"
+base_url = "http://localhost:5001"
+use_async = true
+poll_interval_ms = 3000
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        let dc = cfg.ingestion.docling.unwrap();
+        assert!(matches!(
+            dc.backend,
+            DoclingBackendConfig::Http { use_async: true, poll_interval_ms: 3000, .. }
+        ));
+    }
+
+    #[test]
+    fn test_docling_config_absent_leaves_default_none() {
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.ingestion.docling.is_none());
+    }
+
+    #[test]
+    fn test_docling_config_no_enabled_field_required() {
+        // DoclingConfig no longer has an `enabled` field;
+        // presence of [ingestion.docling] section is the enable signal.
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling.backend]
+type = "http"
+base_url = "http://localhost:5001"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.ingestion.docling.is_some());
+    }
+
+    #[test]
+    fn test_validate_docling_empty_base_url_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "".to_string(),
+                api_key: None,
+                timeout_secs: 300,
+                use_async: false,
+                poll_interval_ms: 2000,
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_zero_timeout_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "http://localhost:5001".to_string(),
+                api_key: None,
+                timeout_secs: 0,
+                use_async: false,
+                poll_interval_ms: 2000,
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_zero_poll_interval_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "http://localhost:5001".to_string(),
+                api_key: None,
+                timeout_secs: 300,
+                use_async: true,
+                poll_interval_ms: 0,
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_empty_cli_command_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Cli {
+                command: "".to_string(),
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_valid_http_passes() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "http://localhost:5001".to_string(),
+                api_key: None,
+                timeout_secs: 300,
+                use_async: false,
+                poll_interval_ms: 2000,
+            },
+        });
+        assert!(cfg.validate().is_ok());
     }
 }

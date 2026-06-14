@@ -23,6 +23,42 @@ impl PreprocessorRegistry {
         Ok(out)
     }
 
+    pub fn docling_chains(preprocessor: Arc<dyn Preprocessor>) -> Self {
+        Self::new()
+            .register("application/pdf", preprocessor.clone())
+            .register(
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                preprocessor.clone(),
+            )
+            .register(
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                preprocessor.clone(),
+            )
+            .register(
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                preprocessor.clone(),
+            )
+            .register("application/epub+zip", preprocessor.clone())
+            .register("text/html", preprocessor.clone())
+            .register("application/xhtml+xml", preprocessor.clone())
+            .register("image/png", preprocessor.clone())
+            .register("image/jpeg", preprocessor.clone())
+            .register("image/tiff", preprocessor)  // last one: move, no clone
+    }
+
+    #[cfg(test)]
+    pub fn registered_mimes(&self) -> Vec<String> {
+        self.chains.keys().cloned().collect()
+    }
+
+    /// Pre-built registry with the legacy preprocessors.
+    ///
+    /// Covers: text/html, application/xhtml+xml, application/pdf,
+    /// application/epub+zip, application/vnd...docx.
+    ///
+    /// **Gap:** PPTX, XLSX, PNG, JPEG, and TIFF have no handler here — those
+    /// formats pass through as raw bytes when docling is not enabled.
+    /// Use `docling_chains()` to handle all 10 MIME types.
     pub fn default_chains() -> Self {
         use crate::preprocessors::{HtmlCleaner, PdfParser, EpubParser, DocxPreprocessor};
         const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
