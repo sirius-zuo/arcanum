@@ -292,14 +292,22 @@ impl DoclingPreprocessor {
             .to_string();
         let output_path = output_dir.path().join(format!("{stem}.md"));
 
+        let input_path_str = input_path
+            .to_str()
+            .ok_or_else(|| ArcanumError::Ingestion("temp input path is not valid UTF-8".into()))?;
+        let output_dir_str = output_dir
+            .path()
+            .to_str()
+            .ok_or_else(|| ArcanumError::Ingestion("temp output dir path is not valid UTF-8".into()))?;
+
         let output = tokio::process::Command::new(command)
             .args([
                 "convert",
-                input_path.to_str().unwrap_or(""),
+                input_path_str,
                 "--to",
                 "md",
                 "--output",
-                output_dir.path().to_str().unwrap_or(""),
+                output_dir_str,
             ])
             .output()
             .await
