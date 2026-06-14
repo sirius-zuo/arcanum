@@ -110,7 +110,6 @@ impl Default for IngestionConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoclingConfig {
-    pub enabled: bool,
     #[serde(default)]
     pub backend: DoclingBackendConfig,
 }
@@ -481,9 +480,6 @@ queue_capacity = 10000
 retry_max_attempts = 3
 retry_base_delay_ms = 1000
 
-[ingestion.docling]
-enabled = true
-
 [ingestion.docling.backend]
 type = "http"
 base_url = "http://localhost:5001"
@@ -491,7 +487,6 @@ timeout_secs = 300
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         let docling = cfg.ingestion.docling.unwrap();
-        assert!(docling.enabled);
         assert!(matches!(
             docling.backend,
             DoclingBackendConfig::Http { ref base_url, .. } if base_url == "http://localhost:5001"
@@ -506,9 +501,6 @@ worker_pool_size = 4
 queue_capacity = 10000
 retry_max_attempts = 3
 retry_base_delay_ms = 1000
-
-[ingestion.docling]
-enabled = true
 
 [ingestion.docling.backend]
 type = "cli"
@@ -530,9 +522,6 @@ worker_pool_size = 4
 queue_capacity = 10000
 retry_max_attempts = 3
 retry_base_delay_ms = 1000
-
-[ingestion.docling]
-enabled = true
 
 [ingestion.docling.backend]
 type = "http"
@@ -559,5 +548,24 @@ retry_base_delay_ms = 1000
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         assert!(cfg.ingestion.docling.is_none());
+    }
+
+    #[test]
+    fn test_docling_config_no_enabled_field_required() {
+        // DoclingConfig no longer has an `enabled` field;
+        // presence of [ingestion.docling] section is the enable signal.
+        let toml = r#"
+[ingestion]
+worker_pool_size = 4
+queue_capacity = 10000
+retry_max_attempts = 3
+retry_base_delay_ms = 1000
+
+[ingestion.docling.backend]
+type = "http"
+base_url = "http://localhost:5001"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert!(cfg.ingestion.docling.is_some());
     }
 }

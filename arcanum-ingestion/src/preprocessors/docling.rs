@@ -31,6 +31,31 @@ impl DoclingPreprocessor {
     }
 }
 
+use arcanum_core::config::DoclingBackendConfig;
+
+impl From<&DoclingBackendConfig> for DoclingBackend {
+    fn from(cfg: &DoclingBackendConfig) -> Self {
+        match cfg {
+            DoclingBackendConfig::Http {
+                base_url,
+                api_key,
+                timeout_secs,
+                use_async,
+                poll_interval_ms,
+            } => DoclingBackend::Http {
+                base_url: base_url.clone(),
+                api_key: api_key.clone(),
+                timeout_secs: *timeout_secs,
+                use_async: *use_async,
+                poll_interval_ms: *poll_interval_ms,
+            },
+            DoclingBackendConfig::Cli { command } => DoclingBackend::Cli {
+                command: command.clone(),
+            },
+        }
+    }
+}
+
 const SUPPORTED_MIMES: &[&str] = &[
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",

@@ -1,5 +1,5 @@
 use arcanum_core::{
-    config::{ArcanumConfig, OrchestrationMode as CfgMode, DoclingBackendConfig},
+    config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry,
              IngestionDepsOverrideResolver},
@@ -266,32 +266,13 @@ impl ArcanumEngineBuilder {
                         .register(Arc::new(HttpLoader::new())),
                 ),
                 preprocessors:     Arc::new(match &self.config.ingestion.docling {
-                    Some(dc) if dc.enabled => {
-                        let backend = match &dc.backend {
-                            DoclingBackendConfig::Http {
-                                base_url,
-                                api_key,
-                                timeout_secs,
-                                use_async,
-                                poll_interval_ms,
-                            } => DoclingBackend::Http {
-                                base_url: base_url.clone(),
-                                api_key: api_key.clone(),
-                                timeout_secs: *timeout_secs,
-                                use_async: *use_async,
-                                poll_interval_ms: *poll_interval_ms,
-                            },
-                            DoclingBackendConfig::Cli { command } => {
-                                DoclingBackend::Cli {
-                                    command: command.clone(),
-                                }
-                            }
-                        };
+                    Some(dc) => {
+                        let backend = DoclingBackend::from(&dc.backend);
                         PreprocessorRegistry::docling_chains(Arc::new(
                             DoclingPreprocessor::new(backend),
                         ))
                     }
-                    _ => PreprocessorRegistry::default_chains(),
+                    None => PreprocessorRegistry::new(),
                 }),
                 chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
                 shadow:            None,
