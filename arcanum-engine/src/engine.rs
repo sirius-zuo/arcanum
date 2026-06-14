@@ -1,5 +1,5 @@
 use arcanum_core::{
-    config::{ArcanumConfig, OrchestrationMode as CfgMode},
+    config::{ArcanumConfig, OrchestrationMode as CfgMode, DoclingBackendConfig},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry,
              IngestionDepsOverrideResolver},
@@ -8,7 +8,8 @@ use arcanum_core::{
 };
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
-                        RawLoader, FileLoader, HttpLoader, default_registry};
+                        RawLoader, FileLoader, HttpLoader, default_registry,
+                        DoclingPreprocessor, DoclingBackend};
 use arcanum_core::types::{PerBackendChunkConfig, PerBackendChunkers};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
@@ -264,7 +265,34 @@ impl ArcanumEngineBuilder {
                         .register(Arc::new(FileLoader::new()))
                         .register(Arc::new(HttpLoader::new())),
                 ),
-                preprocessors:     Arc::new(PreprocessorRegistry::new()),
+                preprocessors:     Arc::new(match &self.config.ingestion.docling {
+                    Some(dc) if dc.enabled => {
+                        let backend = match &dc.backend {
+                            DoclingBackendConfig::Http {
+                                base_url,
+                                api_key,
+                                timeout_secs,
+                                use_async,
+                                poll_interval_ms,
+                            } => DoclingBackend::Http {
+                                base_url: base_url.clone(),
+                                api_key: api_key.clone(),
+                                timeout_secs: *timeout_secs,
+                                use_async: *use_async,
+                                poll_interval_ms: *poll_interval_ms,
+                            },
+                            DoclingBackendConfig::Cli { command } => {
+                                DoclingBackend::Cli {
+                                    command: command.clone(),
+                                }
+                            }
+                        };
+                        PreprocessorRegistry::docling_chains(Arc::new(
+                            DoclingPreprocessor::new(backend),
+                        ))
+                    }
+                    _ => PreprocessorRegistry::default_chains(),
+                }),
                 chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
                 shadow:            None,
                 context_enricher:  self.enricher.clone(),
