@@ -114,6 +114,9 @@ pub struct DoclingConfig {
     pub backend: DoclingBackendConfig,
 }
 
+// TOML note: the `type` discriminant is case-sensitive and must be lowercase:
+//   type = "http"   (not "Http" or "HTTP")
+//   type = "cli"    (not "Cli" or "CLI")
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum DoclingBackendConfig {
@@ -345,6 +348,42 @@ impl ArcanumConfig {
                     .into(),
             ));
         }
+
+        if let Some(dc) = &self.ingestion.docling {
+            match &dc.backend {
+                DoclingBackendConfig::Http {
+                    base_url,
+                    timeout_secs,
+                    poll_interval_ms,
+                    use_async,
+                    ..
+                } => {
+                    if base_url.is_empty() {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.base_url must not be empty".into(),
+                        ));
+                    }
+                    if *timeout_secs == 0 {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.timeout_secs must be > 0".into(),
+                        ));
+                    }
+                    if *use_async && *poll_interval_ms == 0 {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.poll_interval_ms must be > 0 when use_async is true".into(),
+                        ));
+                    }
+                }
+                DoclingBackendConfig::Cli { command } => {
+                    if command.is_empty() {
+                        return Err(ArcanumError::Config(
+                            "docling.backend.command must not be empty".into(),
+                        ));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }
@@ -567,5 +606,76 @@ base_url = "http://localhost:5001"
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         assert!(cfg.ingestion.docling.is_some());
+    }
+
+    #[test]
+    fn test_validate_docling_empty_base_url_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "".to_string(),
+                api_key: None,
+                timeout_secs: 300,
+                use_async: false,
+                poll_interval_ms: 2000,
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_zero_timeout_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "http://localhost:5001".to_string(),
+                api_key: None,
+                timeout_secs: 0,
+                use_async: false,
+                poll_interval_ms: 2000,
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_zero_poll_interval_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "http://localhost:5001".to_string(),
+                api_key: None,
+                timeout_secs: 300,
+                use_async: true,
+                poll_interval_ms: 0,
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_empty_cli_command_fails() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Cli {
+                command: "".to_string(),
+            },
+        });
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn test_validate_docling_valid_http_passes() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.ingestion.docling = Some(DoclingConfig {
+            backend: DoclingBackendConfig::Http {
+                base_url: "http://localhost:5001".to_string(),
+                api_key: None,
+                timeout_secs: 300,
+                use_async: false,
+                poll_interval_ms: 2000,
+            },
+        });
+        assert!(cfg.validate().is_ok());
     }
 }
