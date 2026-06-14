@@ -129,7 +129,14 @@ impl DoclingPreprocessor {
             .unwrap_or("document")
             .to_string();
 
-        let file_part = reqwest::multipart::Part::bytes(doc.content.clone())
+        // Set deadline before building the request so the POST and any
+        // subsequent polling share a single total time budget.
+        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+
+        let mut doc = doc;
+        let content = std::mem::take(&mut doc.content);
+
+        let file_part = reqwest::multipart::Part::bytes(content)
             .file_name(filename)
             .mime_str(&doc.mime_type)
             .map_err(|e| ArcanumError::Ingestion(format!("multipart MIME error: {e}")))?;
@@ -144,17 +151,17 @@ impl DoclingPreprocessor {
             format!("{base_url}/v1/convert/file")
         };
 
+        let budget = deadline.saturating_duration_since(Instant::now());
         let mut req = self
             .client
             .post(&endpoint)
-            .timeout(Duration::from_secs(timeout_secs))
+            .timeout(budget)
             .multipart(form);
 
         if let Some(key) = api_key {
             req = req.header("X-Api-Key", key.as_str());
         }
 
-        let deadline = Instant::now() + Duration::from_secs(timeout_secs);
         let resp = req
             .send()
             .await
