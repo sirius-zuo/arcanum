@@ -51,6 +51,14 @@ impl PreprocessorRegistry {
         self.chains.keys().cloned().collect()
     }
 
+    /// Pre-built registry with the legacy preprocessors.
+    ///
+    /// Covers: text/html, application/xhtml+xml, application/pdf,
+    /// application/epub+zip, application/vnd...docx.
+    ///
+    /// **Gap:** PPTX, XLSX, PNG, JPEG, and TIFF have no handler here — those
+    /// formats pass through as raw bytes when docling is not enabled.
+    /// Use `docling_chains()` to handle all 10 MIME types.
     pub fn default_chains() -> Self {
         use crate::preprocessors::{HtmlCleaner, PdfParser, EpubParser, DocxPreprocessor};
         const DOCX: &str = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
