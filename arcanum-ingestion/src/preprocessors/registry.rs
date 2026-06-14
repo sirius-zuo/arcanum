@@ -43,7 +43,12 @@ impl PreprocessorRegistry {
             .register("application/xhtml+xml", preprocessor.clone())
             .register("image/png", preprocessor.clone())
             .register("image/jpeg", preprocessor.clone())
-            .register("image/tiff", preprocessor.clone())
+            .register("image/tiff", preprocessor)  // last one: move, no clone
+    }
+
+    #[cfg(test)]
+    pub fn registered_mimes(&self) -> Vec<String> {
+        self.chains.keys().cloned().collect()
     }
 
     pub fn default_chains() -> Self {

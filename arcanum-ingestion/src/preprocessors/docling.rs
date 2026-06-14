@@ -803,4 +803,40 @@ mod tests {
         let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
         assert!(p.process(doc).await.is_err());
     }
+
+    #[test]
+    fn test_supported_mimes_and_mime_to_ext_are_consistent() {
+        // Every MIME type in SUPPORTED_MIMES must have a real extension in mime_to_ext()
+        // (not the fallback "bin"), which would mean it was missed.
+        for mime in SUPPORTED_MIMES {
+            let ext = mime_to_ext(mime);
+            assert_ne!(
+                ext, "bin",
+                "MIME type {mime:?} is in SUPPORTED_MIMES but has no extension in mime_to_ext()"
+            );
+        }
+    }
+
+    #[test]
+    fn test_docling_chains_covers_all_supported_mimes() {
+        use crate::preprocessors::registry::PreprocessorRegistry;
+
+        struct NoOp;
+        #[async_trait::async_trait]
+        impl arcanum_core::traits::Preprocessor for NoOp {
+            async fn process(&self, doc: arcanum_core::types::RawDocument) -> arcanum_core::Result<arcanum_core::types::RawDocument> {
+                Ok(doc)
+            }
+        }
+
+        let registry = PreprocessorRegistry::docling_chains(std::sync::Arc::new(NoOp));
+        let registered = registry.registered_mimes();
+
+        for mime in SUPPORTED_MIMES {
+            assert!(
+                registered.contains(&mime.to_string()),
+                "MIME {mime:?} is in SUPPORTED_MIMES but not registered in docling_chains()"
+            );
+        }
+    }
 }
