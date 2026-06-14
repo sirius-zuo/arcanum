@@ -209,13 +209,16 @@ impl DoclingPreprocessor {
         let task_id = submit.task_id;
 
         loop {
+            // Sleep first so the first poll fires after poll_interval_ms, not immediately.
+            tokio::time::sleep(Duration::from_millis(poll_interval_ms)).await;
+
+            // Check deadline AFTER sleep so we report a clean timeout even when
+            // the sleep itself pushes past the deadline.
             if Instant::now() > deadline {
                 return Err(ArcanumError::Ingestion(format!(
                     "docling async conversion timed out (task {task_id})"
                 )));
             }
-
-            tokio::time::sleep(Duration::from_millis(poll_interval_ms)).await;
 
             let remaining = deadline.saturating_duration_since(Instant::now());
             let mut poll_req = self
@@ -225,10 +228,20 @@ impl DoclingPreprocessor {
             if let Some(key) = api_key {
                 poll_req = poll_req.header("X-Api-Key", key.as_str());
             }
-            let poll: PollResponse = poll_req
+            let poll_resp = poll_req
                 .send()
                 .await
-                .map_err(|e| ArcanumError::Ingestion(format!("docling poll request failed: {e}")))?
+                .map_err(|e| ArcanumError::Ingestion(format!("docling poll request failed: {e}")))?;
+
+            if !poll_resp.status().is_success() {
+                let status = poll_resp.status().as_u16();
+                let body = poll_resp.text().await.unwrap_or_default();
+                return Err(ArcanumError::Ingestion(format!(
+                    "docling poll returned {status}: {body}"
+                )));
+            }
+
+            let poll: PollResponse = poll_resp
                 .json()
                 .await
                 .map_err(|e| ArcanumError::Ingestion(format!("docling poll parse error: {e}")))?;
@@ -243,7 +256,12 @@ impl DoclingPreprocessor {
                         "docling async conversion failed: {msg}"
                     )));
                 }
-                _ => { /* pending / started — keep polling */ }
+                "pending" | "started" => { /* keep polling */ }
+                other => {
+                    return Err(ArcanumError::Ingestion(format!(
+                        "docling poll returned unexpected status '{other}' (task {task_id})"
+                    )));
+                }
             }
         }
 
@@ -259,6 +277,14 @@ impl DoclingPreprocessor {
             .send()
             .await
             .map_err(|e| ArcanumError::Ingestion(format!("docling result fetch failed: {e}")))?;
+
+        if !result_resp.status().is_success() {
+            let status = result_resp.status().as_u16();
+            let body = result_resp.text().await.unwrap_or_default();
+            return Err(ArcanumError::Ingestion(format!(
+                "docling result fetch returned {status}: {body}"
+            )));
+        }
 
         let md = Self::extract_md(result_resp).await?;
         Ok(RawDocument {
@@ -648,6 +674,116 @@ mod tests {
         assert!(
             msg.contains("exited") || msg.contains("failed") || msg.contains("spawn"),
             "error message should describe failure: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_http_async_poll_non_2xx_returns_error_with_status() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/convert/file/async"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-poll-err", "task_status": "pending"
+            })))
+            .mount(&server)
+            .await;
+        // Poll endpoint returns 503
+        Mock::given(method("GET"))
+            .and(path("/v1/status/poll/task-poll-err"))
+            .respond_with(ResponseTemplate::new(503).set_body_string("service unavailable"))
+            .mount(&server)
+            .await;
+
+        let p = DoclingPreprocessor::new(DoclingBackend::Http {
+            base_url: server.uri(),
+            api_key: None,
+            timeout_secs: 10,
+            use_async: true,
+            poll_interval_ms: 50,
+        });
+        let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+        let err = p.process(doc).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("503"), "error should contain HTTP status: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_http_async_result_fetch_non_2xx_returns_error_with_status() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/convert/file/async"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-result-err", "task_status": "pending"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/status/poll/task-result-err"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-result-err", "task_status": "success"
+            })))
+            .mount(&server)
+            .await;
+        // Result fetch returns 404
+        Mock::given(method("GET"))
+            .and(path("/v1/result/task-result-err"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+
+        let p = DoclingPreprocessor::new(DoclingBackend::Http {
+            base_url: server.uri(),
+            api_key: None,
+            timeout_secs: 10,
+            use_async: true,
+            poll_interval_ms: 50,
+        });
+        let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+        let err = p.process(doc).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("404"), "error should contain HTTP status: {msg}");
+    }
+
+    #[tokio::test]
+    async fn test_http_async_unknown_task_status_returns_error_immediately() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::{method, path};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/convert/file/async"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-unknown", "task_status": "pending"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/v1/status/poll/task-unknown"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "task_id": "task-unknown", "task_status": "cancelled"
+            })))
+            .mount(&server)
+            .await;
+
+        let p = DoclingPreprocessor::new(DoclingBackend::Http {
+            base_url: server.uri(),
+            api_key: None,
+            timeout_secs: 10,
+            use_async: true,
+            poll_interval_ms: 50,
+        });
+        let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+        let err = p.process(doc).await.unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("cancelled") || msg.contains("unexpected"),
+            "error should name the unknown status: {msg}"
         );
     }
 
