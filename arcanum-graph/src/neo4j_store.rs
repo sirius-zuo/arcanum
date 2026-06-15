@@ -190,7 +190,7 @@ impl GraphStore for Neo4jStore {
                 relation_type,
                 target: EntityId(target_id),
                 confidence: confidence as f32,
-                source_chunk: dummy_chunk_id,
+                source_chunks: vec![dummy_chunk_id],
             });
         }
         Ok(relations)

@@ -30,5 +30,5 @@ pub struct Relation {
     pub relation_type: String,
     pub target: EntityId,
     pub confidence: f32,
-    pub source_chunk: ChunkId,
+    pub source_chunks: Vec<ChunkId>,
 }

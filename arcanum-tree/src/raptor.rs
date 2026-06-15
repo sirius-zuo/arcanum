@@ -25,6 +25,7 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
                 parent: None, children: vec![],
                 cluster_centroid: None,
                 source_uri: source_uri.to_string(),
+                leaf_chunk_ids: vec![],
             };
             self.store.insert_node(collection, node).await?;
         }
@@ -46,6 +47,7 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
                     parent: None, children: vec![],
                     cluster_centroid: Some(centroid.clone()),
                     source_uri: source_uri.to_string(),
+                    leaf_chunk_ids: vec![],
                 };
                 self.store.insert_node(collection, node).await?;
                 next_level.push((summary, centroid));

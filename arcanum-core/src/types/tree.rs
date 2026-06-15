@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::document::Vector;
+use super::document::{ChunkId, Vector};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeNodeId(pub Uuid);
@@ -22,4 +22,5 @@ pub struct TreeNode {
     pub cluster_centroid: Option<Vector>,
     #[serde(default)]
     pub source_uri: String,
+    pub leaf_chunk_ids: Vec<ChunkId>,
 }

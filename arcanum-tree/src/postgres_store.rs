@@ -240,6 +240,7 @@ fn row_to_node(row: PgTreeNodeRow) -> Result<TreeNode> {
         children,
         cluster_centroid,
         source_uri: row.source_uri,
+        leaf_chunk_ids: vec![],
     })
 }
 
@@ -272,6 +273,7 @@ mod tests {
             children: vec![],
             cluster_centroid: None,
             source_uri: "".to_string(),
+            leaf_chunk_ids: vec![],
         };
         store.insert_node("test_collection", node).await.expect("insert");
 

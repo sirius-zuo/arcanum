@@ -90,7 +90,7 @@ impl LanceDbStore {
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .collect();
         let source_uri_strings: Vec<&str> = chunks.iter()
-            .map(|c| c.chunk.metadata.source_uri())
+            .map(|c| c.chunk.provenance.source_uri.as_str())
             .collect();
 
         let vec_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
