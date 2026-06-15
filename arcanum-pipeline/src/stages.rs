@@ -1,5 +1,7 @@
 use crate::{dag::{PipelineStage, StageContext, CTX_FORCE, CTX_SKIP, CTX_REPLACE}, IngestionState};
-use arcanum_core::{traits::*, types::*, ArcanumError};
+use arcanum_core::{traits::{DocumentVersionStore, SnapshotStore, *}, types::*,
+    types::{DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
+    ArcanumError};
 use arcanum_ingestion::{
     LoaderRegistry, PreprocessorRegistry, MimeDetector,
     ContextEnricher, EntityExtractor,
@@ -58,15 +60,15 @@ pub fn make_load_stage(
 }
 
 pub fn make_dedup_stage(
-    state: Arc<Mutex<IngestionState>>,
-    registry: Arc<dyn DocumentRegistry>,
+    state:         Arc<Mutex<IngestionState>>,
+    version_store: Arc<dyn DocumentVersionStore>,
 ) -> PipelineStage {
     PipelineStage {
         id: "dedup",
         deps: vec!["load"],
         run: Arc::new(move |mut ctx| {
-            let state = state.clone();
-            let registry = registry.clone();
+            let state         = state.clone();
+            let version_store = version_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "dedup", "executing dedup stage");
                 let force = ctx.get(CTX_FORCE).and_then(|v| v.as_bool()).unwrap_or(false);
@@ -80,23 +82,15 @@ pub fn make_dedup_stage(
                         stage: "dedup".into(),
                         message: "no doc after load".into(),
                     })?;
-                    (doc.source_uri.clone(), g.collection_id.clone(), doc.content_hash())
+                    (doc.source_uri.clone(), g.collection_id.0.clone(), doc.content_hash())
                 };
-                let entry = registry.get_entry(&source_uri, &collection_id.0).await?;
-                match entry {
-                    None => {
-                        // New document — proceed normally
-                    }
-                    Some(e) if e.status == RegistryStatus::Replacing => {
-                        // Previous cleanup interrupted; resume
-                        ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
-                    }
-                    Some(e) if e.content_hash.as_deref() == Some(content_hash.as_str()) => {
-                        // Identical content — skip
+                let latest = version_store.get_latest(&source_uri, &collection_id).await?;
+                match latest {
+                    None => { /* new document — proceed */ }
+                    Some(v) if v.content_hash == content_hash => {
                         ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
                     }
                     Some(_) => {
-                        // Changed content — replace
                         ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     }
                 }
@@ -107,34 +101,34 @@ pub fn make_dedup_stage(
 }
 
 pub fn make_cleanup_stage(
-    state: Arc<Mutex<IngestionState>>,
-    registry: Arc<dyn DocumentRegistry>,
-    vector_store: Arc<dyn VectorStore>,
-    graph_store: Option<Arc<dyn GraphStore>>,
-    tree_store: Option<Arc<dyn TreeStore>>,
+    state:         Arc<Mutex<IngestionState>>,
+    version_store: Arc<dyn DocumentVersionStore>,
+    vector_store:  Arc<dyn VectorStore>,
+    graph_store:   Option<Arc<dyn GraphStore>>,
+    tree_store:    Option<Arc<dyn TreeStore>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "cleanup",
         deps: vec!["dedup"],
         run: Arc::new(move |mut ctx| {
-            let state = state.clone();
-            let registry = registry.clone();
-            let vs = vector_store.clone();
-            let gs = graph_store.clone();
-            let ts = tree_store.clone();
+            let state         = state.clone();
+            let version_store = version_store.clone();
+            let vs            = vector_store.clone();
+            let gs            = graph_store.clone();
+            let ts            = tree_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "cleanup", "executing cleanup stage");
                 let replace = ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()).unwrap_or(false);
                 if !replace {
                     return Ok(ctx);
                 }
-                let (source_uri, collection_id) = {
+                let (source_uri, collection_id, doc_id) = {
                     let g = state.lock().await;
                     let doc = g.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
                         stage: "cleanup".into(),
                         message: "no doc".into(),
                     })?;
-                    (doc.source_uri.clone(), g.collection_id.clone())
+                    (doc.source_uri.clone(), g.collection_id.0.clone(), g.snapshot_document_id.clone())
                 };
                 if source_uri.is_empty() {
                     return Err(ArcanumError::Pipeline {
@@ -142,20 +136,100 @@ pub fn make_cleanup_stage(
                         message: "document source_uri is empty — cannot safely delete stale store data".into(),
                     });
                 }
-                let claimed = registry.try_set_replacing(&source_uri, &collection_id.0).await?;
-                if !claimed {
-                    tracing::debug!(stage = "cleanup", source_uri = %source_uri,
-                        "another worker is replacing this document — skipping cleanup");
-                    ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
-                    return Ok(ctx);
+                if let Some(document_id) = &doc_id {
+                    version_store.supersede_active(document_id).await?;
                 }
-                vs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
+                vs.delete_by_source_uri(&collection_id, &source_uri).await?;
                 if let Some(gs) = &gs {
-                    gs.delete_by_source_uri(&collection_id.0, &source_uri).await?;
+                    gs.delete_by_source_uri(&collection_id, &source_uri).await?;
                 }
                 if let Some(ts) = &ts {
-                    ts.delete_by_source_uri(&collection_id.0, &source_uri).await?;
+                    ts.delete_by_source_uri(&collection_id, &source_uri).await?;
                 }
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
+pub fn make_snapshot_stage(
+    state:         Arc<Mutex<IngestionState>>,
+    version_store: Arc<dyn DocumentVersionStore>,
+    snapshot_store: Arc<dyn SnapshotStore>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "snapshot",
+        deps: vec!["preprocess"],
+        run: Arc::new(move |ctx| {
+            let state          = state.clone();
+            let version_store  = version_store.clone();
+            let snapshot_store = snapshot_store.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "snapshot", "executing snapshot stage");
+                if skip(&ctx) { return Ok(ctx); }
+
+                let (source_uri, collection_id, content_hash, mime_type, raw_content, canonical_json) = {
+                    let g = state.lock().await;
+                    let doc = g.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "snapshot".into(),
+                        message: "no doc".into(),
+                    })?;
+                    (
+                        doc.source_uri.clone(),
+                        g.collection_id.0.clone(),
+                        doc.content_hash(),
+                        doc.mime_type.clone(),
+                        g.raw_content.clone().unwrap_or_else(|| doc.content.clone()),
+                        g.canonical_json.clone(),
+                    )
+                };
+
+                // Determine stable document_id and next version_num.
+                let latest = version_store.get_latest(&source_uri, &collection_id).await?;
+                let doc_id = match &latest {
+                    Some(v) => v.document_id.clone(),
+                    None    => DocumentId::new(),
+                };
+                let version_num = latest.as_ref().map(|v| v.version_num + 1).unwrap_or(1);
+
+                // Apply versioning policy.
+                let policy = version_store.get_versioning_policy(&collection_id).await?;
+                if matches!(policy, VersioningPolicy::Replace) {
+                    if latest.is_some() {
+                        version_store.supersede_active(&doc_id).await?;
+                    }
+                }
+
+                // Persist raw bytes + canonical sidecar.
+                let location = snapshot_store.store(
+                    &doc_id,
+                    version_num,
+                    &raw_content,
+                    canonical_json.as_ref(),
+                ).await?;
+
+                // Register new version.
+                version_store.add_version(DocumentVersion {
+                    document_id:   doc_id.clone(),
+                    version_num,
+                    source_uri:    source_uri.clone(),
+                    collection_id: collection_id.clone(),
+                    content_hash,
+                    snapshot_uri:  location.raw_uri.clone(),
+                    canonical_uri: location.canonical_uri.clone(),
+                    mime_type,
+                    status:        VersionStatus::Active,
+                    ingested_at:   chrono::Utc::now(),
+                    extra:         std::collections::HashMap::new(),
+                }).await?;
+
+                // Write results back to state for chunk stage.
+                let mut g = state.lock().await;
+                g.snapshot_document_id = Some(doc_id);
+                g.snapshot_version_num = Some(version_num);
+                g.snapshot_uri         = Some(location.raw_uri);
+                g.canonical_uri        = location.canonical_uri;
+
                 Ok(ctx)
             })
         }),
@@ -605,12 +679,18 @@ mod test_chunk_source_uri {
                 uri: doc.source_uri.clone(),
             },
             collection_id: collection.clone(),
-            doc: Some(doc),
+            doc: Some(doc.clone()),
             chunks: vec![],
             graph_chunks: vec![],
             tree_chunks: vec![],
             vectors: vec![],
             tree_vectors: vec![],
+            raw_content:   Some(doc.content.clone()),
+            canonical_json: None,
+            snapshot_document_id: None,
+            snapshot_version_num: None,
+            snapshot_uri: None,
+            canonical_uri: None,
         }));
         let chunker = Arc::new(FixedSizeChunker::new(512, 0));
         let stage = make_vector_chunk_stage(state.clone(), chunker, None);

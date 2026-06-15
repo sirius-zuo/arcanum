@@ -17,8 +17,9 @@ pub use preprocessors::{HtmlCleaner, PdfParser, EpubParser, PreprocessorRegistry
 pub use chunkers::{FixedSizeChunker, SemanticChunker, PropositionalChunker};
 pub use enrichment::{ContextEnricher, EntityExtractor};
 
-pub mod document_registry;
-pub use document_registry::SqliteDocumentRegistry;
+// TODO: Task 6 replaces this with versioning/postgres.rs
+// pub mod document_registry;
+// pub use document_registry::SqliteDocumentRegistry;
 
 pub mod registry;
 pub use registry::{ChunkRegistry, default_registry};

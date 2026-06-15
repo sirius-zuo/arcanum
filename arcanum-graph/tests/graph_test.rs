@@ -30,7 +30,7 @@ async fn test_upsert_relations() {
     let e2 = Entity { id: id2.clone(), name: "Rust".into(), entity_type: "Language".into(), canonical_id: None, source_chunks: vec![], source_uri: "".to_string(), collection_id: "test-col".to_string() };
     store.upsert_entities("test-col", vec![e1, e2]).await.unwrap();
 
-    let rel = Relation { source: id1.clone(), relation_type: "written_in".into(), target: id2, confidence: 0.95, source_chunk: ChunkId::new() };
+    let rel = Relation { source: id1.clone(), relation_type: "written_in".into(), target: id2, confidence: 0.95, source_chunks: vec![ChunkId::new()] };
     store.upsert_relations("test-col", vec![rel]).await.unwrap();
 
     let relations = store.get_relations(&id1).await.unwrap();

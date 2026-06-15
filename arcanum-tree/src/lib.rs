@@ -137,11 +137,13 @@ mod tests {
             id: TreeNodeId::new(), level: 0, text: "chunk a".into(),
             vector: Vector(vec![0.1]), parent: None, children: vec![],
             cluster_centroid: None, source_uri: "file://a.md".into(),
+            leaf_chunk_ids: vec![],
         }).await.unwrap();
         store.insert_node("col", TreeNode {
             id: TreeNodeId::new(), level: 0, text: "chunk b".into(),
             vector: Vector(vec![0.2]), parent: None, children: vec![],
             cluster_centroid: None, source_uri: "file://b.md".into(),
+            leaf_chunk_ids: vec![],
         }).await.unwrap();
         store.delete_by_source_uri("col", "file://a.md").await.unwrap();
         let nodes = store.get_level("col", 0).await.unwrap();

@@ -12,6 +12,7 @@ async fn test_tree_store_insert_and_level_query() {
         parent: None, children: vec![],
         cluster_centroid: None,
         source_uri: "".to_string(),
+        leaf_chunk_ids: vec![],
     };
     store.insert_node("test", node.clone()).await.unwrap();
     let level0 = store.get_level("test", 0).await.unwrap();

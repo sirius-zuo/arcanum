@@ -75,6 +75,8 @@ impl IngestionWorker {
                     vector_store:      self.deps.vector_store.clone(),
                     graph_store:       self.deps.graph_store.clone(),
                     tree_store:        self.deps.tree_store.clone(),
+                    version_store:     self.deps.version_store.clone(),
+                    snapshot_store:    self.deps.snapshot_store.clone(),
                     document_registry: self.deps.document_registry.clone(),
                     retry_policy:      self.deps.retry_policy.clone(),
                     cache_invalidator: self.deps.cache_invalidator.clone(),
@@ -143,12 +145,9 @@ pub async fn run_task(
             } else {
                 let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
                     stage: "worker".into(),
-                    message: "pipeline succeeded but doc is None — cannot register content hash".into(),
+                    message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
                 })?;
                 let content_hash = doc.content_hash();
-                deps.document_registry
-                    .register(&source_uri, &collection_id.0, &content_hash)
-                    .await?;
                 let report = IngestionReport {
                     operation_id:         operation_id.clone(),
                     source_uri:           source_uri.clone(),

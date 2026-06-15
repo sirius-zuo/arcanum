@@ -120,6 +120,7 @@ mod tests {
                         ("source_uri".to_string(), serde_json::json!("file://doc.pdf")),
                         ("title".to_string(), serde_json::json!("My Doc")),
                     ])),
+                    provenance: arcanum_core::types::ChunkProvenance::default(),
                 },
                 vector: Vector(vector),
                 token_vectors: None,

@@ -225,7 +225,7 @@ mod tests {
         // Add a relation from e1 → e2 so we can verify cascade delete removes it
         let rel = arcanum_core::types::Relation {
             source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
-            confidence: 1.0, source_chunk: arcanum_core::types::ChunkId::new(),
+            confidence: 1.0, source_chunks: vec![arcanum_core::types::ChunkId::new()],
         };
         store.upsert_relations("test-col", vec![rel]).await.unwrap();
 

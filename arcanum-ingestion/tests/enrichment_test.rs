@@ -15,6 +15,7 @@ impl TextEnricher for EchoEnricher {
 async fn test_context_enricher_prepends_context() {
     let enricher = ContextEnricher::new(Arc::new(EchoEnricher));
     let chunk = Chunk {
+        provenance: arcanum_core::types::ChunkProvenance::default(),
         id: ChunkId::new(), text: "ownership rules".into(),
         document_id: DocumentId::new(),
         collection_id: CollectionId("test".into()),

@@ -2,7 +2,7 @@ use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry,
-             IngestionDepsOverrideResolver},
+             IngestionDepsOverrideResolver, NoOpDocumentVersionStore, InMemorySnapshotStore},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -285,6 +285,10 @@ impl ArcanumEngineBuilder {
                 document_registry: self.document_registry
                     .clone()
                     .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
+                version_store:     Arc::new(
+                    NoOpDocumentVersionStore
+                ),
+                snapshot_store:    Arc::new(InMemorySnapshotStore::new()),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,

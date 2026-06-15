@@ -15,6 +15,7 @@ fn make_retrieved_for_doc(
                 text: text.to_string(),
                 position: ChunkPosition { start: 0, end: text.len(), index: 0 },
                 metadata: ChunkMetadata::default(),
+                provenance: Default::default(),
             },
             vector: Vector(vec![0.1]), token_vectors: None, store_id: String::new(),
         },
