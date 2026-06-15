@@ -3,6 +3,7 @@ pub mod document;
 pub mod enrichment;
 pub mod graph;
 pub mod operation;
+pub mod provenance;
 pub mod query;
 pub mod tree;
 pub use chunk_config::{
@@ -13,6 +14,7 @@ pub use document::*;
 pub use enrichment::*;
 pub use graph::*;
 pub use operation::*;
+pub use provenance::{ChunkProvenance, DocumentVersion, SnapshotLocation, VersionStatus, VersioningPolicy};
 pub use query::*;
 pub use tree::*;
 
