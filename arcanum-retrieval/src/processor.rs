@@ -67,6 +67,8 @@ pub struct Citation {
     pub section: Option<String>,
     pub chunk_index: usize,
     pub collection_id: String,
+    pub version: Option<u32>,
+    pub snapshot_uri: Option<String>,
 }
 
 /// Generates citations from a slice of retrieved chunks.
@@ -78,23 +80,58 @@ pub struct Citation {
 pub struct CitationGenerator;
 
 impl CitationGenerator {
+    /// Generates citations from a slice of retrieved chunks.
+    ///
+    /// Provenance-first: `source_uri`, `section`, `version`, and
+    /// `snapshot_uri` are read from `ChunkProvenance`.  Metadata fields are
+    /// kept as a fallback for legacy chunks that lack provenance.
+    ///
+    /// Metadata keys consulted (from `ChunkMetadata`):
+    /// - `"source_uri"` — document URI (fallback)
+    /// - `"title"` — document title (optional, fallback)
+    ///
+    /// Provenance fields (from `ChunkProvenance`):
+    /// - `document_version` — document version number
+    /// - `snapshot_uri` — raw snapshot location
+    /// - `canonical_uri` — canonical version location (stored on citation as `snapshot_uri`)
+    /// - `section` — section heading within the document
     #[instrument(fields(chunk_count = chunks.len(), citation_count))]
     pub fn generate(chunks: &[RetrievedChunk]) -> Vec<Citation> {
         let result: Vec<Citation> = chunks.iter().map(|c| {
-            let meta = &c.indexed_chunk.chunk.metadata.0;
-            let source_uri = meta.get("source_uri")
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            let title = meta.get("title").and_then(|v| v.as_str()).map(str::to_string);
-            let section = meta.get("section").and_then(|v| v.as_str()).map(str::to_string);
+            let chunk = &c.indexed_chunk.chunk;
+            let provenance = &chunk.provenance;
+            // Source URI: provenance if available, metadata as fallback.
+            let source_uri = if provenance.source_uri.is_empty() {
+                chunk.metadata.0.get("source_uri")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            } else {
+                provenance.source_uri.clone()
+            };
+            let title = chunk.metadata.0.get("title").and_then(|v| v.as_str()).map(str::to_string);
+            let section = if let Some(ref s) = provenance.section {
+                Some(s.clone())
+            } else {
+                chunk.metadata.0.get("section").and_then(|v| v.as_str()).map(str::to_string)
+            };
             Citation {
-                chunk_id: c.indexed_chunk.chunk.id.0.to_string(),
+                chunk_id: chunk.id.0.to_string(),
                 source_uri,
                 title,
                 section,
-                chunk_index: c.indexed_chunk.chunk.position.index,
-                collection_id: c.indexed_chunk.chunk.collection_id.0.clone(),
+                chunk_index: chunk.position.index,
+                collection_id: chunk.collection_id.0.clone(),
+                version: if provenance.document_version > 0 {
+                    Some(provenance.document_version)
+                } else {
+                    None
+                },
+                snapshot_uri: if !provenance.snapshot_uri.is_empty() {
+                    Some(provenance.snapshot_uri.clone())
+                } else {
+                    None
+                },
             }
         }).collect();
         tracing::Span::current().record("citation_count", result.len());
