@@ -54,6 +54,8 @@ pub struct Citation {
     pub document_title: Option<String>,
     pub section: Option<String>,
     pub chunk_index: usize,
+    pub version: Option<u32>,
+    pub snapshot_uri: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

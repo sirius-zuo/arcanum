@@ -1,5 +1,6 @@
 use async_trait::async_trait;
 use crate::types::*;
+use crate::types::DocumentId;
 use crate::Result;
 use std::path::PathBuf;
 
@@ -88,6 +89,13 @@ pub trait DocumentLoader: Send + Sync {
 #[async_trait]
 pub trait Preprocessor: Send + Sync {
     async fn process(&self, doc: RawDocument) -> Result<RawDocument>;
+
+    /// Return structured canonical JSON (e.g. Docling blocks) for this document,
+    /// if the preprocessor produces one during `process()`.
+    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> { None }
+
+    /// Set the canonical JSON produced by `process()` for a given document.
+    fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {}
 }
 
 #[async_trait]

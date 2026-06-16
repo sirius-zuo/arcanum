@@ -71,6 +71,7 @@ impl Retriever for RaptorRetriever {
                         collection_id: collection_id.clone(),
                         position: ChunkPosition { start: 0, end: 0, index: node.level as usize },
                         metadata: ChunkMetadata::default(),
+                        provenance: Default::default(),
                     },
                     vector: node.vector,
                     token_vectors: None,

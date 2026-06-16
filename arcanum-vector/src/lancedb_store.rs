@@ -90,7 +90,7 @@ impl LanceDbStore {
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .collect();
         let source_uri_strings: Vec<&str> = chunks.iter()
-            .map(|c| c.chunk.metadata.source_uri())
+            .map(|c| c.chunk.provenance.source_uri.as_str())
             .collect();
 
         let vec_array = FixedSizeListArray::from_iter_primitive::<Float32Type, _, _>(
@@ -484,6 +484,10 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("lance_uri_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///doc-a.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: arcanum_core::types::Vector(vec![0.1, 0.2, 0.3]),
             token_vectors: None,
@@ -525,6 +529,10 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("del_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta_a),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///a.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
             token_vectors: None,
@@ -541,6 +549,10 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("del_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta_b),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///b.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: arcanum_core::types::Vector(vec![0.0, 1.0, 0.0]),
             token_vectors: None,
@@ -573,6 +585,10 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("lance_filter_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta_a),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///filter-a.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
             token_vectors: None,
@@ -589,6 +605,10 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("lance_filter_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta_b),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///filter-b.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: arcanum_core::types::Vector(vec![0.0, 1.0, 0.0]),
             token_vectors: None,
@@ -628,6 +648,7 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("filter_type_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
             },
             vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
             token_vectors: None,
@@ -665,6 +686,7 @@ mod tests {
                 collection_id: arcanum_core::types::CollectionId("filter_op_test".into()),
                 position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
                 metadata: arcanum_core::types::ChunkMetadata(meta),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
             },
             vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
             token_vectors: None,

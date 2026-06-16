@@ -12,6 +12,7 @@ async fn test_tree_store_insert_and_level_query() {
         parent: None, children: vec![],
         cluster_centroid: None,
         source_uri: "".to_string(),
+        leaf_chunk_ids: vec![],
     };
     store.insert_node("test", node.clone()).await.unwrap();
     let level0 = store.get_level("test", 0).await.unwrap();
@@ -24,8 +25,8 @@ async fn test_raptor_builds_tree_levels() {
     let store = std::sync::Arc::new(InMemoryTreeStore::new());
     let builder = RaptorBuilder::new(store.clone(), 3);
 
-    let chunks: Vec<(String, Vector)> = (0..4).map(|i| {
-        (format!("chunk {i}"), Vector(vec![i as f32 * 0.1, i as f32 * 0.2]))
+    let chunks: Vec<(ChunkId, String, Vector)> = (0..4).map(|i| {
+        (ChunkId::new(), format!("chunk {i}"), Vector(vec![i as f32 * 0.1, i as f32 * 0.2]))
     }).collect();
 
     builder.build("test", "test://doc", chunks).await.unwrap();

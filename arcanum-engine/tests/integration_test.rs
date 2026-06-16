@@ -1,5 +1,5 @@
 use arcanum_core::{
-    traits::{Embedder, VectorStore, VectorQuery, ScoredChunk},
+    traits::{Embedder, NoOpDocumentVersionStore, VectorStore, VectorQuery, ScoredChunk},
     types::*,
 };
 use arcanum_engine::{ArcanumEngine, IngestRequest};
@@ -40,6 +40,7 @@ async fn test_ingest_task_executes_and_writes_to_vector_store() {
         .auth_secret("a-32-char-secret-for-testing-ok!")
         .vector_store(store.clone())
         .embedder(Arc::new(StubEmbedder))
+        .version_store(Arc::new(NoOpDocumentVersionStore))
         .build()
         .await
         .expect("build should succeed");
@@ -76,6 +77,7 @@ async fn test_search_with_wired_engine_returns_empty_from_stub_store() {
         .auth_secret("a-32-char-secret-for-testing-ok!")
         .vector_store(Arc::new(RecordingVectorStore(Mutex::new(vec![]))))
         .embedder(Arc::new(StubEmbedder))
+        .version_store(Arc::new(NoOpDocumentVersionStore))
         .build()
         .await
         .expect("build should succeed");

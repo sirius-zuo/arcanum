@@ -1,8 +1,24 @@
+use std::collections::HashMap;
 use std::io::Write as IoWrite;
+use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use arcanum_core::{traits::Preprocessor, types::RawDocument, ArcanumError, Result};
+use arcanum_core::{traits::Preprocessor, types::{DocumentId, RawDocument}, ArcanumError, Result};
 use async_trait::async_trait;
+
+/// Shared response shape for both HTTP and async Docling backends.
+#[derive(serde::Deserialize)]
+struct ConvertResponse {
+    document: ConvertedDoc,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertedDoc {
+    #[serde(default)]
+    md_content: Option<String>,
+    #[serde(default)]
+    metadata:   Option<serde_json::Value>,
+}
 
 pub enum DoclingBackend {
     Http {
@@ -18,8 +34,9 @@ pub enum DoclingBackend {
 }
 
 pub struct DoclingPreprocessor {
-    backend: DoclingBackend,
-    client: reqwest::Client,
+    backend:    DoclingBackend,
+    client:     reqwest::Client,
+    canonicals: RwLock<HashMap<DocumentId, serde_json::Value>>,
 }
 
 impl DoclingPreprocessor {
@@ -27,7 +44,42 @@ impl DoclingPreprocessor {
         Self {
             backend,
             client: reqwest::Client::new(),
+            canonicals: RwLock::new(HashMap::new()),
         }
+    }
+
+    /// Extract Docling canonical JSON from the response body string.
+    fn extract_canonical_from_str(&self, body: &str) -> Option<serde_json::Value> {
+        let resp: ConvertResponse = serde_json::from_str(body)
+            .map_err(|e| tracing::debug!("docling response does not match expected shape; canonical will be None: {e}"))
+            .ok()?;
+
+        // Build a minimal canonical from the metadata if available.
+        resp.document.metadata.map(|m| {
+            let mut canonical = serde_json::Map::new();
+            if let Some(md) = m.as_object() {
+                canonical.insert("blocks".to_string(), md.get("blocks").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![])));
+            }
+            serde_json::Value::Object(canonical)
+        })
+    }
+
+    /// Extract markdown from the response body string.
+    fn extract_md_from_str(body: &str) -> Result<String> {
+        let resp: ConvertResponse = serde_json::from_str(body)
+            .map_err(|e| ArcanumError::Ingestion(format!("docling response parse error: {e}")))?;
+
+        let md = resp.document.md_content.ok_or_else(|| {
+            ArcanumError::Ingestion("docling response missing md_content".into())
+        })?;
+
+        if md.is_empty() {
+            return Err(ArcanumError::Ingestion(
+                "docling produced empty markdown output".into(),
+            ));
+        }
+
+        Ok(md)
     }
 }
 
@@ -81,35 +133,6 @@ fn mime_to_ext(mime: &str) -> &'static str {
         "image/jpeg" => "jpg",
         "image/tiff" => "tiff",
         _ => "bin",
-    }
-}
-
-#[async_trait]
-impl Preprocessor for DoclingPreprocessor {
-    async fn process(&self, doc: RawDocument) -> Result<RawDocument> {
-        if !SUPPORTED_MIMES.contains(&doc.mime_type.as_str()) {
-            return Ok(doc);
-        }
-        match &self.backend {
-            DoclingBackend::Http {
-                base_url,
-                api_key,
-                timeout_secs,
-                use_async,
-                poll_interval_ms,
-            } => {
-                self.convert_via_http(
-                    doc,
-                    base_url,
-                    api_key,
-                    *timeout_secs,
-                    *use_async,
-                    *poll_interval_ms,
-                )
-                .await
-            }
-            DoclingBackend::Cli { command } => self.convert_via_cli(doc, command).await,
-        }
     }
 }
 
@@ -179,7 +202,18 @@ impl DoclingPreprocessor {
             self.poll_and_fetch(resp, base_url, api_key, deadline, poll_interval_ms, doc)
                 .await
         } else {
-            let md = Self::extract_md(resp).await?;
+            // Read the response body once, then parse both canonical and markdown.
+            let body = resp
+                .text()
+                .await
+                .map_err(|e| ArcanumError::Ingestion(format!("docling response body error: {e}")))?;
+            let md = Self::extract_md_from_str(&body)?;
+            let canonical = self.extract_canonical_from_str(&body);
+            if let Some(ref canon) = canonical {
+                if let Some(mut w) = self.canonicals.write().ok() {
+                    let _ = w.insert(doc.id.clone(), canon.clone());
+                }
+            }
             Ok(RawDocument {
                 content: md.into_bytes(),
                 mime_type: "text/markdown".to_string(),
@@ -293,37 +327,22 @@ impl DoclingPreprocessor {
             )));
         }
 
-        let md = Self::extract_md(result_resp).await?;
+        let body = result_resp
+            .text()
+            .await
+            .map_err(|e| ArcanumError::Ingestion(format!("docling result body error: {e}")))?;
+        let md = Self::extract_md_from_str(&body)?;
+        let canonical = self.extract_canonical_from_str(&body);
+        if let Some(ref canon) = canonical {
+            if let Some(mut w) = self.canonicals.write().ok() {
+                let _ = w.insert(doc.id.clone(), canon.clone());
+            }
+        }
         Ok(RawDocument {
             content: md.into_bytes(),
             mime_type: "text/markdown".to_string(),
             ..doc
         })
-    }
-
-    async fn extract_md(resp: reqwest::Response) -> Result<String> {
-        #[derive(serde::Deserialize)]
-        struct ConvertResponse {
-            document: ConvertedDoc,
-        }
-        #[derive(serde::Deserialize)]
-        struct ConvertedDoc {
-            md_content: Option<String>,
-        }
-
-        let body: ConvertResponse = resp
-            .json()
-            .await
-            .map_err(|e| ArcanumError::Ingestion(format!("docling response parse error: {e}")))?;
-
-        body.document
-            .md_content
-            .filter(|s| !s.is_empty())
-            .ok_or_else(|| {
-                ArcanumError::Ingestion(
-                    "docling returned empty or missing md_content".into(),
-                )
-            })
     }
 
     async fn convert_via_cli(&self, doc: RawDocument, command: &str) -> Result<RawDocument> {
@@ -397,6 +416,46 @@ impl DoclingPreprocessor {
             mime_type: "text/markdown".to_string(),
             ..doc
         })
+    }
+}
+
+#[async_trait]
+impl Preprocessor for DoclingPreprocessor {
+    async fn process(&self, doc: RawDocument) -> Result<RawDocument> {
+        if !SUPPORTED_MIMES.contains(&doc.mime_type.as_str()) {
+            return Ok(doc);
+        }
+        match &self.backend {
+            DoclingBackend::Http {
+                base_url,
+                api_key,
+                timeout_secs,
+                use_async,
+                poll_interval_ms,
+            } => {
+                self.convert_via_http(
+                    doc,
+                    base_url,
+                    api_key,
+                    *timeout_secs,
+                    *use_async,
+                    *poll_interval_ms,
+                )
+                .await
+            }
+            DoclingBackend::Cli { command } => self.convert_via_cli(doc, command).await,
+        }
+    }
+
+    fn canonical(&self, doc_id: &DocumentId) -> Option<serde_json::Value> {
+        // write() to remove the entry after reading (single-use eviction, prevents unbounded growth).
+        self.canonicals.write().ok()?.remove(doc_id)
+    }
+
+    fn set_canonical(&self, doc_id: &DocumentId, canonical: serde_json::Value) {
+        if let Some(mut w) = self.canonicals.write().ok() {
+            let _ = w.insert(doc_id.clone(), canonical);
+        }
     }
 }
 
@@ -818,6 +877,19 @@ mod tests {
     }
 
     #[test]
+    fn canonical_evicts_after_read() {
+        use serde_json::json;
+
+        let pp = DoclingPreprocessor::new(crate::DoclingBackend::Cli { command: "echo".into() });
+        let doc_id = DocumentId::new();
+        let value = json!({"blocks": []});
+
+        pp.set_canonical(&doc_id, value.clone());
+        assert!(pp.canonical(&doc_id).is_some(), "first read should return value");
+        assert!(pp.canonical(&doc_id).is_none(), "second read should return None — entry was evicted");
+    }
+
+    #[test]
     fn test_docling_chains_covers_all_supported_mimes() {
         use crate::preprocessors::registry::PreprocessorRegistry;
 
@@ -826,6 +898,11 @@ mod tests {
         impl arcanum_core::traits::Preprocessor for NoOp {
             async fn process(&self, doc: arcanum_core::types::RawDocument) -> arcanum_core::Result<arcanum_core::types::RawDocument> {
                 Ok(doc)
+            }
+            fn canonical(&self, _doc_id: &arcanum_core::types::DocumentId) -> Option<serde_json::Value> {
+                None
+            }
+            fn set_canonical(&self, _doc_id: &arcanum_core::types::DocumentId, _canonical: serde_json::Value) {
             }
         }
 

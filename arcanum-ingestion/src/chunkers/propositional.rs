@@ -22,6 +22,7 @@ impl Chunker for PropositionalChunker {
             collection_id: CollectionId("default".into()),
             position: ChunkPosition { start: i, end: i + 1, index: i },
             metadata: ChunkMetadata::default(),
+            provenance: Default::default(),
         }).collect();
         tracing::Span::current().record("chunk_count", chunks.len());
         metrics::histogram!("arcanum_chunk_count", "chunker" => "propositional").record(chunks.len() as f64);

@@ -15,6 +15,7 @@ impl Retriever for StubRetriever {
                     collection_id: CollectionId("t".into()),
                     position: ChunkPosition { start: 0, end: 0, index: 0 },
                     metadata: ChunkMetadata::default(),
+                    provenance: Default::default(),
                 },
                 vector: Vector(vec![]), token_vectors: None, store_id: "".into(),
             },

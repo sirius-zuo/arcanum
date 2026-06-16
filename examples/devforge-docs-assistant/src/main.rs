@@ -11,9 +11,9 @@
 use anyhow::Result;
 use arcanum_core::config::ArcanumConfig;
 use arcanum_engine::ArcanumEngineBuilder;
+use arcanum_ingestion::{LocalSnapshotStore, SqliteDocumentVersionStore};
 use arcanum_vector::LanceDbStore;
 use arcanum_models::OllamaProvider;
-use arcanum_ingestion::SqliteDocumentRegistry;
 use arcanum_server::build_app;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -24,39 +24,30 @@ use axum::Router;
 async fn main() -> Result<()> {
     let _telemetry = arcanum_telemetry::init(arcanum_telemetry::TelemetryConfig::from_env());
 
-    let port     = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
-    let secret   = std::env::var("ARCANUM_AUTH_SECRET")
+    let port   = std::env::var("PORT").unwrap_or_else(|_| "8080".into());
+    let secret = std::env::var("ARCANUM_AUTH_SECRET")
         .unwrap_or_else(|_| "arcanum-dev-secret-minimum-32chars!!".into());
-    let ollama   = std::env::var("OLLAMA_URL")
+    let ollama = std::env::var("OLLAMA_URL")
         .unwrap_or_else(|_| "http://localhost:11434".into());
-    let metrics_token = std::env::var("ARCANUM_METRICS_TOKEN")
-        .map_err(|_| anyhow::anyhow!("ARCANUM_METRICS_TOKEN must be set"))?;
-    let _ = metrics_token; // validated above; the metrics route reads it from env directly
 
-    // Load dev config (falls back to default if file not found)
     let config = ArcanumConfig::from_file(std::path::Path::new("config.toml"))
         .unwrap_or_default();
 
     std::fs::create_dir_all("data")?;
 
-    let document_registry = Arc::new(
-        SqliteDocumentRegistry::open("data/documents.db")
-            .map_err(|e| anyhow::anyhow!("failed to open document registry: {}", e))?
-    );
-
-    // ── Vector store: LanceDB local file ─────────────────────────────────────
-    // Production: PgVectorStore::new(&db_url, 768).await?  (see BUILD.md)
-    let vector_store = Arc::new(LanceDbStore::new("data/devforge.lance").await?);
-
-    // ── Embedder: Ollama local ────────────────────────────────────────────────
-    // Production: HuggingFaceTeiProvider::new(&tei_url, "nomic-embed-text", 768)
-    let embedder = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "nomic-embed-text"));
+    // Dev version store — persists version history across restarts so dedup works.
+    // Switch to PostgresDocumentVersionStore for production.
+    let version_store  = Arc::new(SqliteDocumentVersionStore::open("data/versions.db").await?);
+    let snapshot_store = Arc::new(LocalSnapshotStore::new("data/snapshots"));
+    let vector_store   = Arc::new(LanceDbStore::new("data/devforge.lance").await?);
+    let embedder       = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "nomic-embed-text"));
 
     let engine = ArcanumEngineBuilder::new(config)
         .auth_secret(&secret)
         .vector_store(vector_store)
         .embedder(embedder)
-        .document_registry(document_registry)
+        .version_store(version_store)
+        .snapshot_store(snapshot_store)
         .build()
         .await?;
 

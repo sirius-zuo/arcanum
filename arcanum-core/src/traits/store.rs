@@ -133,6 +133,7 @@ mod tests {
                 collection_id: CollectionId("test".into()),
                 position: ChunkPosition { start: 0, end: 5, index: 0 },
                 metadata: ChunkMetadata::default(),
+                provenance: Default::default(),
             },
             vector: Vector(vec![0.1, 0.2]),
             token_vectors: None,

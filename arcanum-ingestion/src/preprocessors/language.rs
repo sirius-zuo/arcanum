@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Preprocessor, types::*, Result};
+use arcanum_core::{traits::Preprocessor, types::RawDocument, Result};
 use async_trait::async_trait;
 
 pub struct LanguageDetector;
@@ -23,20 +23,13 @@ impl Preprocessor for LanguageDetector {
 mod tests {
     use super::*;
 
-    fn make_doc(text: &str) -> RawDocument {
-        RawDocument {
-            id: DocumentId::new(),
-            content: text.as_bytes().to_vec(),
-            mime_type: "text/plain".to_string(),
-            source_uri: "test://x".to_string(),
-            metadata: Default::default(),
-        }
-    }
-
     #[tokio::test]
     async fn test_language_detector_adds_lang_metadata() {
         let det = LanguageDetector::new();
-        let doc = make_doc("This is a simple English sentence for language detection purposes.");
+        let doc = RawDocument::for_test(
+            "This is a simple English sentence for language detection purposes.",
+            "text/plain",
+        );
         let result = det.process(doc).await.unwrap();
         assert!(result.metadata.contains_key("lang"));
         assert_eq!(result.metadata.get("lang").map(|s| s.as_str()), Some("eng"));
@@ -45,7 +38,7 @@ mod tests {
     #[tokio::test]
     async fn test_language_detector_passes_content_unchanged() {
         let det = LanguageDetector::new();
-        let doc = make_doc("unchanged content");
+        let doc = RawDocument::for_test("unchanged content", "text/plain");
         let result = det.process(doc).await.unwrap();
         assert_eq!(result.content, b"unchanged content");
     }

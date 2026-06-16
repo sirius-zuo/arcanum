@@ -1,11 +1,12 @@
 use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry,
-             IngestionDepsOverrideResolver},
+             CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
+             SnapshotStore, DocumentVersionStore},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
+use arcanum_ingestion::LocalSnapshotStore;
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
                         RawLoader, FileLoader, HttpLoader, default_registry,
@@ -51,7 +52,8 @@ pub struct ArcanumEngine {
     pub graph_store: Option<Arc<dyn GraphStore>>,
     pub vector_store: Option<Arc<dyn VectorStore>>,
     pub tree_store: Option<Arc<dyn TreeStore>>,
-    pub document_registry: Arc<dyn DocumentRegistry>,
+    pub version_store: Arc<dyn DocumentVersionStore>,
+    pub snapshot_store: Arc<dyn SnapshotStore>,
 }
 
 impl std::fmt::Debug for ArcanumEngine {
@@ -108,7 +110,8 @@ pub struct ArcanumEngineBuilder {
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
     bm25_index: Option<Arc<Bm25Index>>,
-    document_registry: Option<Arc<dyn DocumentRegistry>>,
+    version_store: Option<Arc<dyn DocumentVersionStore>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
 }
 
 fn resolve_chunkers(
@@ -146,7 +149,8 @@ impl Default for ArcanumEngineBuilder {
             tree_store: None,
             secret_store: None,
             bm25_index: None,
-            document_registry: None,
+            version_store: None,
+            snapshot_store: None,
         }
     }
 }
@@ -208,8 +212,13 @@ impl ArcanumEngineBuilder {
         self
     }
 
-    pub fn document_registry(mut self, registry: Arc<dyn DocumentRegistry>) -> Self {
-        self.document_registry = Some(registry);
+    pub fn version_store(mut self, store: Arc<dyn DocumentVersionStore>) -> Self {
+        self.version_store = Some(store);
+        self
+    }
+
+    pub fn snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
         self
     }
 
@@ -282,9 +291,15 @@ impl ArcanumEngineBuilder {
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
-                document_registry: self.document_registry
+                version_store:     self.version_store.clone().ok_or_else(|| ArcanumError::Config(
+                    "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
+                     for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
+                ))?,
+                snapshot_store:    self.snapshot_store
                     .clone()
-                    .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
+                    .unwrap_or_else(|| {
+                        Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
+                    }),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
@@ -433,9 +448,15 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
-            document_registry: self.document_registry
+            version_store: self.version_store.clone().ok_or_else(|| ArcanumError::Config(
+                "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
+                 for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
+            ))?,
+            snapshot_store: self.snapshot_store
                 .clone()
-                .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
+                .unwrap_or_else(|| {
+                    Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
+                }),
         }))
     }
 }
@@ -485,6 +506,7 @@ mod tests {
             .vector_store(Arc::new(FakeVectorStore))
             .embedder(Arc::new(FakeEmbedder))
             .enricher(Arc::new(FakeEnricher))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build().await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
     }
@@ -510,6 +532,7 @@ mod tests {
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .secret_store(store.clone())
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
             .expect("build should succeed");
@@ -530,6 +553,7 @@ mod builder_tests {
         config.retrieval.orchestration_mode = mode;
         ArcanumEngineBuilder::new(config)
             .with_auth_secret("a-32-char-test-secret-for-testing!!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
             .is_ok()

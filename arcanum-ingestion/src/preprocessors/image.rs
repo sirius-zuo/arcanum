@@ -1,4 +1,4 @@
-use arcanum_core::{traits::{Preprocessor, TextEnricher}, types::*, Result};
+use arcanum_core::{traits::{Preprocessor, TextEnricher}, types::{EnrichIntent, EnrichRequest, RawDocument}, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 use std::sync::Arc;
@@ -63,7 +63,7 @@ impl Preprocessor for ImageCaptioner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arcanum_core::Result as ArcanumResult;
+    use arcanum_core::{Result as ArcanumResult, types::EnrichedText};
 
     struct FakeCaptioner;
 
@@ -78,13 +78,7 @@ mod tests {
     async fn test_image_captioner_uses_alt_text() {
         let captioner = ImageCaptioner::new(Arc::new(FakeCaptioner));
         let html = r#"<html><body><img src="photo.jpg" alt="A cat sitting"/><p>Some text</p></body></html>"#;
-        let doc = RawDocument {
-            id: DocumentId::new(),
-            content: html.as_bytes().to_vec(),
-            mime_type: "text/html".to_string(),
-            source_uri: "test://x.html".to_string(),
-            metadata: Default::default(),
-        };
+        let doc = RawDocument::for_test(html, "text/html");
         let result = captioner.process(doc).await.unwrap();
         let text = String::from_utf8(result.content).unwrap();
         assert!(text.contains("A cat sitting"));
@@ -94,13 +88,7 @@ mod tests {
     async fn test_image_captioner_calls_enricher_when_no_alt() {
         let captioner = ImageCaptioner::new(Arc::new(FakeCaptioner));
         let html = r#"<html><body><img src="diagram.png"/></body></html>"#;
-        let doc = RawDocument {
-            id: DocumentId::new(),
-            content: html.as_bytes().to_vec(),
-            mime_type: "text/html".to_string(),
-            source_uri: "test://x.html".to_string(),
-            metadata: Default::default(),
-        };
+        let doc = RawDocument::for_test(html, "text/html");
         let result = captioner.process(doc).await.unwrap();
         let text = String::from_utf8(result.content).unwrap();
         assert!(text.contains("caption of diagram.png"));
@@ -109,13 +97,7 @@ mod tests {
     #[tokio::test]
     async fn test_image_captioner_passes_through_non_html() {
         let captioner = ImageCaptioner::new(Arc::new(FakeCaptioner));
-        let doc = RawDocument {
-            id: DocumentId::new(),
-            content: b"plain text".to_vec(),
-            mime_type: "text/plain".to_string(),
-            source_uri: "test://x".to_string(),
-            metadata: Default::default(),
-        };
+        let doc = RawDocument::for_test("plain text", "text/plain");
         let result = captioner.process(doc).await.unwrap();
         assert_eq!(result.content, b"plain text");
     }

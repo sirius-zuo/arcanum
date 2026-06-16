@@ -53,7 +53,7 @@ impl EntityExtractor {
             let src = entity_map.get(&r.source)?.clone();
             let tgt = entity_map.get(&r.target)?.clone();
             Some(Relation { source: src, relation_type: r.relation, target: tgt,
-                            confidence: 0.9, source_chunk: chunk.id.clone() })
+                            confidence: 0.9, source_chunks: vec![chunk.id.clone()] })
         }).collect();
 
         tracing::Span::current().record("entity_count", entities.len());

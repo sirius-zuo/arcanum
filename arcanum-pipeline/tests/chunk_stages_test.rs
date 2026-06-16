@@ -28,12 +28,19 @@ fn make_state(doc: RawDocument) -> Arc<Mutex<IngestionState>> {
             uri: doc.source_uri.clone(),
         },
         collection_id: CollectionId("test-collection".into()),
-        doc: Some(doc),
+        doc: Some(doc.clone()),
         chunks: vec![],
         graph_chunks: vec![],
         tree_chunks: vec![],
         vectors: vec![],
         tree_vectors: vec![],
+        raw_content:   Some(doc.content.clone()),
+        canonical_json: None,
+        snapshot_document_id: None,
+        snapshot_version_num: None,
+        snapshot_uri: None,
+        canonical_uri: None,
+        pending_version: None,
     }))
 }
 
@@ -222,6 +229,7 @@ async fn shadow_write_ctx_writes_to_shadow_namespace() {
                 collection_id: CollectionId("placeholder".into()),
                 position: ChunkPosition { start: 0, end: doc.content.len(), index: 0 },
                 metadata: ChunkMetadata::default(),
+                provenance: Default::default(),
             }])
         }
     }
@@ -309,6 +317,13 @@ async fn raptor_build_uses_tree_vectors_not_vector_embeddings() {
         }),
         chunks:       vec![],
         graph_chunks: vec![],
+        raw_content:   Some(b"hello".to_vec()),
+        canonical_json: None,
+        snapshot_document_id: None,
+        snapshot_version_num: None,
+        snapshot_uri: None,
+        canonical_uri: None,
+        pending_version: None,
         // tree_chunks has 2 entries
         tree_chunks: tree_chunk_texts.iter().map(|t| Chunk {
             id: ChunkId::new(),
@@ -317,6 +332,7 @@ async fn raptor_build_uses_tree_vectors_not_vector_embeddings() {
             collection_id: CollectionId("col".into()),
             position: ChunkPosition { start: 0, end: t.len(), index: 0 },
             metadata: ChunkMetadata::default(),
+                provenance: Default::default(),
         }).collect(),
         vectors:       vec![Vector(vec![99.0]), Vector(vec![99.0])],  // 2 wrong vector embeddings
         tree_vectors:  vec![],  // will be filled by tree_embed_stage

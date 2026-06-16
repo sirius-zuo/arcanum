@@ -27,6 +27,7 @@ impl Chunker for SemanticChunker {
                         collection_id: CollectionId("default".into()),
                         position: ChunkPosition { start, end: start + trimmed.len(), index },
                         metadata: ChunkMetadata::default(),
+                        provenance: Default::default(),
                     });
                     index += 1;
                 }
@@ -43,6 +44,7 @@ impl Chunker for SemanticChunker {
                 collection_id: CollectionId("default".into()),
                 position: ChunkPosition { start, end: start + current.len(), index },
                 metadata: ChunkMetadata::default(),
+                provenance: Default::default(),
             });
         }
         tracing::Span::current().record("chunk_count", chunks.len());

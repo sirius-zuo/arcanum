@@ -22,6 +22,7 @@ fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str)
         collection_id: CollectionId("default".into()),
         position: ChunkPosition { start, end, index },
         metadata: ChunkMetadata::default(),
+        provenance: Default::default(),
     }
 }
 

@@ -34,6 +34,7 @@ impl Chunker for FixedSizeChunker {
                     collection_id: CollectionId("default".into()),
                     position: ChunkPosition { start, end, index },
                     metadata: ChunkMetadata::default(),
+                    provenance: Default::default(),
                 });
                 index += 1;
             }

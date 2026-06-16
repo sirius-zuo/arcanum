@@ -107,6 +107,7 @@ mod tests {
                         collection_id: col,
                         position: ChunkPosition { start: 0, end: 11, index: 0 },
                         metadata: ChunkMetadata::default(),
+                provenance: Default::default(),
                     },
                     vector: Vector(vec![]),
                     token_vectors: None,

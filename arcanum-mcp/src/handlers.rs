@@ -193,6 +193,7 @@ mod tests {
     async fn test_engine() -> Arc<ArcanumEngine> {
         ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
             .expect("engine build should succeed")

@@ -17,40 +17,51 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     }
 
     #[instrument(skip(self, leaf_chunks), fields(collection, input_chunk_count = leaf_chunks.len(), max_depth = self.max_depth), err)]
-    pub async fn build(&self, collection: &str, source_uri: &str, leaf_chunks: Vec<(String, Vector)>) -> Result<()> {
-        for (text, vector) in &leaf_chunks {
+    pub async fn build(&self, collection: &str, source_uri: &str, leaf_chunks: Vec<(ChunkId, String, Vector)>) -> Result<()> {
+        // Store level-0 leaf nodes with their chunk IDs.
+        for (chunk_id, text, vector) in &leaf_chunks {
             let node = TreeNode {
                 id: TreeNodeId::new(), level: 0,
                 text: text.clone(), vector: vector.clone(),
                 parent: None, children: vec![],
                 cluster_centroid: None,
                 source_uri: source_uri.to_string(),
+                leaf_chunk_ids: vec![chunk_id.clone()],
             };
             self.store.insert_node(collection, node).await?;
         }
 
-        let mut current_level_vecs: Vec<(String, Vector)> = leaf_chunks;
+        // Track (text, vector, leaf_chunk_ids) for each level.
+        let mut current_level: Vec<(String, Vector, Vec<ChunkId>)> = leaf_chunks
+            .into_iter()
+            .map(|(id, text, vec)| (text, vec, vec![id]))
+            .collect();
+
         for level in 1..=self.max_depth {
-            if current_level_vecs.len() <= 1 { break; }
-            let vectors: Vec<Vector> = current_level_vecs.iter().map(|c| c.1.clone()).collect();
-            let k = ((current_level_vecs.len() as f64).sqrt().ceil() as usize).max(2);
+            if current_level.len() <= 1 { break; }
+            let vectors: Vec<Vector> = current_level.iter().map(|(_, v, _)| v.clone()).collect();
+            let k = ((current_level.len() as f64).sqrt().ceil() as usize).max(2);
             let clusters_indices = kmeans_cluster(&vectors, k);
             let mut next_level = vec![];
             for group_indices in &clusters_indices {
-                let group: Vec<_> = group_indices.iter().map(|&i| &current_level_vecs[i]).collect();
+                let group: Vec<_> = group_indices.iter().map(|&i| &current_level[i]).collect();
                 let summary = format!("{} chunks clustered at level {}", group.len(), level);
-                let centroid = self.centroid(&group.iter().map(|(t, v)| (t.clone(), v.clone())).collect::<Vec<_>>());
+                let centroid = self.centroid(&group.iter().map(|(t, v, _)| (t.clone(), v.clone())).collect::<Vec<_>>());
+                let leaf_chunk_ids: Vec<ChunkId> = group.iter()
+                    .flat_map(|(_, _, ids)| ids.iter().cloned())
+                    .collect();
                 let node = TreeNode {
                     id: TreeNodeId::new(), level,
                     text: summary.clone(), vector: centroid.clone(),
                     parent: None, children: vec![],
                     cluster_centroid: Some(centroid.clone()),
                     source_uri: source_uri.to_string(),
+                    leaf_chunk_ids: leaf_chunk_ids.clone(),
                 };
                 self.store.insert_node(collection, node).await?;
-                next_level.push((summary, centroid));
+                next_level.push((summary, centroid, leaf_chunk_ids));
             }
-            current_level_vecs = next_level;
+            current_level = next_level;
         }
         Ok(())
     }

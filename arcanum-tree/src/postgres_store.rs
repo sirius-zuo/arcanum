@@ -21,14 +21,16 @@ impl PgTreeStore {
     async fn ensure_schema(&self) -> Result<()> {
         sqlx::query(r#"
             CREATE TABLE IF NOT EXISTS arcanum_tree_nodes (
-                id          UUID PRIMARY KEY,
-                collection  TEXT NOT NULL,
-                level       INTEGER NOT NULL,
-                text        TEXT NOT NULL,
-                vector      JSONB NOT NULL,
-                centroid    JSONB,
-                parent_id   UUID,
-                children    JSONB NOT NULL DEFAULT '[]'
+                id             UUID PRIMARY KEY,
+                collection     TEXT NOT NULL,
+                level          INTEGER NOT NULL,
+                text           TEXT NOT NULL,
+                vector         JSONB NOT NULL,
+                centroid       JSONB,
+                parent_id      UUID,
+                children       JSONB NOT NULL DEFAULT '[]',
+                source_uri     TEXT NOT NULL DEFAULT '',
+                leaf_chunk_ids JSONB NOT NULL DEFAULT '[]'
             )
         "#)
         .execute(&self.pool)
@@ -40,10 +42,15 @@ impl PgTreeStore {
             .await
             .map_err(|e| ArcanumError::Storage(format!("ensure_schema index error: {}", e)))?;
 
+        // Add columns if they don't exist (backward compat for older schemas).
         sqlx::query("ALTER TABLE arcanum_tree_nodes ADD COLUMN IF NOT EXISTS source_uri TEXT NOT NULL DEFAULT ''")
             .execute(&self.pool)
             .await
-            .map_err(|e| ArcanumError::Storage(format!("ensure_schema alter: {}", e)))?;
+            .ok();
+        sqlx::query("ALTER TABLE arcanum_tree_nodes ADD COLUMN IF NOT EXISTS leaf_chunk_ids JSONB NOT NULL DEFAULT '[]'")
+            .execute(&self.pool)
+            .await
+            .ok();
 
         sqlx::query(r#"
             CREATE TABLE IF NOT EXISTS arcanum_tree_collections (
@@ -74,17 +81,18 @@ impl TreeStore for PgTreeStore {
             .map_err(|e| ArcanumError::Storage(format!("serialize children: {}", e)))?;
 
         sqlx::query(r#"
-            INSERT INTO arcanum_tree_nodes (id, collection, level, text, vector, centroid, parent_id, children, source_uri)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO arcanum_tree_nodes (id, collection, level, text, vector, centroid, parent_id, children, source_uri, leaf_chunk_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             ON CONFLICT (id) DO UPDATE SET
-                collection = EXCLUDED.collection,
-                level      = EXCLUDED.level,
-                text       = EXCLUDED.text,
-                vector     = EXCLUDED.vector,
-                centroid   = EXCLUDED.centroid,
-                parent_id  = EXCLUDED.parent_id,
-                children   = EXCLUDED.children,
-                source_uri = EXCLUDED.source_uri
+                collection     = EXCLUDED.collection,
+                level          = EXCLUDED.level,
+                text           = EXCLUDED.text,
+                vector         = EXCLUDED.vector,
+                centroid       = EXCLUDED.centroid,
+                parent_id      = EXCLUDED.parent_id,
+                children       = EXCLUDED.children,
+                source_uri     = EXCLUDED.source_uri,
+                leaf_chunk_ids = EXCLUDED.leaf_chunk_ids
         "#)
         .bind(id)
         .bind(collection)
@@ -95,6 +103,8 @@ impl TreeStore for PgTreeStore {
         .bind(parent_id)
         .bind(children_json)
         .bind(&node.source_uri)
+        .bind(serde_json::to_value(&node.leaf_chunk_ids)
+            .map_err(|e| ArcanumError::Storage(format!("serialize leaf_chunk_ids: {}", e)))?)
         .execute(&self.pool)
         .await
         .map_err(|e| ArcanumError::Storage(format!("insert_node error: {}", e)))?;
@@ -105,7 +115,7 @@ impl TreeStore for PgTreeStore {
     #[instrument(skip(self), fields(store = "postgres_tree", collection, level), err)]
     async fn get_level(&self, collection: &str, level: u32) -> Result<Vec<TreeNode>> {
         let rows = sqlx::query_as::<_, PgTreeNodeRow>(
-            "SELECT id, level, text, vector, centroid, parent_id, children, source_uri FROM arcanum_tree_nodes WHERE collection = $1 AND level = $2"
+            "SELECT id, level, text, vector, centroid, parent_id, children, source_uri, leaf_chunk_ids FROM arcanum_tree_nodes WHERE collection = $1 AND level = $2"
         )
         .bind(collection)
         .bind(level as i32)
@@ -198,7 +208,7 @@ impl TreeStore for PgTreeStore {
     #[instrument(skip(self, node_id), fields(store = "postgres_tree", node_id = %node_id.0), err)]
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>> {
         let rows = sqlx::query_as::<_, PgTreeNodeRow>(
-            "SELECT id, level, text, vector, centroid, parent_id, children, source_uri FROM arcanum_tree_nodes WHERE parent_id = $1"
+            "SELECT id, level, text, vector, centroid, parent_id, children, source_uri, leaf_chunk_ids FROM arcanum_tree_nodes WHERE parent_id = $1"
         )
         .bind(node_id.0)
         .fetch_all(&self.pool)
@@ -219,6 +229,7 @@ struct PgTreeNodeRow {
     parent_id: Option<Uuid>,
     children: serde_json::Value,
     source_uri: String,
+    leaf_chunk_ids: serde_json::Value,
 }
 
 fn row_to_node(row: PgTreeNodeRow) -> Result<TreeNode> {
@@ -231,6 +242,9 @@ fn row_to_node(row: PgTreeNodeRow) -> Result<TreeNode> {
     let children: Vec<TreeNodeId> = serde_json::from_value(row.children)
         .map_err(|e| ArcanumError::Storage(format!("deserialize children: {}", e)))?;
 
+    let leaf_chunk_ids: Vec<ChunkId> = serde_json::from_value(row.leaf_chunk_ids)
+        .map_err(|e| ArcanumError::Storage(format!("deserialize leaf_chunk_ids: {}", e)))?;
+
     Ok(TreeNode {
         id: TreeNodeId(row.id),
         level: row.level as u32,
@@ -240,6 +254,7 @@ fn row_to_node(row: PgTreeNodeRow) -> Result<TreeNode> {
         children,
         cluster_centroid,
         source_uri: row.source_uri,
+        leaf_chunk_ids,
     })
 }
 
@@ -272,6 +287,7 @@ mod tests {
             children: vec![],
             cluster_centroid: None,
             source_uri: "".to_string(),
+            leaf_chunk_ids: vec![],
         };
         store.insert_node("test_collection", node).await.expect("insert");
 

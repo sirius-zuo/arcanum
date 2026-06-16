@@ -1,5 +1,7 @@
 use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_core::config::*;
+use arcanum_core::traits::NoOpDocumentVersionStore;
+use std::sync::Arc;
 
 const TEST_SECRET: &str = "a-32-char-test-secret-for-testing!!";
 
@@ -20,6 +22,7 @@ async fn test_engine_build_succeeds_in_development() {
     let cfg = ArcanumConfig::default();
     let engine = ArcanumEngineBuilder::new(cfg)
         .with_auth_secret(TEST_SECRET)
+        .version_store(Arc::new(NoOpDocumentVersionStore))
         .build().await;
     assert!(engine.is_ok());
 }

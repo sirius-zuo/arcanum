@@ -19,15 +19,20 @@ pub fn builder() -> TemplateBuilder {
             Some(enricher) => {
                 PipelineDAG::new()
                     .add_stage(make_load_stage(state.clone(), deps.loaders.clone()))
-                    .add_stage(make_dedup_stage(state.clone(), deps.document_registry.clone()))
+                    .add_stage(make_dedup_stage(state.clone(), deps.version_store.clone()))
                     .add_stage(make_cleanup_stage(
                         state.clone(),
-                        deps.document_registry.clone(),
+                        deps.version_store.clone(),
                         deps.vector_store.clone(),
                         deps.graph_store.clone(),
                         deps.tree_store.clone(),
                     ))
                     .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
+                    .add_stage(make_snapshot_stage(
+                        state.clone(),
+                        deps.version_store.clone(),
+                        deps.snapshot_store.clone(),
+                    ))
                     .add_stage(make_vector_chunk_stage(
                         state.clone(),
                         deps.chunkers.vector.clone(),
@@ -44,6 +49,7 @@ pub fn builder() -> TemplateBuilder {
                     .add_stage(make_context_enrich_stage(state.clone(), enricher.clone()))
                     .add_stage(make_embed_stage_after("context_enrich", state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()))
                     .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone()))
+                    .add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()))
             }
         }
     })
