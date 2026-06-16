@@ -407,6 +407,65 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         .map_err(|e| ArcanumError::Storage(format!("delete by source_uri: {}", e)))?;
         Ok(())
     }
+
+    #[instrument(skip(self), fields(store = "postgres_version", doc_id = %document_id.0, version = version_num), err)]
+    async fn get_version(
+        &self,
+        document_id: &DocumentId,
+        version_num: u32,
+    ) -> Result<Option<DocumentVersion>> {
+        let row: Option<VersionRow> = sqlx::query_as::<_, VersionRow>(
+            r#"SELECT document_id, version_num, content_hash, snapshot_uri, canonical_uri, mime_type,
+                      status, ingested_at, extra
+               FROM document_versions
+               WHERE document_id = $1 AND version_num = $2"#
+        )
+        .bind(document_id.0)
+        .bind(version_num as i32)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get_version postgres: {}", e)))?;
+
+        let Some(r) = row else { return Ok(None) };
+
+        let sd_row: Option<(String, String,)> = sqlx::query_as(
+            "SELECT source_uri, collection_id FROM source_documents WHERE document_id = $1"
+        )
+        .bind(document_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get_version source_doc: {}", e)))?;
+
+        let (source_uri, collection_id) = sd_row
+            .map(|(s, c)| (s, c))
+            .unwrap_or_default();
+
+        let status = match r.status.as_str() {
+            "active" => VersionStatus::Active,
+            "superseded" => VersionStatus::Superseded,
+            "deleted" => VersionStatus::Deleted,
+            _ => VersionStatus::Active,
+        };
+        let extra: HashMap<String, serde_json::Value> = r.extra
+            .as_ref()
+            .and_then(|v| v.as_object())
+            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default();
+
+        Ok(Some(DocumentVersion {
+            document_id:   DocumentId(r.document_id),
+            version_num:   r.version_num as u32,
+            source_uri,
+            collection_id,
+            content_hash:  r.content_hash,
+            snapshot_uri:  r.snapshot_uri,
+            canonical_uri: r.canonical_uri,
+            mime_type:     r.mime_type,
+            status,
+            ingested_at:   r.ingested_at,
+            extra,
+        }))
+    }
 }
 
 #[derive(sqlx::FromRow)]

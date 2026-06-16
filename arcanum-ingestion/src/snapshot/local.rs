@@ -110,6 +110,21 @@ impl SnapshotStore for LocalSnapshotStore {
             .map(Some)
             .map_err(|e| ArcanumError::Storage(format!("parse canonical snapshot: {e}")))
     }
+
+    #[instrument(skip(self), fields(store = "local_snapshot", raw_uri), err)]
+    async fn delete(&self, raw_uri: &str, canonical_uri: Option<&str>) -> Result<()> {
+        let raw_path = raw_uri
+            .strip_prefix("file://")
+            .ok_or_else(|| ArcanumError::Storage(format!("unsupported URI scheme: {raw_uri}")))?;
+        tokio::fs::remove_file(raw_path).await
+            .map_err(|e| ArcanumError::Storage(format!("delete raw snapshot: {e}")))?;
+        if let Some(u) = canonical_uri {
+            let canon_path = u.strip_prefix("file://")
+                .ok_or_else(|| ArcanumError::Storage(format!("unsupported URI scheme: {u}")))?;
+            let _ = tokio::fs::remove_file(canon_path).await;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

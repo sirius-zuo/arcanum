@@ -357,6 +357,35 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
         .map_err(|e| ArcanumError::Storage(format!("delete by source_uri: {}", e)))?;
         Ok(())
     }
+
+    #[instrument(skip(self), fields(store = "sqlite_version", doc_id = %document_id.0, version = version_num), err)]
+    async fn get_version(
+        &self,
+        document_id: &DocumentId,
+        version_num: u32,
+    ) -> Result<Option<DocumentVersion>> {
+        let doc_id_str = document_id.0.to_string();
+        let vnum = version_num as i64;
+
+        let row = sqlx::query_as::<_, SqVersionRow>(
+            "SELECT document_id, version_num, content_hash, snapshot_uri, canonical_uri, mime_type, status, ingested_at, extra FROM document_versions WHERE document_id = $1 AND version_num = $2"
+        )
+        .bind(&doc_id_str).bind(vnum)
+        .fetch_optional(&self.pool).await
+        .map_err(|e| ArcanumError::Storage(format!("get_version sqlite: {}", e)))?;
+
+        let Some(r) = row else { return Ok(None) };
+
+        let sd: Option<(String, String,)> = sqlx::query_as(
+            "SELECT source_uri, collection_id FROM source_documents WHERE document_id = $1"
+        )
+        .bind(&doc_id_str)
+        .fetch_optional(&self.pool).await
+        .map_err(|e| ArcanumError::Storage(format!("get_version source_doc: {}", e)))?;
+
+        let (source_uri, collection_id) = sd.unwrap_or_default();
+        row_to_version(r, &source_uri, &collection_id).map(Some)
+    }
 }
 
 #[cfg(test)]
@@ -472,5 +501,35 @@ mod tests {
         store.delete_by_source_uri("col-d", "file://delete-me.md").await.unwrap();
         let result = store.get_latest("file://delete-me.md", "col-d").await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_get_version_returns_added_version() {
+        let store = make_store().await;
+        let doc_id = DocumentId::new();
+        let version = DocumentVersion {
+            document_id:   doc_id.clone(),
+            version_num:   1,
+            source_uri:    "file://doc.pdf".into(),
+            collection_id: "col".into(),
+            content_hash:  "abc123".into(),
+            snapshot_uri:  "file:///snapshots/doc/1.raw".into(),
+            canonical_uri: None,
+            mime_type:     "application/pdf".into(),
+            status:        VersionStatus::Active,
+            ingested_at:   chrono::Utc::now(),
+            extra:         Default::default(),
+        };
+        store.add_version(version).await.unwrap();
+        let found = store.get_version(&doc_id, 1).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().content_hash, "abc123");
+    }
+
+    #[tokio::test]
+    async fn test_get_version_returns_none_for_missing() {
+        let store = make_store().await;
+        let found = store.get_version(&DocumentId::new(), 99).await.unwrap();
+        assert!(found.is_none());
     }
 }
