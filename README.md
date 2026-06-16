@@ -14,6 +14,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Per-backend chunking** — vector, graph, and tree backends each run their own chunker. A knowledge graph benefits from hierarchical chunks; a vector index benefits from semantic coherence. Both are first-class.
 - **Chunk strategy experimentation built-in** — shadow experiments A/B-test a challenger chunking strategy against the live collection without affecting queries. An offline benchmark harness and an inspect API let you measure before you commit.
 - **Hexagonal architecture enforced at the type level** — every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
+- **Built-in evidence layer** — every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
 - **Compiled, not interpreted** — the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
 - **Native MCP server** — Claude and other AI assistants can call `search`, `ingest`, `list_collections`, and `eval_run` over JSON-RPC 2.0 directly, without a separate integration layer.
 - **Three runtime tiers** — the same binary runs in `Development` (SQLite, in-memory stores), `Production` (Postgres + LanceDB/Neo4j), or `Enterprise` (full RBAC + audit retention + secret rotation) mode, enforced at startup.
@@ -74,6 +75,7 @@ The 15-crate workspace maps cleanly to layers:
 |---|---|
 | **Domain core** | `arcanum-core`, `arcanum-engine` |
 | **Ingestion** | `arcanum-ingestion`, `arcanum-pipeline` |
+| **Evidence & provenance** | `arcanum-evidence` |
 | **Retrieval** | `arcanum-retrieval`, `arcanum-eval` |
 | **Chunk evaluation** | `arcanum-chunk-eval` |
 | **Storage adapters** | `arcanum-vector`, `arcanum-graph`, `arcanum-tree` |
@@ -200,6 +202,77 @@ Stages are opt-in based on what is present on the engine. If no `graph_store` is
 ### Document Deduplication
 
 A `DocumentRegistry` tracks each `(source_uri, collection_id)` pair. On re-ingest, the pipeline compares content hashes and skips unchanged documents, replaces changed ones (cleaning stale chunks first), and handles interrupted-cleanup recovery via a `Replacing` status.
+
+---
+
+## Evidence & Provenance
+
+Every retrievable unit — a vector chunk, a RAPTOR tree summary, a graph entity, a graph relation — can be traced back to the exact document version and byte range it came from. This answers "where did this come from?" for compliance, debugging, and citation use cases.
+
+### Document Versioning
+
+`DocumentVersionStore` tracks every ingested version of a `(source_uri, collection_id)` pair, gated by a per-collection `VersioningPolicy`:
+
+| Policy | Behaviour |
+|---|---|
+| `Replace` (default) | Re-ingesting supersedes the prior version; only the latest is queryable |
+| `AppendOnly` | All versions remain `Active` indefinitely |
+| `RetentionBased { days }` | Superseded versions are kept for `days`, then garbage-collected |
+
+`SnapshotStore` persists the raw bytes (and an optional canonical JSON sidecar) for each version, so the original document can always be re-fetched — not just the chunks derived from it. `ChunkMetadataStore` records, per chunk, the `document_id`, `version_num`, `source_uri`, `snapshot_uri`, `page`/`section`/`block_ids`, and exact `offset_start`/`offset_end` in the source document — written alongside the vector store during ingestion.
+
+### Resolving Evidence
+
+`EvidenceResolver` (implemented by `DefaultEvidenceResolver` in `arcanum-evidence`) turns an ID into a `ProofChain`:
+
+```rust
+pub struct ProofChain {
+    pub root:        ProofNode,        // the resolved unit, with nested children
+    pub raw_sources: Vec<RawSourceRef>, // every underlying document span cited
+}
+```
+
+- `resolve_chunk(chunk_id)` — looks up `ChunkMetadataRecord`, cross-checks the version is still `Active` (flagged in the response if not), and returns a single-source `ProofChain`.
+- `resolve_tree_node(node_id)` — fans out to every leaf chunk under a RAPTOR summary node.
+- `resolve_entity(entity_id)` / `resolve_relation(source, type, target)` — fans out to every chunk a graph entity or relation was extracted from.
+
+```http
+GET /evidence/chunk/{chunk_id}
+GET /evidence/tree-node/{node_id}
+GET /evidence/entity/{entity_id}
+GET /evidence/relation/{source_id}/{relation_type}/{target_id}
+```
+
+All four require a Bearer token and return `404` if the ID is unresolvable, `503` if no resolver is wired.
+
+### Retention & Garbage Collection
+
+For collections using `RetentionBased` policy, `GcWorker` (implemented by `PostgresGcWorker`) purges superseded versions once their retention window expires — removing the snapshot, vector chunks, tree nodes, graph entities, and chunk metadata for that specific version, without touching any other version that happens to share the same `source_uri`.
+
+```http
+POST /admin/gc
+Authorization: Bearer <admin-token>
+```
+
+Returns a `GcReport` (`versions_deleted`, `snapshots_removed`, `chunks_removed`, `errors`). Run it on a schedule (cron, k8s CronJob) for collections under retention policy.
+
+### Wiring
+
+```rust
+let engine = ArcanumEngine::builder()
+    // ...
+    .version_store(version_store)              // SqliteDocumentVersionStore (dev) / PostgresDocumentVersionStore (prod)
+    .snapshot_store(snapshot_store)             // LocalSnapshotStore / S3-backed
+    .chunk_metadata_store(chunk_metadata_store) // InMemoryChunkMetadataStore (dev) / PostgresChunkMetadataStore (prod)
+    .evidence(Arc::new(DefaultEvidenceResolver::new(
+        chunk_metadata_store.clone(), version_store.clone(), tree_store.clone(), graph_store.clone(),
+    )))
+    .gc_worker(gc_worker) // PostgresGcWorker — requires Postgres, production only
+    .build()
+    .await?;
+```
+
+`chunk_metadata_store`, `evidence`, and `gc_worker` are all optional — omit them and the `/evidence/*` routes return `503` and `/admin/gc` does too, with no other behaviour change. `GcWorker` requires Postgres for its bookkeeping (`document_versions` table), so there is no in-memory equivalent for local development.
 
 ---
 
@@ -513,6 +586,7 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 | `arcanum-ingestion` | Loaders, preprocessors (HTML/PDF/EPUB/DOCX + DoclingPreprocessor for PPTX/XLSX/images), chunkers, ChunkRegistry |
 | `arcanum-middleware` | Circuit breaker, retry policy, bounded queue |
 | `arcanum-pipeline` | DAG stage runner and built-in pipeline templates |
+| `arcanum-evidence` | `DefaultEvidenceResolver` — resolves chunks/tree nodes/entities/relations back to source documents |
 | `arcanum-retrieval` | Multi-strategy orchestrator and all Retriever impls |
 | `arcanum-eval` | Quality metrics, golden datasets, scheduled evaluation |
 | `arcanum-chunk-eval` | Chunk inspect API, offline benchmark harness, shadow experiment evaluation |

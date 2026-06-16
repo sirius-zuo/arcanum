@@ -703,13 +703,147 @@ cargo run -p arcanum-server
 | `DELETE` | `/api/v1/collections/:id/experiments/:exp_id` | Abandon experiment |
 | `POST` | `/api/v1/chunk/inspect` | Stateless strategy comparison |
 | `POST` | `/api/v1/chunk/benchmark` | Offline recall benchmark |
+| `GET` | `/evidence/chunk/:chunk_id` | Trace a chunk back to its source document |
+| `GET` | `/evidence/tree-node/:node_id` | Trace a RAPTOR tree node to its source chunks |
+| `GET` | `/evidence/entity/:entity_id` | Trace a graph entity to its source chunks |
+| `GET` | `/evidence/relation/:source_id/:relation_type/:target_id` | Trace a graph relation to its source chunks |
 | `GET` | `/ws/events` | WebSocket event subscription |
 | `POST` | `/admin/api-keys` | Issue API key |
 | `POST` | `/admin/rotate-keys` | Trigger secret reload |
+| `POST` | `/admin/gc` | Run retention-based garbage collection once |
 
 ---
 
-## 14. MCP Integration
+## 14. Evidence & Document Provenance
+
+Every chunk, RAPTOR tree summary, graph entity, and graph relation can be traced back to the document version and byte range it came from. This is what answers "show me the source" for a retrieved result — citations, compliance review, debugging a bad chunk.
+
+### How it fits together
+
+```
+Ingest ─→ snapshot (raw bytes + canonical JSON) ─→ chunk ─→ embed ─→ vector_write
+                │                                                        │
+                ▼                                                        ▼
+        DocumentVersionStore                                    ChunkMetadataStore
+   (document_id, version_num,                              (chunk_id → document_id,
+    status, content_hash)                                   version_num, source_uri,
+                                                              snapshot_uri, page/section,
+                                                              offset_start/offset_end)
+```
+
+`make_vector_write_stage` writes a `ChunkMetadataRecord` for every chunk right after the vector store upsert succeeds — never before, so a failed vector write can't leave orphaned metadata. The record carries the chunk's exact byte range in the source document (`ChunkPosition::start`/`end`), not just which document it came from.
+
+### Wiring it up
+
+Four new builder methods, all optional:
+
+```rust
+use arcanum_ingestion::{SqliteDocumentVersionStore, LocalSnapshotStore};
+use arcanum_core::traits::InMemoryChunkMetadataStore;
+use arcanum_evidence::DefaultEvidenceResolver;
+use std::sync::Arc;
+
+let version_store        = Arc::new(SqliteDocumentVersionStore::open("data/versions.db").await?);
+let snapshot_store        = Arc::new(LocalSnapshotStore::new("data/snapshots"));
+let chunk_metadata_store  = Arc::new(InMemoryChunkMetadataStore::new());
+
+let evidence_resolver = Arc::new(DefaultEvidenceResolver::new(
+    chunk_metadata_store.clone(),
+    version_store.clone(),
+    tree_store.clone(),   // reuses the same tree_store wired for RAPTOR
+    graph_store.clone(),  // reuses the same graph_store wired for graph retrieval
+));
+
+let engine = ArcanumEngine::builder()
+    // ...
+    .version_store(version_store)
+    .snapshot_store(snapshot_store)
+    .chunk_metadata_store(chunk_metadata_store)
+    .evidence(evidence_resolver)
+    .build()
+    .await?;
+```
+
+Production swaps: `SqliteDocumentVersionStore` → `PostgresDocumentVersionStore`, `InMemoryChunkMetadataStore` → `PostgresChunkMetadataStore`, `LocalSnapshotStore` → an S3-backed `SnapshotStore` impl. `DefaultEvidenceResolver` itself doesn't change — it only depends on the four trait objects, not their concrete backends.
+
+If you skip `.evidence(...)`, the `/evidence/*` routes return `503` rather than `404` or panicking — the rest of the engine is unaffected.
+
+### Versioning policy
+
+Set per collection via `DocumentVersionStore::set_versioning_policy`:
+
+| Policy | Behaviour | When to use |
+|---|---|---|
+| `Replace` (default) | Re-ingest supersedes the prior version immediately; only the latest is queryable | Most collections — content correction, no audit need |
+| `AppendOnly` | Every version stays `Active` forever | Regulatory record-keeping where nothing is ever deleted |
+| `RetentionBased { days }` | Superseded versions are kept for `days`, then GC'd | Audit trail with a bounded retention window |
+
+```rust
+engine.version_store.set_versioning_policy(
+    "legal-contracts",
+    VersioningPolicy::RetentionBased { days: 90 },
+).await?;
+```
+
+### Resolving evidence
+
+```rust
+let chain = engine.evidence.as_ref().unwrap()
+    .resolve_chunk(&chunk_id)
+    .await?;
+
+// chain.root         — ProofNode { kind: Chunk, label: "confluence://page/42 p.3 §3.2", .. }
+// chain.raw_sources  — Vec<RawSourceRef>, one per cited document span:
+//   document_id, version_num, source_uri, snapshot_uri, page, section,
+//   block_ids, offset_start, offset_end
+```
+
+`resolve_tree_node` / `resolve_entity` / `resolve_relation` work the same way but fan out: the returned `ProofNode.children` lists every chunk that contributed, and `raw_sources` is deduplicated by `(snapshot_uri, offset_start, offset_end)` so two children citing the exact same span don't produce duplicate citations — distinct spans from the same document are kept.
+
+`resolve_chunk` also cross-checks that the cited version is still `Active`; if it's been superseded or deleted (e.g. by GC), `chain.root.metadata.version_status` reports `"superseded"`, `"deleted"`, or `"unknown"` instead of silently returning stale evidence as if it were current.
+
+Via HTTP:
+
+```bash
+curl -H "Authorization: Bearer $TOKEN" /evidence/chunk/3f29...
+curl -H "Authorization: Bearer $TOKEN" /evidence/tree-node/8a01...
+curl -H "Authorization: Bearer $TOKEN" /evidence/entity/c402...
+curl -H "Authorization: Bearer $TOKEN" /evidence/relation/c402.../REPORTS_TO/9f11...
+```
+
+Each returns `200` with a `ProofChain`, `404` if the ID doesn't resolve, or `503` if no resolver is configured.
+
+### Garbage collection
+
+For `RetentionBased` collections, `GcWorker` removes the snapshot, vector chunks, tree nodes, graph entities, and chunk metadata for each superseded version once it ages past the retention window — scoped to that exact version, so an active version sharing the same `source_uri` is never touched.
+
+```rust
+use arcanum_ingestion::PostgresGcWorker;
+
+let gc_worker = Arc::new(PostgresGcWorker::new(
+    &db_url, version_store.clone(), snapshot_store.clone(), vector_store.clone(),
+    tree_store.clone(), graph_store.clone(), chunk_metadata_store.clone(),
+).await?);
+
+let engine = ArcanumEngine::builder()
+    // ...
+    .gc_worker(gc_worker)
+    .build()
+    .await?;
+```
+
+`PostgresGcWorker` requires Postgres — its bookkeeping query joins `document_versions` and `source_documents`, so there's no in-memory equivalent for local development. Trigger a pass on a schedule (cron, k8s CronJob):
+
+```bash
+curl -X POST /admin/gc -H "Authorization: Bearer $ADMIN_TOKEN"
+# → { "versions_deleted": 12, "snapshots_removed": 12, "chunks_removed": 340, "errors": [] }
+```
+
+A single version's deletion failure (e.g. a transient store error) is recorded in `errors` and that version stays `superseded` for retry on the next pass — the rest of the batch still completes.
+
+---
+
+## 15. MCP Integration
 
 Mount the MCP server alongside your HTTP server to expose search and ingestion to AI assistants:
 
@@ -739,7 +873,7 @@ Claude can then call `search`, `ingest`, `list_collections`, and `eval_run` dire
 
 ---
 
-## 15. Observability
+## 16. Observability
 
 `arcanum-telemetry` exposes structured traces and Prometheus-compatible metrics.
 
@@ -783,7 +917,7 @@ The Grafana dashboard stack ships in `arcanum-telemetry/grafana/`. Import the JS
 
 ---
 
-## 16. Production Deployment
+## 17. Production Deployment
 
 ### Docker
 
@@ -861,7 +995,7 @@ Use `/health/ready` as the Kubernetes readiness probe. It checks the vector stor
 
 ---
 
-## 17. Common Pitfalls
+## 18. Common Pitfalls
 
 **Changing chunker config without re-ingesting.** Updating a collection's `chunker_config` affects only future ingestion jobs. Existing chunks were produced by the old strategy and remain in the store. To apply the new strategy to existing documents, ingest them again with `force: true`. Shadow experiments exist precisely to validate a new strategy before committing to a full re-ingest.
 
