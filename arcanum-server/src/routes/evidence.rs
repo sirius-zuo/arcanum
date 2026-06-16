@@ -180,4 +180,85 @@ mod tests {
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
+
+    /// Engine present and authenticated, but no EvidenceResolver configured — this is the
+    /// common deployment state today (nothing wires DefaultEvidenceResolver in), and was
+    /// previously untested.
+    async fn build_authed_app_without_evidence() -> (axum::Router, String) {
+        use arcanum_core::traits::NoOpDocumentVersionStore;
+        use arcanum_engine::ArcanumEngine;
+        use std::sync::Arc;
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(NoOpDocumentVersionStore))
+            .build()
+            .await
+            .unwrap();
+        let token = engine.auth.generate_admin_key("tester");
+        (build_app(Some(engine)), token)
+    }
+
+    #[tokio::test]
+    async fn evidence_chunk_returns_503_when_resolver_not_configured() {
+        let (app, token) = build_authed_app_without_evidence().await;
+        let resp = app.oneshot(
+            Request::builder()
+                .uri("/evidence/chunk/00000000-0000-0000-0000-000000000001")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A resolver that's present (so the route gets past its 503 check) but whose methods
+    /// are never expected to be called in this test — a malformed UUID is rejected by
+    /// parse_chunk_id before resolve_chunk is ever invoked.
+    struct FakeResolver;
+
+    #[async_trait::async_trait]
+    impl arcanum_core::traits::EvidenceResolver for FakeResolver {
+        async fn resolve_chunk(&self, _: &arcanum_core::types::ChunkId) -> arcanum_core::Result<arcanum_core::types::ProofChain> {
+            Err(arcanum_core::ArcanumError::NotFound("unused in this test".into()))
+        }
+        async fn resolve_tree_node(&self, _: &arcanum_core::types::TreeNodeId) -> arcanum_core::Result<arcanum_core::types::ProofChain> {
+            Err(arcanum_core::ArcanumError::NotFound("unused in this test".into()))
+        }
+        async fn resolve_entity(&self, _: &arcanum_core::types::EntityId) -> arcanum_core::Result<arcanum_core::types::ProofChain> {
+            Err(arcanum_core::ArcanumError::NotFound("unused in this test".into()))
+        }
+        async fn resolve_relation(
+            &self,
+            _: &arcanum_core::types::EntityId,
+            _: &str,
+            _: &arcanum_core::types::EntityId,
+        ) -> arcanum_core::Result<arcanum_core::types::ProofChain> {
+            Err(arcanum_core::ArcanumError::NotFound("unused in this test".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn evidence_chunk_returns_400_for_malformed_uuid() {
+        use arcanum_core::traits::NoOpDocumentVersionStore;
+        use arcanum_engine::ArcanumEngine;
+        use std::sync::Arc;
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(NoOpDocumentVersionStore))
+            .evidence(Arc::new(FakeResolver))
+            .build()
+            .await
+            .unwrap();
+        let token = engine.auth.generate_admin_key("tester");
+        let app = build_app(Some(engine));
+
+        let resp = app.oneshot(
+            Request::builder()
+                .uri("/evidence/chunk/not-a-uuid")
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
 }

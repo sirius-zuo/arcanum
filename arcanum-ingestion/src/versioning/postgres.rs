@@ -165,12 +165,7 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
 
         match row {
             Some(r) => {
-                let status = match r.status.as_str() {
-                    "active" => VersionStatus::Active,
-                    "superseded" => VersionStatus::Superseded,
-                    "deleted" => VersionStatus::Deleted,
-                    _ => VersionStatus::Active,
-                };
+                let status = parse_version_status(&r.status)?;
                 let extra: std::collections::HashMap<String, serde_json::Value> = r.extra
                     .as_ref()
                     .and_then(|v| v.as_object())
@@ -295,12 +290,7 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         .map_err(|e| ArcanumError::Storage(format!("list versions: {}", e)))?;
 
         rows.into_iter().map(|r| {
-            let status = match r.status.as_str() {
-                "active" => VersionStatus::Active,
-                "superseded" => VersionStatus::Superseded,
-                "deleted" => VersionStatus::Deleted,
-                _ => VersionStatus::Active,
-            };
+            let status = parse_version_status(&r.status)?;
             let extra: HashMap<String, serde_json::Value> = r.extra
                 .as_ref()
                 .and_then(|v| v.as_object())
@@ -414,11 +404,31 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         document_id: &DocumentId,
         version_num: u32,
     ) -> Result<Option<DocumentVersion>> {
-        let row: Option<VersionRow> = sqlx::query_as::<_, VersionRow>(
-            r#"SELECT document_id, version_num, content_hash, snapshot_uri, canonical_uri, mime_type,
-                      status, ingested_at, extra
-               FROM document_versions
-               WHERE document_id = $1 AND version_num = $2"#
+        #[derive(sqlx::FromRow)]
+        struct GetVersionRow {
+            document_id:   uuid::Uuid,
+            version_num:   i32,
+            source_uri:    String,
+            collection_id: String,
+            content_hash:  String,
+            snapshot_uri:  String,
+            canonical_uri: Option<String>,
+            mime_type:     String,
+            status:        String,
+            ingested_at:   chrono::DateTime<Utc>,
+            extra:         Option<serde_json::Value>,
+        }
+
+        // Single JOIN (matching list_versions) instead of two sequential queries — avoids
+        // an extra round-trip and the race where source_documents could be deleted between
+        // the two queries, which previously surfaced as silently empty source_uri/collection_id.
+        let row = sqlx::query_as::<_, GetVersionRow>(
+            r#"SELECT dv.document_id, dv.version_num, sd.source_uri, sd.collection_id,
+                      dv.content_hash, dv.snapshot_uri, dv.canonical_uri, dv.mime_type,
+                      dv.status, dv.ingested_at, dv.extra
+               FROM document_versions dv
+               JOIN source_documents  sd ON sd.document_id = dv.document_id
+               WHERE dv.document_id = $1 AND dv.version_num = $2"#
         )
         .bind(document_id.0)
         .bind(version_num as i32)
@@ -428,24 +438,7 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
 
         let Some(r) = row else { return Ok(None) };
 
-        let sd_row: Option<(String, String,)> = sqlx::query_as(
-            "SELECT source_uri, collection_id FROM source_documents WHERE document_id = $1"
-        )
-        .bind(document_id.0)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("get_version source_doc: {}", e)))?;
-
-        let (source_uri, collection_id) = sd_row
-            .map(|(s, c)| (s, c))
-            .unwrap_or_default();
-
-        let status = match r.status.as_str() {
-            "active" => VersionStatus::Active,
-            "superseded" => VersionStatus::Superseded,
-            "deleted" => VersionStatus::Deleted,
-            _ => VersionStatus::Active,
-        };
+        let status = parse_version_status(&r.status)?;
         let extra: HashMap<String, serde_json::Value> = r.extra
             .as_ref()
             .and_then(|v| v.as_object())
@@ -455,8 +448,8 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         Ok(Some(DocumentVersion {
             document_id:   DocumentId(r.document_id),
             version_num:   r.version_num as u32,
-            source_uri,
-            collection_id,
+            source_uri:    r.source_uri,
+            collection_id: r.collection_id,
             content_hash:  r.content_hash,
             snapshot_uri:  r.snapshot_uri,
             canonical_uri: r.canonical_uri,
@@ -465,6 +458,18 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
             ingested_at:   r.ingested_at,
             extra,
         }))
+    }
+}
+
+/// Shared status decoder for the three places that read `document_versions.status`.
+/// Returns an error on an unrecognized value instead of silently defaulting to Active,
+/// so a future schema addition (e.g. a new status string) can't be misread as an active version.
+fn parse_version_status(s: &str) -> Result<VersionStatus> {
+    match s {
+        "active"     => Ok(VersionStatus::Active),
+        "superseded" => Ok(VersionStatus::Superseded),
+        "deleted"    => Ok(VersionStatus::Deleted),
+        other        => Err(ArcanumError::Storage(format!("unknown version status: {}", other))),
     }
 }
 

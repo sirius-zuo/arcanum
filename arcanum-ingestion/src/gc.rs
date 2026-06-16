@@ -1,10 +1,11 @@
 use arcanum_core::{
     traits::{ChunkMetadataStore, DocumentVersionStore, GcWorker, GraphStore, SnapshotStore, TreeStore, VectorStore},
-    types::{GcReport, VersionStatus, VersioningPolicy},
+    types::{DocumentId, GcReport, VersioningPolicy},
     ArcanumError, Result,
 };
 use async_trait::async_trait;
 use sqlx::PgPool;
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::instrument;
 
@@ -72,11 +73,20 @@ impl GcWorker for PostgresGcWorker {
 
         let now = chrono::Utc::now();
 
+        // Cache versioning policy per collection so we don't re-query it once per row.
+        let mut policy_cache: HashMap<String, VersioningPolicy> = HashMap::new();
+
         for row in &rows {
             // Step 2: Check if the collection has a RetentionBased policy that has expired.
-            let policy = self.version_store
-                .get_versioning_policy(&row.collection_id).await
-                .unwrap_or(VersioningPolicy::Replace);
+            let policy = if let Some(p) = policy_cache.get(&row.collection_id) {
+                p.clone()
+            } else {
+                let p = self.version_store
+                    .get_versioning_policy(&row.collection_id).await
+                    .unwrap_or(VersioningPolicy::Replace);
+                policy_cache.insert(row.collection_id.clone(), p.clone());
+                p
+            };
 
             let retention_days = match policy {
                 VersioningPolicy::RetentionBased { days } => days,
@@ -88,52 +98,90 @@ impl GcWorker for PostgresGcWorker {
                 continue; // Still within retention window.
             }
 
-            let doc_id_str   = row.document_id.to_string();
-            let version_num  = row.version_num as u32;
-            let collection   = &row.collection_id;
-            let source_uri   = &row.source_uri;
+            let doc_id      = DocumentId(row.document_id);
+            let doc_id_str  = row.document_id.to_string();
+            let version_num = row.version_num as u32;
+            let collection  = &row.collection_id;
+            let source_uri  = &row.source_uri;
 
             let mut version_errors: Vec<String> = vec![];
 
-            // a. Delete snapshot files.
+            // a. Delete snapshot files. Snapshot URIs are per-version, so this is always safe.
             if let Err(e) = self.snapshot_store.delete(&row.snapshot_uri, row.canonical_uri.as_deref()).await {
                 version_errors.push(format!("{}/v{}: snapshot delete: {}", doc_id_str, version_num, e));
             } else {
                 report.snapshots_removed += 1;
             }
 
-            // b. Delete vector chunks.
-            if let Err(e) = self.vector_store.delete_by_source_uri(collection, source_uri).await {
-                version_errors.push(format!("{}/v{}: vector delete: {}", doc_id_str, version_num, e));
-            } else {
-                report.chunks_removed += 1;
+            // b. Delete chunk_metadata rows scoped to this exact version, capturing the
+            // chunk IDs so the (version-unaware) vector store can be told precisely which
+            // chunks to remove instead of deleting every chunk for the shared source_uri.
+            let chunk_ids = match self.chunk_meta_store.delete_by_document_version(&doc_id, version_num).await {
+                Ok(ids) => Some(ids),
+                Err(e) => {
+                    version_errors.push(format!("{}/v{}: chunk_meta delete: {}", doc_id_str, version_num, e));
+                    None
+                }
+            };
+
+            // c. Delete vector chunks for exactly this version's chunk IDs.
+            if let Some(ids) = &chunk_ids {
+                if ids.is_empty() {
+                    report.chunks_removed += 0;
+                } else if let Err(e) = self.vector_store.delete(collection, ids).await {
+                    version_errors.push(format!("{}/v{}: vector delete: {}", doc_id_str, version_num, e));
+                } else {
+                    report.chunks_removed += ids.len() as u32;
+                }
             }
 
-            // c. Delete tree nodes.
-            if let Err(e) = self.tree_store.delete_by_source_uri(collection, source_uri).await {
-                version_errors.push(format!("{}/v{}: tree delete: {}", doc_id_str, version_num, e));
+            // d/e. Tree nodes and graph entities are only addressable by source_uri (no
+            // version-scoped delete exists for these stores). Since multiple versions of the
+            // same document share source_uri, blanket-deleting here would also remove an
+            // active or otherwise-retained version's data. Guard by checking whether any
+            // other non-deleted version still references this source_uri; if so, skip the
+            // destructive delete rather than risk corrupting live data.
+            let other_live_versions = sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM document_versions WHERE document_id = $1 AND version_num != $2 AND status != 'deleted'",
+            )
+            .bind(row.document_id)
+            .bind(version_num as i32)
+            .fetch_one(&self.pool).await;
+
+            match other_live_versions {
+                Ok(0) => {
+                    if let Err(e) = self.tree_store.delete_by_source_uri(collection, source_uri).await {
+                        version_errors.push(format!("{}/v{}: tree delete: {}", doc_id_str, version_num, e));
+                    }
+                    if let Err(e) = self.graph_store.delete_by_source_uri(collection, source_uri).await {
+                        version_errors.push(format!("{}/v{}: graph delete: {}", doc_id_str, version_num, e));
+                    }
+                }
+                Ok(_) => {
+                    tracing::info!(
+                        document_id = %doc_id_str, version_num,
+                        "skipping tree/graph delete — another live version shares this source_uri"
+                    );
+                }
+                Err(e) => {
+                    version_errors.push(format!("{}/v{}: live-version check: {}", doc_id_str, version_num, e));
+                }
             }
 
-            // d. Delete graph entities.
-            if let Err(e) = self.graph_store.delete_by_source_uri(collection, source_uri).await {
-                version_errors.push(format!("{}/v{}: graph delete: {}", doc_id_str, version_num, e));
-            }
-
-            // e. Delete chunk_metadata rows.
-            if let Err(e) = self.chunk_meta_store.delete_by_source_uri(collection, source_uri).await {
-                version_errors.push(format!("{}/v{}: chunk_meta delete: {}", doc_id_str, version_num, e));
-            }
-
-            // f. Mark version as deleted only if all store deletions succeeded.
+            // f. Mark version as deleted only if all store deletions succeeded. A failure here
+            // is recorded like any other step error rather than aborting the whole GC pass —
+            // the version remains superseded and will be retried on the next run.
             if version_errors.is_empty() {
-                sqlx::query(
+                match sqlx::query(
                     "UPDATE document_versions SET status = 'deleted' WHERE document_id = $1 AND version_num = $2",
                 )
                 .bind(row.document_id)
                 .bind(version_num as i32)
                 .execute(&self.pool).await
-                .map_err(|e| ArcanumError::Storage(format!("gc status update: {}", e)))?;
-                report.versions_deleted += 1;
+                {
+                    Ok(_)  => report.versions_deleted += 1,
+                    Err(e) => version_errors.push(format!("{}/v{}: status update: {}", doc_id_str, version_num, e)),
+                }
             }
 
             report.errors.extend(version_errors);
@@ -145,9 +193,6 @@ impl GcWorker for PostgresGcWorker {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use arcanum_core::ArcanumError;
-
     #[tokio::test]
     #[ignore = "requires Postgres — set TEST_DATABASE_URL"]
     async fn test_gc_skips_non_retention_policy() {

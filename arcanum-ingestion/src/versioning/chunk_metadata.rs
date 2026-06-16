@@ -20,8 +20,8 @@ struct ChunkMetadataRow {
     page:            Option<i32>,
     section:         Option<String>,
     block_ids:       serde_json::Value,
-    offset_start:    i32,
-    offset_end:      i32,
+    offset_start:    i64,
+    offset_end:      i64,
     ingested_at:     chrono::DateTime<Utc>,
 }
 
@@ -51,8 +51,8 @@ impl PostgresChunkMetadataStore {
                 page          INTEGER,
                 section       TEXT,
                 block_ids     JSONB       NOT NULL DEFAULT '[]',
-                offset_start  INTEGER     NOT NULL,
-                offset_end    INTEGER     NOT NULL,
+                offset_start  BIGINT      NOT NULL,
+                offset_end    BIGINT      NOT NULL,
                 ingested_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         "#).execute(&self.pool).await
@@ -61,6 +61,14 @@ impl PostgresChunkMetadataStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_chunk_meta_doc_ver ON chunk_metadata (document_id, version_num)")
             .execute(&self.pool).await.ok();
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_chunk_meta_col_uri ON chunk_metadata (collection_id, source_uri)")
+            .execute(&self.pool).await.ok();
+
+        // Widen existing deployments created before offsets moved from INTEGER to BIGINT
+        // (INTEGER silently truncated/wrapped offsets past 2^31, corrupting evidence spans
+        // for documents over ~2GB).
+        sqlx::query("ALTER TABLE chunk_metadata ALTER COLUMN offset_start TYPE BIGINT")
+            .execute(&self.pool).await.ok();
+        sqlx::query("ALTER TABLE chunk_metadata ALTER COLUMN offset_end TYPE BIGINT")
             .execute(&self.pool).await.ok();
 
         Ok(())
@@ -79,9 +87,15 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
                 canonical_uri, page, section, block_ids, offset_start, offset_end, ingested_at)
                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
                ON CONFLICT (chunk_id) DO UPDATE SET
+                 version_num   = EXCLUDED.version_num,
+                 source_uri    = EXCLUDED.source_uri,
                  snapshot_uri  = EXCLUDED.snapshot_uri,
                  canonical_uri = EXCLUDED.canonical_uri,
+                 page          = EXCLUDED.page,
+                 section       = EXCLUDED.section,
                  block_ids     = EXCLUDED.block_ids,
+                 offset_start  = EXCLUDED.offset_start,
+                 offset_end    = EXCLUDED.offset_end,
                  ingested_at   = EXCLUDED.ingested_at"#,
         )
         .bind(record.chunk_id.0)
@@ -94,8 +108,8 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
         .bind(record.page.map(|p| p as i32))
         .bind(&record.section)
         .bind(&block_ids)
-        .bind(record.offset_start as i32)
-        .bind(record.offset_end as i32)
+        .bind(record.offset_start as i64)
+        .bind(record.offset_end as i64)
         .bind(record.ingested_at)
         .execute(&self.pool).await
         .map_err(|e| ArcanumError::Storage(format!("put chunk_metadata: {}", e)))?;
@@ -145,6 +159,22 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
         .execute(&self.pool).await
         .map_err(|e| ArcanumError::Storage(format!("delete chunk_metadata: {}", e)))?;
         Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "postgres_chunk_meta", document_id = %document_id.0, version_num), err)]
+    async fn delete_by_document_version(
+        &self,
+        document_id: &DocumentId,
+        version_num: u32,
+    ) -> Result<Vec<ChunkId>> {
+        let rows: Vec<(uuid::Uuid,)> = sqlx::query_as(
+            "DELETE FROM chunk_metadata WHERE document_id = $1 AND version_num = $2 RETURNING chunk_id",
+        )
+        .bind(document_id.0)
+        .bind(version_num as i32)
+        .fetch_all(&self.pool).await
+        .map_err(|e| ArcanumError::Storage(format!("delete_by_document_version chunk_metadata: {}", e)))?;
+        Ok(rows.into_iter().map(|(id,)| ChunkId(id)).collect())
     }
 }
 

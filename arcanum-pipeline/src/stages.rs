@@ -658,7 +658,12 @@ pub fn make_vector_write_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_write",
-        deps: vec!["embed"],
+        // Depends on "snapshot" (in addition to "embed") so that
+        // state.snapshot_document_id/snapshot_version_num are guaranteed to be populated
+        // before this stage builds chunk metadata records. Without this, "snapshot" and
+        // "vector_chunk" are sibling branches off "preprocess" with no ordering between
+        // them, and vector_write could run before the document_id is known.
+        deps: vec!["embed", "snapshot"],
         run: Arc::new(move |mut ctx| {
             let state = state.clone();
             let vs = vector_store.clone();
@@ -683,7 +688,6 @@ pub fn make_vector_write_stage(
                     )
                 };
 
-                // Build chunk metadata records alongside indexed chunks.
                 let indexed: Vec<IndexedChunk> = chunks
                     .into_iter()
                     .zip(vectors.into_iter())
@@ -695,33 +699,49 @@ pub fn make_vector_write_stage(
                     })
                     .collect();
 
-                // Write chunk metadata records if store is available.
-                if let Some(cms) = &cms {
-                    for chunk in &indexed {
-                        let meta = ChunkMetadataRecord {
-                            chunk_id:      chunk.chunk.id.clone(),
-                            document_id:   doc_id.clone().unwrap_or(DocumentId::new()),
-                            collection_id: collection_id.0.clone(),
-                            version_num:   version_num.unwrap_or(0),
-                            source_uri:    chunk.chunk.provenance.source_uri.clone(),
-                            snapshot_uri:  chunk.chunk.provenance.snapshot_uri.clone(),
-                            canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),
-                            page:          chunk.chunk.provenance.page,
-                            section:       chunk.chunk.provenance.section.clone(),
-                            block_ids:     chunk.chunk.provenance.block_ids.clone(),
-                            offset_start:  0,
-                            offset_end:    chunk.chunk.text.len(),
-                            ingested_at:   chrono::Utc::now(),
-                        };
-                        if let Err(e) = cms.put(&meta).await {
-                            tracing::warn!(err = ?e, "chunk metadata write failed — continuing");
+                // Build chunk metadata records before the vector write (which consumes
+                // `indexed`), but only persist them after the vector write succeeds — a
+                // failed vector write must not leave orphaned metadata rows behind.
+                let metadata_records: Option<Vec<ChunkMetadataRecord>> = if cms.is_some() {
+                    match (&doc_id, version_num) {
+                        (Some(doc_id), Some(version_num)) => Some(
+                            indexed.iter().map(|chunk| ChunkMetadataRecord {
+                                chunk_id:      chunk.chunk.id.clone(),
+                                document_id:   doc_id.clone(),
+                                collection_id: collection_id.0.clone(),
+                                version_num,
+                                source_uri:    chunk.chunk.provenance.source_uri.clone(),
+                                snapshot_uri:  chunk.chunk.provenance.snapshot_uri.clone(),
+                                canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),
+                                page:          chunk.chunk.provenance.page,
+                                section:       chunk.chunk.provenance.section.clone(),
+                                block_ids:     chunk.chunk.provenance.block_ids.clone(),
+                                offset_start:  chunk.chunk.position.start,
+                                offset_end:    chunk.chunk.position.end,
+                                ingested_at:   chrono::Utc::now(),
+                            }).collect()
+                        ),
+                        _ => {
+                            tracing::warn!(
+                                "snapshot_document_id/version_num not set — skipping chunk metadata write"
+                            );
+                            None
                         }
                     }
-                }
+                } else {
+                    None
+                };
 
                 match vs.upsert(&collection_id.0, indexed).await {
                     Ok(()) => {
                         cb.record_success();
+                        if let (Some(cms), Some(records)) = (&cms, metadata_records) {
+                            for meta in &records {
+                                if let Err(e) = cms.put(meta).await {
+                                    tracing::warn!(err = ?e, "chunk metadata write failed — continuing");
+                                }
+                            }
+                        }
                         ctx.insert("vector_write_ok".to_string(), serde_json::json!(true));
                         Ok(ctx)
                     }

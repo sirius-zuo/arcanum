@@ -1,7 +1,7 @@
 use crate::{
     traits::ChunkMetadataStore,
     types::{ChunkId, ChunkMetadataRecord, DocumentId},
-    ArcanumError, Result,
+    Result,
 };
 use async_trait::async_trait;
 use std::collections::HashMap;
@@ -51,6 +51,23 @@ impl ChunkMetadataStore for InMemoryChunkMetadataStore {
             data.remove(&id);
         }
         Ok(())
+    }
+
+    async fn delete_by_document_version(
+        &self,
+        document_id: &DocumentId,
+        version_num: u32,
+    ) -> Result<Vec<ChunkId>> {
+        let mut data = self.data.lock().await;
+        let ids_to_remove: Vec<ChunkId> = data
+            .iter()
+            .filter(|(_, r)| r.document_id == *document_id && r.version_num == version_num)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for id in &ids_to_remove {
+            data.remove(id);
+        }
+        Ok(ids_to_remove)
     }
 }
 
@@ -113,5 +130,40 @@ mod tests {
     async fn test_get_missing() {
         let store = InMemoryChunkMetadataStore::new();
         assert!(store.get(&ChunkId::new()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_delete_by_document_version_only_removes_matching_version() {
+        let store = InMemoryChunkMetadataStore::new();
+        let doc_id = DocumentId::new();
+
+        let mut v1 = ChunkMetadataRecord {
+            chunk_id:      ChunkId::new(),
+            document_id:   doc_id.clone(),
+            collection_id: "col".into(),
+            version_num:   1,
+            source_uri:    "file://doc.pdf".into(),
+            snapshot_uri:  "file:///snap/d/1.raw".into(),
+            canonical_uri: None,
+            page:          None,
+            section:       None,
+            block_ids:     vec![],
+            offset_start:  0,
+            offset_end:    10,
+            ingested_at:   Utc::now(),
+        };
+        let mut v2 = v1.clone();
+        v2.chunk_id = ChunkId::new();
+        v2.version_num = 2;
+        v2.snapshot_uri = "file:///snap/d/2.raw".into();
+        v1.chunk_id = ChunkId::new();
+
+        store.put(&v1).await.unwrap();
+        store.put(&v2).await.unwrap();
+
+        let removed = store.delete_by_document_version(&doc_id, 1).await.unwrap();
+        assert_eq!(removed, vec![v1.chunk_id.clone()]);
+        assert!(store.get(&v1.chunk_id).await.unwrap().is_none());
+        assert!(store.get(&v2.chunk_id).await.unwrap().is_some());
     }
 }

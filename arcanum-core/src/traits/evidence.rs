@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use crate::{
     types::{
-        ChunkId, EntityId, TreeNodeId,
+        ChunkId, DocumentId, EntityId, TreeNodeId,
         ChunkMetadataRecord, ProofChain, GcReport,
     },
     Result,
@@ -29,6 +29,15 @@ pub trait ChunkMetadataStore: Send + Sync {
         collection_id: &str,
         source_uri:    &str,
     ) -> Result<()>;
+    /// Delete all chunk_metadata rows belonging to a specific document version, returning
+    /// the chunk IDs that were removed. Unlike `delete_by_source_uri`, this is scoped to a
+    /// single version, so it is safe to call even when other versions of the same document
+    /// (sharing the same source_uri) are still active or retained.
+    async fn delete_by_document_version(
+        &self,
+        document_id: &DocumentId,
+        version_num: u32,
+    ) -> Result<Vec<ChunkId>>;
 }
 
 #[async_trait]
