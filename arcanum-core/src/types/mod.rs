@@ -5,7 +5,9 @@ pub mod graph;
 pub mod operation;
 pub mod provenance;
 pub mod query;
+pub mod evidence;
 pub mod tree;
+pub use evidence::{EvidenceKind, ProofNode, RawSourceRef, ProofChain, ChunkMetadataRecord, GcReport};
 pub use chunk_config::{
     ChunkStrategyConfig, PerBackendChunkConfig, PerBackendChunkers,
     ExperimentId, ShadowContext,
