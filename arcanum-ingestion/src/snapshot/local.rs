@@ -4,9 +4,8 @@ use arcanum_core::{
     ArcanumError, Result,
 };
 use async_trait::async_trait;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use tracing::instrument;
 
 /// Filesystem-backed SnapshotStore.
@@ -19,16 +18,12 @@ use tracing::instrument;
 ///     canonical.json   — Docling canonical JSON (optional)
 /// ```
 pub struct LocalSnapshotStore {
-    root:   PathBuf,
-    locked: Arc<Mutex<()>>,
+    root: PathBuf,
 }
 
 impl LocalSnapshotStore {
     pub fn new(root: impl Into<PathBuf>) -> Self {
-        Self {
-            root:   root.into(),
-            locked: Arc::new(Mutex::new(())),
-        }
+        Self { root: root.into() }
     }
 
     /// Ensure the root directory exists.
@@ -61,7 +56,6 @@ impl SnapshotStore for LocalSnapshotStore {
         raw:         &[u8],
         canonical:   Option<&serde_json::Value>,
     ) -> Result<SnapshotLocation> {
-        let _guard = self.locked.lock().await;
         self.ensure_root().await?;
 
         let dir = self.doc_dir(doc_id, version);
@@ -169,5 +163,28 @@ mod tests {
         let (store, _tmp) = make_store();
         let err = store.fetch_raw("file://nonexistent/path.bin").await.unwrap_err();
         assert!(err.to_string().contains("snapshot not found") || err.to_string().contains("No such file"));
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_stores_do_not_interfere() {
+        let (store, _tmp) = make_store();
+        let store = Arc::new(store);
+        let doc_id_a = DocumentId::new();
+        let doc_id_b = DocumentId::new();
+
+        let s1 = store.clone();
+        let s2 = store.clone();
+        let da = doc_id_a.clone();
+        let db = doc_id_b.clone();
+
+        let (loc_a, loc_b) = tokio::join!(
+            async move { s1.store(&da, 1, b"content-a", None).await.unwrap() },
+            async move { s2.store(&db, 1, b"content-b", None).await.unwrap() },
+        );
+
+        let raw_a = store.fetch_raw(&loc_a.raw_uri).await.unwrap();
+        let raw_b = store.fetch_raw(&loc_b.raw_uri).await.unwrap();
+        assert_eq!(raw_a, b"content-a");
+        assert_eq!(raw_b, b"content-b");
     }
 }
