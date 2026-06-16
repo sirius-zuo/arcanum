@@ -1,11 +1,13 @@
 use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster, LexicalIndex, DocumentRegistry, NoOpDocumentRegistry,
-             IngestionDepsOverrideResolver, NoOpDocumentVersionStore, InMemorySnapshotStore},
+             CacheInvalidationBroadcaster, LexicalIndex, NoOpDocumentRegistry,
+             DocumentRegistry, IngestionDepsOverrideResolver, NoOpDocumentVersionStore,
+             SnapshotStore, DocumentVersionStore},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
+use arcanum_ingestion::LocalSnapshotStore;
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
                         RawLoader, FileLoader, HttpLoader, default_registry,
@@ -51,6 +53,9 @@ pub struct ArcanumEngine {
     pub graph_store: Option<Arc<dyn GraphStore>>,
     pub vector_store: Option<Arc<dyn VectorStore>>,
     pub tree_store: Option<Arc<dyn TreeStore>>,
+    pub version_store: Arc<dyn DocumentVersionStore>,
+    pub snapshot_store: Arc<dyn SnapshotStore>,
+    /// Backwards-compat shim — removed after Task 15 migration is complete.
     pub document_registry: Arc<dyn DocumentRegistry>,
 }
 
@@ -108,6 +113,8 @@ pub struct ArcanumEngineBuilder {
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
     bm25_index: Option<Arc<Bm25Index>>,
+    version_store: Option<Arc<dyn DocumentVersionStore>>,
+    snapshot_store: Option<Arc<dyn SnapshotStore>>,
     document_registry: Option<Arc<dyn DocumentRegistry>>,
 }
 
@@ -146,6 +153,8 @@ impl Default for ArcanumEngineBuilder {
             tree_store: None,
             secret_store: None,
             bm25_index: None,
+            version_store: None,
+            snapshot_store: None,
             document_registry: None,
         }
     }
@@ -205,6 +214,16 @@ impl ArcanumEngineBuilder {
 
     pub fn bm25_index(mut self, index: Arc<Bm25Index>) -> Self {
         self.bm25_index = Some(index);
+        self
+    }
+
+    pub fn version_store(mut self, store: Arc<dyn DocumentVersionStore>) -> Self {
+        self.version_store = Some(store);
+        self
+    }
+
+    pub fn snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
+        self.snapshot_store = Some(store);
         self
     }
 
@@ -282,13 +301,17 @@ impl ArcanumEngineBuilder {
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
+                version_store:     self.version_store
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(NoOpDocumentVersionStore) as Arc<dyn DocumentVersionStore>),
+                snapshot_store:    self.snapshot_store
+                    .clone()
+                    .unwrap_or_else(|| {
+                        Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
+                    }),
                 document_registry: self.document_registry
                     .clone()
                     .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),
-                version_store:     Arc::new(
-                    NoOpDocumentVersionStore
-                ),
-                snapshot_store:    Arc::new(InMemorySnapshotStore::new()),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
@@ -437,6 +460,14 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
+            version_store: self.version_store
+                .clone()
+                .unwrap_or_else(|| Arc::new(NoOpDocumentVersionStore) as Arc<dyn DocumentVersionStore>),
+            snapshot_store: self.snapshot_store
+                .clone()
+                .unwrap_or_else(|| {
+                    Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
+                }),
             document_registry: self.document_registry
                 .clone()
                 .unwrap_or_else(|| Arc::new(NoOpDocumentRegistry) as Arc<dyn DocumentRegistry>),

@@ -28,20 +28,24 @@ impl GraphStore for Neo4jStore {
                 let col = collection.to_string();
                 async move {
                     let id = entity.id.0.to_string();
+                    let source_chunks: Vec<String> = entity.source_chunks.iter()
+                        .map(|c| c.0.to_string())
+                        .collect();
                     graph
                         .run(
                             query(
                                 "MERGE (e:Entity {id: $id}) \
                                  SET e.name = $name, e.entity_type = $entity_type, \
                                      e.canonical_id = $canonical_id, e.source_uri = $source_uri, \
-                                     e.collection = $collection",
+                                     e.collection = $collection, e.source_chunks = $source_chunks",
                             )
                             .param("id", id)
                             .param("name", entity.name)
                             .param("entity_type", entity.entity_type)
                             .param("canonical_id", entity.canonical_id.unwrap_or_default())
                             .param("source_uri", entity.source_uri)
-                            .param("collection", col),
+                            .param("collection", col)
+                            .param("source_chunks", source_chunks),
                         )
                         .await
                         .map_err(|e| ArcanumError::Storage(format!("upsert_entity error: {}", e)))
@@ -60,19 +64,24 @@ impl GraphStore for Neo4jStore {
                 let graph = Arc::clone(&self.graph);
                 let col = collection.to_string();
                 async move {
+                    let source_chunks: Vec<String> = rel.source_chunks.iter()
+                        .map(|c| c.0.to_string())
+                        .collect();
                     graph
                         .run(
                             query(
                                 "MATCH (s:Entity {id: $source_id}) \
                                  MATCH (t:Entity {id: $target_id}) \
                                  MERGE (s)-[r:RELATION {type: $relation_type}]->(t) \
-                                 SET r.confidence = $confidence, r.collection = $collection",
+                                 SET r.confidence = $confidence, r.collection = $collection, \
+                                     r.source_chunks = $source_chunks",
                             )
                             .param("source_id", rel.source.0.to_string())
                             .param("target_id", rel.target.0.to_string())
                             .param("relation_type", rel.relation_type)
                             .param("confidence", rel.confidence as f64)
-                            .param("collection", col),
+                            .param("collection", col)
+                            .param("source_chunks", source_chunks),
                         )
                         .await
                         .map_err(|e| ArcanumError::Storage(format!("upsert_relation error: {}", e)))
@@ -106,7 +115,8 @@ impl GraphStore for Neo4jStore {
         } else {
             "MATCH (e:Entity {collection: $collection}) \
              RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri \
+                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
+                    e.source_chunks as source_chunks \
              LIMIT 100"
         };
 
@@ -130,6 +140,11 @@ impl GraphStore for Neo4jStore {
                 .map_err(|e| ArcanumError::Storage(format!("get entity_type: {}", e)))?;
             let canonical_id: Option<String> = row.get("canonical_id").ok();
             let source_uri: String = row.get("source_uri").unwrap_or_default();
+            let source_chunks_raw: Vec<String> = row.get("source_chunks").unwrap_or_default();
+            let source_chunks: Vec<ChunkId> = source_chunks_raw.iter()
+                .filter_map(|s| s.parse::<uuid::Uuid>().ok())
+                .map(ChunkId)
+                .collect();
             let id = id_str.parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse uuid: {}", e)))?;
             entities.push(Entity {
@@ -137,7 +152,7 @@ impl GraphStore for Neo4jStore {
                 name,
                 entity_type,
                 canonical_id: canonical_id.filter(|s| !s.is_empty()),
-                source_chunks: vec![],
+                source_chunks,
                 source_uri,
                 collection_id: collection.to_string(),
             });
@@ -166,7 +181,7 @@ impl GraphStore for Neo4jStore {
         let id_str = entity_id.0.to_string();
 
         let mut stream = self.graph.execute(
-            query("MATCH (s:Entity {id: $id})-[r:RELATION]->(t:Entity) RETURN t.id as target_id, r.type as relation_type, r.confidence as confidence")
+            query("MATCH (s:Entity {id: $id})-[r:RELATION]->(t:Entity) RETURN t.id as target_id, r.type as relation_type, r.confidence as confidence, r.source_chunks as source_chunks")
                 .param("id", id_str),
         )
         .await
@@ -184,13 +199,19 @@ impl GraphStore for Neo4jStore {
             let target_id = target_id_str.parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse target uuid: {}", e)))?;
 
-            let dummy_chunk_id = ChunkId::new();
+            // Read source_chunks from the relation if stored.
+            let source_chunks_raw: Vec<String> = row.get("source_chunks").unwrap_or_default();
+            let source_chunks: Vec<ChunkId> = source_chunks_raw.iter()
+                .filter_map(|s| s.parse::<uuid::Uuid>().ok())
+                .map(ChunkId)
+                .collect();
+
             relations.push(Relation {
                 source: EntityId(entity_id.0),
                 relation_type,
                 target: EntityId(target_id),
                 confidence: confidence as f32,
-                source_chunks: vec![dummy_chunk_id],
+                source_chunks,
             });
         }
         Ok(relations)

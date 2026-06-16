@@ -268,6 +268,11 @@ async fn test_registry_chain_runs_in_order() {
             self.0.lock().unwrap().push(self.1);
             Ok(doc)
         }
+        fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> {
+            None
+        }
+        fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {
+        }
     }
 
     let registry = PreprocessorRegistry::new()

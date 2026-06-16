@@ -253,6 +253,11 @@ pub fn make_preprocess_stage(
                     ArcanumError::Pipeline { stage: "preprocess".into(), message: "no doc".into() }
                 })?;
                 let processed = pp.process(doc).await?;
+                // Capture canonical JSON if the preprocessor produced one.
+                let canonical = pp.canonical(&processed.id);
+                if canonical.is_some() {
+                    state.lock().await.canonical_json = canonical;
+                }
                 state.lock().await.doc = Some(processed);
                 Ok(ctx)
             })
@@ -803,10 +808,10 @@ pub fn make_raptor_build_stage(
                             ),
                         });
                     }
-                    let leaves: Vec<(String, Vector)> = chunks
-                        .iter()
-                        .map(|c| c.text.clone())
+                    let leaves: Vec<(ChunkId, String, Vector)> = chunks
+                        .into_iter()
                         .zip(vectors.into_iter())
+                        .map(|(chunk, vec)| (chunk.id, chunk.text, vec))
                         .collect();
                     let source_uri = g.doc.as_ref()
                         .map(|d| d.source_uri.clone())

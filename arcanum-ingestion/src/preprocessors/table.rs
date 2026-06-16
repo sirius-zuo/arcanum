@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Preprocessor, types::*, Result};
+use arcanum_core::{traits::Preprocessor, types::{DocumentId, RawDocument}, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 use tracing::instrument;
@@ -44,6 +44,13 @@ impl Preprocessor for TableExtractor {
             doc.content = combined.into_bytes();
         }
         Ok(doc)
+    }
+
+    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {
     }
 }
 

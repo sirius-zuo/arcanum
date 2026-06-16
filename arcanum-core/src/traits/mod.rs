@@ -22,3 +22,4 @@ pub use snapshot::SnapshotStore;
 pub use in_memory_snapshot::InMemorySnapshotStore;
 pub use store::*;
 pub use versioning::{DocumentVersionStore, NoOpDocumentVersionStore};
+pub use ingestion::{CloudProvider, ConnectorKind, Preprocessor, Source};

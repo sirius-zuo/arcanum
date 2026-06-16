@@ -1,4 +1,4 @@
-use arcanum_core::{traits::{Preprocessor, TextEnricher}, types::*, Result};
+use arcanum_core::{traits::{Preprocessor, TextEnricher}, types::{DocumentId, EnrichIntent, EnrichRequest, RawDocument}, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 use std::sync::Arc;
@@ -58,12 +58,19 @@ impl Preprocessor for ImageCaptioner {
         }
         Ok(doc)
     }
+
+    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> {
+        None
+    }
+
+    fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arcanum_core::Result as ArcanumResult;
+    use arcanum_core::{Result as ArcanumResult, types::EnrichedText};
 
     struct FakeCaptioner;
 
