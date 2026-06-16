@@ -1,6 +1,6 @@
 use crate::{dag::{PipelineStage, StageContext, CTX_FORCE, CTX_SKIP, CTX_REPLACE}, IngestionState};
-use arcanum_core::{traits::{DocumentVersionStore, SnapshotStore, *}, types::*,
-    types::{DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
+use arcanum_core::{traits::{DocumentVersionStore, SnapshotStore, ChunkMetadataStore, *}, types::*,
+    types::{ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
     ArcanumError};
 use arcanum_ingestion::{
     LoaderRegistry, PreprocessorRegistry, MimeDetector,
@@ -654,6 +654,7 @@ pub fn make_vector_write_stage(
     state: Arc<Mutex<IngestionState>>,
     vector_store: Arc<dyn VectorStore>,
     vector_store_cb: Arc<arcanum_middleware::CircuitBreaker>,
+    chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_write",
@@ -662,6 +663,7 @@ pub fn make_vector_write_stage(
             let state = state.clone();
             let vs = vector_store.clone();
             let cb = vector_store_cb.clone();
+            let cms = chunk_metadata_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_write", "executing vector_write stage");
                 if skip(&ctx) { return Ok(ctx); }
@@ -670,13 +672,21 @@ pub fn make_vector_write_stage(
                         "circuit open: vector store unavailable".into()
                     ));
                 }
-                let (chunks, vectors, collection_id) = {
+                let (chunks, vectors, collection_id, doc_id, version_num) = {
                     let g = state.lock().await;
-                    (g.chunks.clone(), g.vectors.clone(), g.collection_id.clone())
+                    (
+                        g.chunks.clone(),
+                        g.vectors.clone(),
+                        g.collection_id.clone(),
+                        g.snapshot_document_id.clone(),
+                        g.snapshot_version_num,
+                    )
                 };
+
+                // Build chunk metadata records alongside indexed chunks.
                 let indexed: Vec<IndexedChunk> = chunks
                     .into_iter()
-                    .zip(vectors)
+                    .zip(vectors.into_iter())
                     .map(|(chunk, vector)| IndexedChunk {
                         chunk,
                         vector,
@@ -684,6 +694,31 @@ pub fn make_vector_write_stage(
                         store_id: String::new(),
                     })
                     .collect();
+
+                // Write chunk metadata records if store is available.
+                if let Some(cms) = &cms {
+                    for chunk in &indexed {
+                        let meta = ChunkMetadataRecord {
+                            chunk_id:      chunk.chunk.id.clone(),
+                            document_id:   doc_id.clone().unwrap_or(DocumentId::new()),
+                            collection_id: collection_id.0.clone(),
+                            version_num:   version_num.unwrap_or(0),
+                            source_uri:    chunk.chunk.provenance.source_uri.clone(),
+                            snapshot_uri:  chunk.chunk.provenance.snapshot_uri.clone(),
+                            canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),
+                            page:          chunk.chunk.provenance.page,
+                            section:       chunk.chunk.provenance.section.clone(),
+                            block_ids:     chunk.chunk.provenance.block_ids.clone(),
+                            offset_start:  0,
+                            offset_end:    chunk.chunk.text.len(),
+                            ingested_at:   chrono::Utc::now(),
+                        };
+                        if let Err(e) = cms.put(&meta).await {
+                            tracing::warn!(err = ?e, "chunk metadata write failed — continuing");
+                        }
+                    }
+                }
+
                 match vs.upsert(&collection_id.0, indexed).await {
                     Ok(()) => {
                         cb.record_success();

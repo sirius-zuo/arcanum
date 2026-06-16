@@ -48,7 +48,7 @@ pub fn builder() -> TemplateBuilder {
                         state.clone(), deps.embedder.clone(), deps.embedding_cb.clone(),
                     ))
                     .add_stage(make_embed_stage(state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()))
-                    .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone()))
+                    .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone(), deps.chunk_metadata.clone()))
                     .add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()))
                     .add_stage(make_raptor_build_stage(state.clone(), tree_store.clone(), DEFAULT_RAPTOR_DEPTH))
             }

@@ -300,6 +300,7 @@ impl ArcanumEngineBuilder {
                     .unwrap_or_else(|| {
                         Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
                     }),
+                chunk_metadata:    None,
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,

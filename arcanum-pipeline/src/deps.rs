@@ -1,5 +1,6 @@
 use arcanum_core::traits::{TextEnricher, Embedder, VectorStore, GraphStore, TreeStore,
-                            CacheInvalidationBroadcaster, DocumentVersionStore, SnapshotStore};
+                            CacheInvalidationBroadcaster, DocumentVersionStore, SnapshotStore,
+                            ChunkMetadataStore};
 use arcanum_core::types::{PerBackendChunkers, ShadowContext};
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry};
 use arcanum_middleware::{RetryPolicy, CircuitBreaker};
@@ -18,6 +19,7 @@ pub struct PipelineDeps {
     pub tree_store:        Option<Arc<dyn TreeStore>>,
     pub version_store:     Arc<dyn DocumentVersionStore>,
     pub snapshot_store:    Arc<dyn SnapshotStore>,
+    pub chunk_metadata:    Option<Arc<dyn ChunkMetadataStore>>,
     pub retry_policy:      RetryPolicy,
     pub cache_invalidator: Arc<CacheInvalidationBroadcaster>,
     pub embedding_cb:      Arc<CircuitBreaker>,
