@@ -40,6 +40,7 @@ fn make_state(doc: RawDocument) -> Arc<Mutex<IngestionState>> {
         snapshot_version_num: None,
         snapshot_uri: None,
         canonical_uri: None,
+        pending_version: None,
     }))
 }
 
@@ -322,6 +323,7 @@ async fn raptor_build_uses_tree_vectors_not_vector_embeddings() {
         snapshot_version_num: None,
         snapshot_uri: None,
         canonical_uri: None,
+        pending_version: None,
         // tree_chunks has 2 entries
         tree_chunks: tree_chunk_texts.iter().map(|t| Chunk {
             id: ChunkId::new(),

@@ -45,6 +45,7 @@ pub fn builder() -> TemplateBuilder {
                     .add_stage(make_entity_extract_stage(state.clone(), extractor.clone(), graph_store.clone()))
                     .add_stage(make_embed_stage(state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()))
                     .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone()))
+                    .add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()))
             }
             _ => {
                 tracing::warn!("entity_extractor or graph_store not configured — falling back to Standard");

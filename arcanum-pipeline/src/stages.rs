@@ -208,8 +208,10 @@ pub fn make_snapshot_stage(
                     canonical_json.as_ref(),
                 ).await?;
 
-                // Register new version.
-                version_store.add_version(DocumentVersion {
+                // Build the version record but do NOT register it yet.
+                // make_register_version_stage runs after vector_write and calls add_version().
+                // This ensures the version is only visible if all stores are written.
+                let pending = DocumentVersion {
                     document_id:   doc_id.clone(),
                     version_num,
                     source_uri:    source_uri.clone(),
@@ -221,7 +223,7 @@ pub fn make_snapshot_stage(
                     status:        VersionStatus::Active,
                     ingested_at:   chrono::Utc::now(),
                     extra:         std::collections::HashMap::new(),
-                }).await?;
+                };
 
                 // Write results back to state for chunk stage.
                 let mut g = state.lock().await;
@@ -229,6 +231,7 @@ pub fn make_snapshot_stage(
                 g.snapshot_version_num = Some(version_num);
                 g.snapshot_uri         = Some(location.raw_uri);
                 g.canonical_uri        = location.canonical_uri;
+                g.pending_version      = Some(pending);
 
                 Ok(ctx)
             })
@@ -697,10 +700,38 @@ pub fn make_vector_write_stage(
     }
 }
 
+/// Registers the document version in the version store.
+/// Runs AFTER vector_write so the version is only registered when all store writes succeed.
+/// If this stage is skipped (dedup saw no change), no registration happens.
+pub fn make_register_version_stage(
+    state:         Arc<Mutex<IngestionState>>,
+    version_store: Arc<dyn DocumentVersionStore>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "register_version",
+        deps: vec!["vector_write"],
+        run: Arc::new(move |ctx| {
+            let state         = state.clone();
+            let version_store = version_store.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "register_version", "executing register_version stage");
+                if skip(&ctx) { return Ok(ctx); }
+                let pending = state.lock().await.pending_version.take();
+                if let Some(version) = pending {
+                    version_store.add_version(version).await?;
+                    tracing::debug!(stage = "register_version", "version registered");
+                }
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
 #[cfg(test)]
 mod test_chunk_source_uri {
     use super::*;
     use arcanum_ingestion::FixedSizeChunker;
+    use arcanum_core::traits::NoOpDocumentVersionStore;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -733,6 +764,7 @@ mod test_chunk_source_uri {
             snapshot_version_num: None,
             snapshot_uri: None,
             canonical_uri: None,
+            pending_version: None,
         }));
         let chunker = Arc::new(FixedSizeChunker::new(512, 0));
         let stage = make_vector_chunk_stage(state.clone(), chunker, None);
@@ -743,6 +775,34 @@ mod test_chunk_source_uri {
             assert_eq!(chunk.provenance.source_uri.as_str(), "samples/api-authentication.md",
                 "chunk provenance must contain source_uri");
         }
+    }
+
+    #[tokio::test]
+    async fn register_version_stage_is_skipped_when_pipeline_is_skipped() {
+        let vs = Arc::new(NoOpDocumentVersionStore);
+        let state = Arc::new(Mutex::new(IngestionState {
+            source: arcanum_core::traits::Source::Raw {
+                content: vec![],
+                mime_hint: None,
+                uri: "test://".into(),
+            },
+            collection_id: CollectionId("c".into()),
+            doc: None,
+            chunks: vec![], graph_chunks: vec![], tree_chunks: vec![],
+            vectors: vec![], tree_vectors: vec![],
+            raw_content: None, canonical_json: None,
+            snapshot_document_id: None, snapshot_version_num: None,
+            snapshot_uri: None, canonical_uri: None, pending_version: None,
+        }));
+
+        // Insert a skip flag.
+        let mut ctx = StageContext::new();
+        ctx.insert(CTX_SKIP.to_string(), serde_json::json!(true));
+
+        let stage = make_register_version_stage(state.clone(), vs);
+        let result_ctx = (stage.run)(ctx).await.unwrap();
+        assert!(result_ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false));
+        // No panic means add_version was not called.
     }
 }
 

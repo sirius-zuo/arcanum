@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Source, types::{CollectionId, DocumentId, RawDocument, Chunk, Vector}};
+use arcanum_core::{traits::Source, types::{CollectionId, DocumentId, DocumentVersion, RawDocument, Chunk, Vector}};
 
 pub struct IngestionState {
     pub source:        Source,
@@ -19,6 +19,8 @@ pub struct IngestionState {
     pub snapshot_version_num: Option<u32>,
     pub snapshot_uri:         Option<String>,
     pub canonical_uri:        Option<String>,
+    /// Built by make_snapshot_stage; consumed and written to DB by make_register_version_stage.
+    pub pending_version: Option<DocumentVersion>,
 }
 
 impl IngestionState {
@@ -29,7 +31,7 @@ impl IngestionState {
             vectors: vec![], tree_vectors: vec![],
             raw_content: None, canonical_json: None,
             snapshot_document_id: None, snapshot_version_num: None,
-            snapshot_uri: None, canonical_uri: None,
+            snapshot_uri: None, canonical_uri: None, pending_version: None,
         }
     }
 }
