@@ -16,7 +16,7 @@ pub use document::*;
 pub use enrichment::*;
 pub use graph::*;
 pub use operation::*;
-pub use provenance::{ChunkProvenance, DocumentVersion, SnapshotLocation, VersionStatus, VersioningPolicy};
+pub use provenance::{ChunkProvenance, DocumentEntry, DocumentVersion, SnapshotLocation, VersionStatus, VersioningPolicy};
 pub use query::*;
 pub use tree::*;
 

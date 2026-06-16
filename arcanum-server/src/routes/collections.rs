@@ -88,17 +88,18 @@ pub async fn vector_stats_all(
         Err(e) => return e.into_response(),
     };
     let eng = engine.as_ref().unwrap();
-    let Some(store) = eng.vector_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "total": 0, "by_collection": {} }))).into_response();
-    };
-    let cols = match store.list_collections().await {
+    // Use version store for authoritative document counts — vector store may
+    // be missing documents that had zero chunks (empty/parsing failures).
+    let version_store = &*eng.version_store;
+    let cols = match version_store.list_collections().await {
         Ok(c) => c,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     };
     let mut by_collection = serde_json::Map::new();
     let mut total = 0u64;
     for col in &cols {
-        let count = store.count_documents(Some(col)).await.unwrap_or(0);
+        let entries = version_store.list_documents(col).await.unwrap_or_default();
+        let count = entries.len() as u64;
         by_collection.insert(col.clone(), serde_json::json!(count));
         total += count;
     }
@@ -115,11 +116,11 @@ pub async fn vector_stats_one(
         Err(e) => return e.into_response(),
     };
     let eng = engine.as_ref().unwrap();
-    let Some(store) = eng.vector_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "count": 0 }))).into_response();
-    };
-    match store.count_documents(Some(&name)).await {
-        Ok(count) => (StatusCode::OK, Json(serde_json::json!({ "count": count }))).into_response(),
+    // Use version store for authoritative document count — vector store may
+    // be missing documents that had zero chunks.
+    let version_store = &*eng.version_store;
+    match version_store.list_documents(&name).await {
+        Ok(entries) => (StatusCode::OK, Json(serde_json::json!({ "count": entries.len() }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
     }
 }
@@ -341,14 +342,18 @@ pub async fn tree_stats_one(
 pub async fn vector_list_documents(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
-    Path(_name): Path<String>,
+    Path(name): Path<String>,
 ) -> impl IntoResponse {
     let _claims = match validate_bearer(&headers, &engine) {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    // list_by_collection is deprecated — version store replaces DocumentRegistry.
-    (StatusCode::OK, Json(serde_json::json!({ "documents": [] }))).into_response()
+    let eng = engine.as_ref().unwrap();
+    match eng.version_store.list_documents(&name).await {
+        Ok(docs) => (StatusCode::OK, Json(serde_json::json!({ "documents": docs }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 #[derive(serde::Deserialize)]

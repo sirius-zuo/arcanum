@@ -67,6 +67,13 @@ pub struct SnapshotLocation {
     pub canonical_uri: Option<String>,
 }
 
+/// Lightweight entry for listing active documents in a collection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentEntry {
+    pub source_uri:    String,
+    pub registered_at: i64,  // Unix seconds
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

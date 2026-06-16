@@ -1,6 +1,6 @@
 use arcanum_core::{
     traits::DocumentVersionStore,
-    types::{DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
+    types::{DocumentEntry, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
     ArcanumError, Result,
 };
 use async_trait::async_trait;
@@ -398,6 +398,18 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(store = "postgres_version"), err)]
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT collection_id FROM source_documents ORDER BY collection_id"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
+
+        Ok(rows.into_iter().map(|(col,)| col).collect())
+    }
+
     #[instrument(skip(self), fields(store = "postgres_version", doc_id = %document_id.0, version = version_num), err)]
     async fn get_version(
         &self,
@@ -458,6 +470,45 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
             ingested_at:   r.ingested_at,
             extra,
         }))
+    }
+
+    #[instrument(skip(self), fields(store = "postgres_version", collection = collection_id), err)]
+    async fn list_documents(
+        &self,
+        collection_id: &str,
+    ) -> Result<Vec<DocumentEntry>> {
+        #[derive(sqlx::FromRow)]
+        struct ListRow {
+            source_uri:  String,
+            ingested_at: chrono::DateTime<Utc>,
+        }
+
+        let rows = sqlx::query_as::<_, ListRow>(
+            r#"SELECT sd.source_uri, dv.ingested_at
+               FROM source_documents sd
+               JOIN (
+                   SELECT document_id, MAX(ingested_at) AS ingested_at
+                   FROM document_versions
+                   WHERE status = 'active'
+                   GROUP BY document_id
+               ) dv ON dv.document_id = sd.document_id
+               WHERE sd.collection_id = $1
+               ORDER BY dv.ingested_at DESC"#,
+        )
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_documents: {}", e)))?;
+
+        let entries = rows
+            .into_iter()
+            .map(|r| DocumentEntry {
+                source_uri: r.source_uri,
+                registered_at: r.ingested_at.timestamp(),
+            })
+            .collect();
+
+        Ok(entries)
     }
 }
 

@@ -1,6 +1,6 @@
 use arcanum_core::{
     traits::DocumentVersionStore,
-    types::{DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
+    types::{DocumentEntry, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
     ArcanumError, Result,
 };
 use async_trait::async_trait;
@@ -358,6 +358,18 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
         Ok(())
     }
 
+    #[instrument(skip(self), fields(store = "sqlite_version"), err)]
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let rows: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT collection_id FROM source_documents ORDER BY collection_id"
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
+
+        Ok(rows.into_iter().map(|(col,)| col).collect())
+    }
+
     #[instrument(skip(self), fields(store = "sqlite_version", doc_id = %document_id.0, version = version_num), err)]
     async fn get_version(
         &self,
@@ -385,6 +397,45 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
 
         let (source_uri, collection_id) = sd.unwrap_or_default();
         row_to_version(r, &source_uri, &collection_id).map(Some)
+    }
+
+    #[instrument(skip(self), fields(store = "sqlite_version", collection = collection_id), err)]
+    async fn list_documents(
+        &self,
+        collection_id: &str,
+    ) -> Result<Vec<DocumentEntry>> {
+        #[derive(sqlx::FromRow)]
+        struct ListRow {
+            source_uri:  String,
+            ingested_at: DateTime<Utc>,
+        }
+
+        let rows = sqlx::query_as::<_, ListRow>(
+            r#"SELECT sd.source_uri, dv.ingested_at
+               FROM source_documents sd
+               JOIN (
+                   SELECT document_id, MAX(ingested_at) AS ingested_at
+                   FROM document_versions
+                   WHERE status = 'active'
+                   GROUP BY document_id
+               ) dv ON dv.document_id = sd.document_id
+               WHERE sd.collection_id = $1
+               ORDER BY dv.ingested_at DESC"#,
+        )
+        .bind(collection_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("list_documents: {}", e)))?;
+
+        let entries = rows
+            .into_iter()
+            .map(|r| DocumentEntry {
+                source_uri: r.source_uri,
+                registered_at: r.ingested_at.timestamp(),
+            })
+            .collect();
+
+        Ok(entries)
     }
 }
 
@@ -531,5 +582,54 @@ mod tests {
         let store = make_store().await;
         let found = store.get_version(&DocumentId::new(), 99).await.unwrap();
         assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_returns_active_documents() {
+        let store = make_store().await;
+
+        // Add 3 documents
+        for (i, uri) in ["file://a.md", "file://b.md", "file://c.md"].iter().enumerate() {
+            store.add_version(DocumentVersion {
+                document_id:   DocumentId::new(),
+                version_num:   1,
+                source_uri:    uri.clone().into(),
+                collection_id: "test-list".into(),
+                content_hash:  format!("hash-{}", i),
+                snapshot_uri:  format!("file:///snap/{}.raw", i),
+                canonical_uri: None,
+                mime_type:     "text/markdown".into(),
+                status:        VersionStatus::Active,
+                ingested_at:   chrono::Utc::now(),
+                extra:         HashMap::new(),
+            }).await.unwrap();
+        }
+
+        let docs = store.list_documents("test-list").await.unwrap();
+        assert_eq!(docs.len(), 3, "should list 3 active documents");
+        let uris: Vec<_> = docs.iter().map(|d| d.source_uri.as_str()).collect();
+        assert!(uris.contains(&"file://a.md"));
+        assert!(uris.contains(&"file://b.md"));
+        assert!(uris.contains(&"file://c.md"));
+
+        // Supersede one document — it should no longer appear in list
+        let doc_id: Option<(String,)> = sqlx::query_as(
+            "SELECT document_id FROM source_documents WHERE source_uri = $1 AND collection_id = $2"
+        )
+        .bind("file://a.md").bind("test-list")
+        .fetch_optional(&store.pool).await.unwrap();
+        if let Some((id,)) = doc_id {
+            store.supersede_active(&DocumentId(uuid::Uuid::parse_str(&id).unwrap())).await.unwrap();
+        }
+
+        let docs = store.list_documents("test-list").await.unwrap();
+        assert_eq!(docs.len(), 2, "should list 2 after superseding one");
+    }
+
+    #[tokio::test]
+    async fn test_list_documents_empty_collection() {
+        let store = make_store().await;
+        let docs = store.list_documents("nonexistent").await.unwrap();
+        assert!(docs.is_empty(), "empty collection should return empty list");
     }
 }

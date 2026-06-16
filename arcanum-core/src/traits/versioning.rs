@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use crate::{
-    types::{DocumentId, DocumentVersion, VersioningPolicy},
+    types::{DocumentEntry, DocumentId, DocumentVersion, VersioningPolicy},
     Result,
 };
 
@@ -33,12 +33,22 @@ pub trait DocumentVersionStore: Send + Sync {
     /// Used when a document is deleted from the system.
     async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()>;
 
+    /// List all collection IDs that have documents in this version store.
+    async fn list_collections(&self) -> Result<Vec<String>>;
+
     /// Look up a specific document version by document_id + version number.
     async fn get_version(
         &self,
         document_id: &DocumentId,
         version_num: u32,
     ) -> Result<Option<DocumentVersion>>;
+
+    /// List active (non-deleted) documents in a collection, returning
+    /// source_uri and the timestamp of the active version.
+    async fn list_documents(
+        &self,
+        collection_id: &str,
+    ) -> Result<Vec<DocumentEntry>>;
 }
 
 /// No-op implementation for tests and dev setups without Postgres.
@@ -58,7 +68,11 @@ impl DocumentVersionStore for NoOpDocumentVersionStore {
     }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
     async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
         Ok(None)
+    }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
     }
 }
