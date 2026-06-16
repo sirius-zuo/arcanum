@@ -2,7 +2,7 @@ use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
-             NoOpDocumentVersionStore, SnapshotStore, DocumentVersionStore},
+             SnapshotStore, DocumentVersionStore},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -291,9 +291,10 @@ impl ArcanumEngineBuilder {
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
-                version_store:     self.version_store
-                    .clone()
-                    .unwrap_or_else(|| Arc::new(NoOpDocumentVersionStore) as Arc<dyn DocumentVersionStore>),
+                version_store:     self.version_store.clone().ok_or_else(|| ArcanumError::Config(
+                    "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
+                     for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
+                ))?,
                 snapshot_store:    self.snapshot_store
                     .clone()
                     .unwrap_or_else(|| {
@@ -447,9 +448,10 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
-            version_store: self.version_store
-                .clone()
-                .unwrap_or_else(|| Arc::new(NoOpDocumentVersionStore) as Arc<dyn DocumentVersionStore>),
+            version_store: self.version_store.clone().ok_or_else(|| ArcanumError::Config(
+                "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
+                 for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
+            ))?,
             snapshot_store: self.snapshot_store
                 .clone()
                 .unwrap_or_else(|| {
@@ -504,6 +506,7 @@ mod tests {
             .vector_store(Arc::new(FakeVectorStore))
             .embedder(Arc::new(FakeEmbedder))
             .enricher(Arc::new(FakeEnricher))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build().await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
     }
@@ -529,6 +532,7 @@ mod tests {
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .secret_store(store.clone())
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
             .expect("build should succeed");
@@ -549,6 +553,7 @@ mod builder_tests {
         config.retrieval.orchestration_mode = mode;
         ArcanumEngineBuilder::new(config)
             .with_auth_secret("a-32-char-test-secret-for-testing!!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
             .is_ok()

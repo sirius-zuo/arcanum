@@ -242,9 +242,12 @@ mod upload_tests {
 
     #[tokio::test]
     async fn upload_force_param_is_accepted() {
+        use arcanum_core::traits::NoOpDocumentVersionStore;
         use arcanum_engine::ArcanumEngine;
+        use std::sync::Arc;
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(NoOpDocumentVersionStore))
             .build()
             .await
             .unwrap();
