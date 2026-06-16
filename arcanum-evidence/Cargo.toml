@@ -1,0 +1,17 @@
+[package]
+name    = "arcanum-evidence"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core = { path = "../arcanum-core" }
+async-trait  = { workspace = true }
+chrono       = { workspace = true }
+serde_json   = { workspace = true }
+tracing      = { workspace = true }
+uuid         = { workspace = true }
+
+[dev-dependencies]
+tokio        = { workspace = true }
+arcanum-tree = { path = "../arcanum-tree" }
+arcanum-graph = { path = "../arcanum-graph" }
