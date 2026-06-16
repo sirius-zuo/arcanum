@@ -6,6 +6,20 @@ use std::time::{Duration, Instant};
 use arcanum_core::{traits::Preprocessor, types::{DocumentId, RawDocument}, ArcanumError, Result};
 use async_trait::async_trait;
 
+/// Shared response shape for both HTTP and async Docling backends.
+#[derive(serde::Deserialize)]
+struct ConvertResponse {
+    document: ConvertedDoc,
+}
+
+#[derive(serde::Deserialize)]
+struct ConvertedDoc {
+    #[serde(default)]
+    md_content: Option<String>,
+    #[serde(default)]
+    metadata:   Option<serde_json::Value>,
+}
+
 pub enum DoclingBackend {
     Http {
         base_url: String,
@@ -36,19 +50,9 @@ impl DoclingPreprocessor {
 
     /// Extract Docling canonical JSON from the response body string.
     fn extract_canonical_from_str(&self, body: &str) -> Option<serde_json::Value> {
-        #[derive(serde::Deserialize)]
-        struct ConvertResponse {
-            document: ConvertedDoc,
-        }
-        #[derive(serde::Deserialize)]
-        struct ConvertedDoc {
-            #[serde(default)]
-            md_content: Option<String>,
-            #[serde(default)]
-            metadata: Option<serde_json::Value>,
-        }
-
-        let resp: ConvertResponse = serde_json::from_str(body).ok()?;
+        let resp: ConvertResponse = serde_json::from_str(body)
+            .map_err(|e| tracing::debug!("docling response does not match expected shape; canonical will be None: {e}"))
+            .ok()?;
 
         // Build a minimal canonical from the metadata if available.
         resp.document.metadata.map(|m| {
@@ -62,20 +66,10 @@ impl DoclingPreprocessor {
 
     /// Extract markdown from the response body string.
     fn extract_md_from_str(body: &str) -> Result<String> {
-        #[derive(serde::Deserialize)]
-        struct ConvertResponse {
-            document: ConvertedDoc,
-        }
-        #[derive(serde::Deserialize)]
-        struct ConvertedDoc {
-            #[serde(default)]
-            md_content: Option<String>,
-        }
-
-        let body: ConvertResponse = serde_json::from_str(body)
+        let resp: ConvertResponse = serde_json::from_str(body)
             .map_err(|e| ArcanumError::Ingestion(format!("docling response parse error: {e}")))?;
 
-        let md = body.document.md_content.ok_or_else(|| {
+        let md = resp.document.md_content.ok_or_else(|| {
             ArcanumError::Ingestion("docling response missing md_content".into())
         })?;
 
@@ -349,14 +343,6 @@ impl DoclingPreprocessor {
             mime_type: "text/markdown".to_string(),
             ..doc
         })
-    }
-
-    async fn extract_md(resp: reqwest::Response) -> Result<String> {
-        let body = resp
-            .text()
-            .await
-            .map_err(|e| ArcanumError::Ingestion(format!("docling response body error: {e}")))?;
-        Self::extract_md_from_str(&body)
     }
 
     async fn convert_via_cli(&self, doc: RawDocument, command: &str) -> Result<RawDocument> {
