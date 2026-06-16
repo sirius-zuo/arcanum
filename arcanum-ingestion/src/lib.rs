@@ -20,6 +20,7 @@ pub use chunkers::{FixedSizeChunker, SemanticChunker, PropositionalChunker};
 pub use enrichment::{ContextEnricher, EntityExtractor};
 pub use snapshot::local::LocalSnapshotStore;
 pub use versioning::postgres::PostgresDocumentVersionStore;
+pub use versioning::sqlite::SqliteDocumentVersionStore;
 
 // TODO: Task 6 replaces this with versioning/postgres.rs
 
