@@ -293,10 +293,9 @@ pub fn make_vector_chunk_stage(
                 // Primary chunking
                 let mut chunks = chunker.chunk(&doc).await?;
                 let source_uri = doc.source_uri.clone();
-                let (document_id, snapshot_version_num, snapshot_uri, canonical_uri) = {
+                let (snapshot_version_num, snapshot_uri, canonical_uri) = {
                     let g = state.lock().await;
                     (
-                        g.doc.as_ref().map(|d| d.id.clone()),
                         g.snapshot_version_num,
                         g.snapshot_uri.clone(),
                         g.canonical_uri.clone(),
@@ -304,22 +303,16 @@ pub fn make_vector_chunk_stage(
                 };
                 for c in &mut chunks {
                     c.collection_id = collection_id.clone();
-                    c.metadata.0.insert(
-                        "source_uri".to_string(),
-                        serde_json::Value::String(source_uri.clone()),
-                    );
-                    // Attach ChunkProvenance with document/version tracking.
-                    if let Some(doc_id) = &document_id {
-                        c.provenance = arcanum_core::types::ChunkProvenance {
-                            document_version: snapshot_version_num.unwrap_or(0),
-                            source_uri:       doc_id.0.to_string(),
-                            snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
-                            canonical_uri:    canonical_uri.clone(),
-                            page:             None,
-                            section:          None,
-                            block_ids:        vec![],
-                        };
-                    }
+                    // Attach ChunkProvenance with document/version/source tracking.
+                    c.provenance = arcanum_core::types::ChunkProvenance {
+                        document_version: snapshot_version_num.unwrap_or(0),
+                        source_uri:       source_uri.clone(),
+                        snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
+                        canonical_uri:    canonical_uri.clone(),
+                        page:             None,
+                        section:          None,
+                        block_ids:        vec![],
+                    };
                 }
                 state.lock().await.chunks = chunks;
 
@@ -332,10 +325,7 @@ pub fn make_vector_chunk_stage(
                             Ok(mut shadow_chunks) => {
                                 for c in &mut shadow_chunks {
                                     c.collection_id = CollectionId(sw.shadow_collection_id.clone());
-                                    c.metadata.0.insert(
-                                        "source_uri".to_string(),
-                                        serde_json::Value::String(shadow_doc.source_uri.clone()),
-                                    );
+                                    c.provenance.source_uri = shadow_doc.source_uri.clone();
                                 }
                                 let texts: Vec<String> =
                                     shadow_chunks.iter().map(|c| c.text.clone()).collect();
@@ -410,10 +400,9 @@ pub fn make_graph_chunk_stage(
                 };
                 let mut chunks = chunker.chunk(&doc).await?;
                 let source_uri = doc.source_uri.clone();
-                let (document_id, snapshot_version_num, snapshot_uri, canonical_uri) = {
+                let (snapshot_version_num, snapshot_uri, canonical_uri) = {
                     let g = state.lock().await;
                     (
-                        g.doc.as_ref().map(|d| d.id.clone()),
                         g.snapshot_version_num,
                         g.snapshot_uri.clone(),
                         g.canonical_uri.clone(),
@@ -421,22 +410,15 @@ pub fn make_graph_chunk_stage(
                 };
                 for c in &mut chunks {
                     c.collection_id = collection_id.clone();
-                    c.metadata.0.insert(
-                        "source_uri".to_string(),
-                        serde_json::Value::String(source_uri.clone()),
-                    );
-                    // Attach ChunkProvenance with document/version tracking.
-                    if let Some(doc_id) = &document_id {
-                        c.provenance = arcanum_core::types::ChunkProvenance {
-                            document_version: snapshot_version_num.unwrap_or(0),
-                            source_uri:       doc_id.0.to_string(),
-                            snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
-                            canonical_uri:    canonical_uri.clone(),
-                            page:             None,
-                            section:          None,
-                            block_ids:        vec![],
-                        };
-                    }
+                    c.provenance = arcanum_core::types::ChunkProvenance {
+                        document_version: snapshot_version_num.unwrap_or(0),
+                        source_uri:       source_uri.clone(),
+                        snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
+                        canonical_uri:    canonical_uri.clone(),
+                        page:             None,
+                        section:          None,
+                        block_ids:        vec![],
+                    };
                 }
                 state.lock().await.graph_chunks = chunks;
                 Ok(ctx)
@@ -470,10 +452,9 @@ pub fn make_tree_chunk_stage(
                 };
                 let mut chunks = chunker.chunk(&doc).await?;
                 let source_uri = doc.source_uri.clone();
-                let (document_id, snapshot_version_num, snapshot_uri, canonical_uri) = {
+                let (snapshot_version_num, snapshot_uri, canonical_uri) = {
                     let g = state.lock().await;
                     (
-                        g.doc.as_ref().map(|d| d.id.clone()),
                         g.snapshot_version_num,
                         g.snapshot_uri.clone(),
                         g.canonical_uri.clone(),
@@ -481,22 +462,15 @@ pub fn make_tree_chunk_stage(
                 };
                 for c in &mut chunks {
                     c.collection_id = collection_id.clone();
-                    c.metadata.0.insert(
-                        "source_uri".to_string(),
-                        serde_json::Value::String(source_uri.clone()),
-                    );
-                    // Attach ChunkProvenance with document/version tracking.
-                    if let Some(doc_id) = &document_id {
-                        c.provenance = arcanum_core::types::ChunkProvenance {
-                            document_version: snapshot_version_num.unwrap_or(0),
-                            source_uri:       doc_id.0.to_string(),
-                            snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
-                            canonical_uri:    canonical_uri.clone(),
-                            page:             None,
-                            section:          None,
-                            block_ids:        vec![],
-                        };
-                    }
+                    c.provenance = arcanum_core::types::ChunkProvenance {
+                        document_version: snapshot_version_num.unwrap_or(0),
+                        source_uri:       source_uri.clone(),
+                        snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
+                        canonical_uri:    canonical_uri.clone(),
+                        page:             None,
+                        section:          None,
+                        block_ids:        vec![],
+                    };
                 }
                 state.lock().await.tree_chunks = chunks;
                 Ok(ctx)
@@ -766,10 +740,8 @@ mod test_chunk_source_uri {
         let chunks = state.lock().await.chunks.clone();
         assert!(!chunks.is_empty(), "expected at least one chunk");
         for chunk in &chunks {
-            let uri = chunk.metadata.0.get("source_uri")
-                .and_then(|v| v.as_str());
-            assert_eq!(uri, Some("samples/api-authentication.md"),
-                "chunk metadata must contain source_uri");
+            assert_eq!(chunk.provenance.source_uri.as_str(), "samples/api-authentication.md",
+                "chunk provenance must contain source_uri");
         }
     }
 }

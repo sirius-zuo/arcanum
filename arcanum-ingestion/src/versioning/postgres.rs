@@ -324,6 +324,19 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         .map_err(|e| ArcanumError::Storage(format!("set policy: {}", e)))?;
         Ok(())
     }
+
+    async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()> {
+        sqlx::query(
+            r#"DELETE FROM document_versions
+               WHERE source_uri = $1 AND collection_id = $2"#
+        )
+        .bind(source_uri)
+        .bind(collection_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("delete by source_uri: {}", e)))?;
+        Ok(())
+    }
 }
 
 #[derive(sqlx::FromRow)]

@@ -1,5 +1,4 @@
 pub mod cache;
-pub mod compat;
 pub mod graph_planner;
 pub mod ingestion;
 pub mod lexical_index;
@@ -11,7 +10,6 @@ pub mod store;
 pub mod in_memory_snapshot;
 pub mod versioning;
 pub use cache::*;
-pub use compat::{DocumentEntry, DocumentRegistry, NoOpDocumentRegistry, RegistryEntry, RegistryStatus};
 pub use graph_planner::*;
 pub use ingestion::*;
 pub use lexical_index::*;

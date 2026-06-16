@@ -1,5 +1,5 @@
 use arcanum_core::traits::{TextEnricher, Embedder, VectorStore, GraphStore, TreeStore,
-                            CacheInvalidationBroadcaster, DocumentVersionStore, SnapshotStore, DocumentRegistry};
+                            CacheInvalidationBroadcaster, DocumentVersionStore, SnapshotStore};
 use arcanum_core::types::{PerBackendChunkers, ShadowContext};
 use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry};
 use arcanum_middleware::{RetryPolicy, CircuitBreaker};
@@ -18,8 +18,6 @@ pub struct PipelineDeps {
     pub tree_store:        Option<Arc<dyn TreeStore>>,
     pub version_store:     Arc<dyn DocumentVersionStore>,
     pub snapshot_store:    Arc<dyn SnapshotStore>,
-    /// Kept for backwards compat — engine uses this until Task 15 migration.
-    pub document_registry: Arc<dyn DocumentRegistry>,
     pub retry_policy:      RetryPolicy,
     pub cache_invalidator: Arc<CacheInvalidationBroadcaster>,
     pub embedding_cb:      Arc<CircuitBreaker>,

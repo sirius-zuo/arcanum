@@ -22,8 +22,7 @@ pub use snapshot::local::LocalSnapshotStore;
 pub use versioning::postgres::PostgresDocumentVersionStore;
 
 // TODO: Task 6 replaces this with versioning/postgres.rs
-// pub mod document_registry;
-// pub use document_registry::SqliteDocumentRegistry;
+
 
 pub mod registry;
 pub use registry::{ChunkRegistry, default_registry};

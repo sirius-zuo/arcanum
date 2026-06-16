@@ -56,6 +56,7 @@ impl DocumentVersionStore for MatchingHashStore {
     async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
     async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
 }
 
 struct DifferentHashStore;
@@ -84,6 +85,7 @@ impl DocumentVersionStore for DifferentHashStore {
     async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
     async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
 }
 
 struct NoVersionStore;
@@ -100,6 +102,7 @@ impl DocumentVersionStore for NoVersionStore {
     async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
     async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
 }
 
 #[tokio::test]

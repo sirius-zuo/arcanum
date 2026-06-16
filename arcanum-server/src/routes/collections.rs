@@ -341,18 +341,14 @@ pub async fn tree_stats_one(
 pub async fn vector_list_documents(
     headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
-    Path(name): Path<String>,
+    Path(_name): Path<String>,
 ) -> impl IntoResponse {
     let _claims = match validate_bearer(&headers, &engine) {
         Ok(c) => c,
         Err(e) => return e.into_response(),
     };
-    let eng = engine.as_ref().unwrap();
-    match eng.document_registry.list_by_collection(&name).await {
-        Ok(docs) => (StatusCode::OK, Json(serde_json::json!({ "documents": docs }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
-    }
+    // list_by_collection is deprecated — version store replaces DocumentRegistry.
+    (StatusCode::OK, Json(serde_json::json!({ "documents": [] }))).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -379,8 +375,8 @@ pub async fn vector_delete_document(
                 Json(serde_json::json!({ "error": e.to_string() }))).into_response();
         }
     }
-    // Remove from document registry.
-    if let Err(e) = eng.document_registry.deregister(&params.source_uri, &name).await {
+    // Remove from version store (replaces document_registry.deregister).
+    if let Err(e) = eng.version_store.delete_by_source_uri(&name, &params.source_uri).await {
         return (StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": e.to_string() }))).into_response();
     }

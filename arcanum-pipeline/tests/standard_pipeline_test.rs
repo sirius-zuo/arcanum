@@ -47,7 +47,6 @@ fn stub_deps() -> Arc<PipelineDeps> {
         vector_store: Arc::new(StubVectorStore),
         graph_store: None,
         tree_store: None,
-        document_registry: Arc::new(arcanum_core::traits::NoOpDocumentRegistry),
         version_store:     Arc::new(arcanum_core::traits::NoOpDocumentVersionStore),
         snapshot_store:    Arc::new(arcanum_core::traits::InMemorySnapshotStore::new()),
         retry_policy: arcanum_middleware::RetryPolicy::default(),
