@@ -462,7 +462,8 @@ impl Preprocessor for DoclingPreprocessor {
     }
 
     fn canonical(&self, doc_id: &DocumentId) -> Option<serde_json::Value> {
-        self.canonicals.read().ok().and_then(move |m| m.get(doc_id).cloned())
+        // write() to remove the entry after reading (single-use eviction, prevents unbounded growth).
+        self.canonicals.write().ok()?.remove(doc_id)
     }
 
     fn set_canonical(&self, doc_id: &DocumentId, canonical: serde_json::Value) {
@@ -887,6 +888,19 @@ mod tests {
                 "MIME type {mime:?} is in SUPPORTED_MIMES but has no extension in mime_to_ext()"
             );
         }
+    }
+
+    #[test]
+    fn canonical_evicts_after_read() {
+        use serde_json::json;
+
+        let pp = DoclingPreprocessor::new(crate::DoclingBackend::Cli { command: "echo".into() });
+        let doc_id = DocumentId::new();
+        let value = json!({"blocks": []});
+
+        pp.set_canonical(&doc_id, value.clone());
+        assert!(pp.canonical(&doc_id).is_some(), "first read should return value");
+        assert!(pp.canonical(&doc_id).is_none(), "second read should return None — entry was evicted");
     }
 
     #[test]
