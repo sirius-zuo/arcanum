@@ -48,6 +48,8 @@ let embedder = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "nomic-
 let enricher = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "qwen2.5"));
 let graph_store = Arc::new(InMemoryGraphStore::new());
 let tree_store = Arc::new(InMemoryTreeStore::new());
+let version_store = Arc::new(SqliteDocumentVersionStore::open("data/versions.db").await?);
+let chunk_metadata_store = Arc::new(InMemoryChunkMetadataStore::new());
 
 // ADD:
 let db_url    = std::env::var("DATABASE_URL").expect("DATABASE_URL");
@@ -66,6 +68,18 @@ let enricher = Arc::new(
 );
 let graph_store = Arc::new(Neo4jStore::new(&neo4j_url, &neo4j_user, &neo4j_pw).await?);
 let tree_store = Arc::new(PgTreeStore::new(&db_url).await?);
+let version_store = Arc::new(PostgresDocumentVersionStore::new(&db_url).await?);
+let snapshot_store = Arc::new(LocalSnapshotStore::new("data/snapshots")); // or an S3-backed SnapshotStore
+let chunk_metadata_store = Arc::new(PostgresChunkMetadataStore::new(&db_url).await?);
+
+// The evidence resolver and GC worker are built from the same stores wired above —
+// no separate config. GC enforces RetentionBased versioning policy and needs Postgres
+// for its bookkeeping, so (unlike the resolver) it isn't available in the dev example.
+let gc_worker = Arc::new(PostgresGcWorker::new(
+    &db_url, version_store.clone(), snapshot_store, vector_store.clone(),
+    tree_store.clone(), graph_store.clone(), chunk_metadata_store.clone(),
+).await?);
+// .gc_worker(gc_worker) — add to the builder chain alongside .evidence(...)
 ```
 
 > **Note on full-length books:** RAPTOR build time for a 300,000-word novel is
@@ -85,6 +99,7 @@ use arcanum_models::{HuggingFaceTeiProvider, EnrichmentDispatcher, AnthropicProv
 use arcanum_core::types::EnrichIntent;
 use arcanum_graph::Neo4jStore;
 use arcanum_tree::PgTreeStore;
+use arcanum_ingestion::{PostgresDocumentVersionStore, PostgresChunkMetadataStore, PostgresGcWorker, LocalSnapshotStore};
 ```
 
 ---

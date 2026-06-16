@@ -57,6 +57,7 @@ impl DocumentVersionStore for MatchingHashStore {
     async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
 }
 
 struct DifferentHashStore;
@@ -86,6 +87,7 @@ impl DocumentVersionStore for DifferentHashStore {
     async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
 }
 
 struct NoVersionStore;
@@ -103,6 +105,7 @@ impl DocumentVersionStore for NoVersionStore {
     async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
 }
 
 #[tokio::test]

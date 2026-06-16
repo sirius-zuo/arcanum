@@ -115,3 +115,27 @@ pub async fn rotate_keys(
     response
 }
 
+pub async fn run_gc(
+    headers:       HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+) -> impl IntoResponse {
+    let claims = match validate_admin_bearer(&headers, &engine) {
+        Ok(c) => c,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Admin) {
+        return (StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    }
+    let eng = engine.as_ref().unwrap();
+    let Some(gc) = &eng.gc_worker else {
+        return (StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "GC worker not configured" }))).into_response();
+    };
+    match gc.run_once().await {
+        Ok(report) => (StatusCode::OK, Json(report)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    }
+}
+

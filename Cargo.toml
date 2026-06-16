@@ -15,6 +15,7 @@ members = [
     "arcanum-server",
     "arcanum-telemetry",
     "arcanum-chunk-eval",
+    "arcanum-evidence",
 ]
 exclude = ["examples"]
 resolver = "2"

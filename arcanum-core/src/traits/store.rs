@@ -75,6 +75,22 @@ pub trait GraphStore: Send + Sync {
     }
     /// Delete all data for the collection. Idempotent.
     async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+
+    /// Look up a single entity by its UUID, including source_chunks.
+    async fn get_entity_by_id(&self, _entity_id: &EntityId) -> Result<Option<Entity>> {
+        Ok(None)
+    }
+
+    /// Look up a specific directed relation by endpoints and type.
+    async fn get_relation(
+        &self,
+        source_id:     &EntityId,
+        relation_type: &str,
+        target_id:     &EntityId,
+    ) -> Result<Option<Relation>> {
+        let _ = (source_id, relation_type, target_id);
+        Ok(None)
+    }
 }
 
 #[async_trait]
@@ -84,6 +100,11 @@ pub trait TreeStore: Send + Sync {
     async fn get_children(&self, node_id: &TreeNodeId) -> Result<Vec<TreeNode>>;
     /// Delete all tree nodes for the given source_uri in the collection. No-op if none exist.
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
+
+    /// Look up a single tree node by its UUID. Returns None if not found.
+    async fn get_by_id(&self, _node_id: &TreeNodeId) -> Result<Option<TreeNode>> {
+        Ok(None)
+    }
 
     async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
     async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }

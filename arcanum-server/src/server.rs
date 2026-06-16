@@ -3,7 +3,7 @@ use arcanum_core::config::ArcanumConfig;
 use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
 use std::sync::Arc;
 use arcanum_engine::ArcanumEngine;
-use crate::routes::{api, health, admin, graph, collections, experiments};
+use crate::routes::{api, health, admin, graph, collections, experiments, evidence};
 use crate::routes::metrics as route_metrics;
 use crate::ws::ws_handler;
 use crate::portal::serve_portal;
@@ -53,6 +53,13 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/admin/audit",       get(admin::get_audit_logs))
         .route("/admin/rotate-keys", post(admin::rotate_keys))
         .route("/admin/ui",          get(serve_portal))
+        .route("/admin/gc",           post(admin::run_gc))
+        // Evidence endpoints
+        .route("/evidence/chunk/:chunk_id",             get(evidence::get_chunk_evidence))
+        .route("/evidence/tree-node/:node_id",          get(evidence::get_tree_node_evidence))
+        .route("/evidence/entity/:entity_id",           get(evidence::get_entity_evidence))
+        .route("/evidence/relation/:source_id/:relation_type/:target_id",
+            get(evidence::get_relation_evidence))
         // Vector collections
         .route("/api/v1/vector/collections",              get(collections::vector_list))
         .route("/api/v1/vector/collections/stats",        get(collections::vector_stats_all))

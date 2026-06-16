@@ -217,6 +217,20 @@ impl TreeStore for PgTreeStore {
 
         rows.into_iter().map(row_to_node).collect()
     }
+
+    #[instrument(skip(self), fields(store = "postgres_tree", node_id = %node_id.0), err)]
+    async fn get_by_id(&self, node_id: &TreeNodeId) -> Result<Option<TreeNode>> {
+        let row = sqlx::query_as::<_, PgTreeNodeRow>(
+            "SELECT id, level, text, vector, centroid, parent_id, children, source_uri, leaf_chunk_ids FROM arcanum_tree_nodes WHERE id = $1"
+        )
+        .bind(node_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get_by_id tree: {}", e)))?;
+
+        let Some(r) = row else { return Ok(None) };
+        row_to_node(r).map(Some)
+    }
 }
 
 #[derive(sqlx::FromRow)]

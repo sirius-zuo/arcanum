@@ -186,6 +186,31 @@ impl GraphStore for InMemoryGraphStore {
         self.created.write().await.remove(collection);
         Ok(())
     }
+
+    async fn get_entity_by_id(&self, entity_id: &EntityId) -> Result<Option<Entity>> {
+        let map = self.entities.read().await;
+        Ok(map
+            .values()
+            .flat_map(|m| m.values())
+            .find(|e| e.id.0 == entity_id.0)
+            .cloned())
+    }
+
+    async fn get_relation(
+        &self,
+        source_id:     &EntityId,
+        relation_type: &str,
+        target_id:     &EntityId,
+    ) -> Result<Option<Relation>> {
+        let all = self.relations.read().await;
+        Ok(all
+            .values()
+            .flat_map(|v| v.iter())
+            .find(|r| r.source.0 == source_id.0
+                    && r.relation_type == relation_type
+                    && r.target.0 == target_id.0)
+            .cloned())
+    }
 }
 
 #[cfg(test)]
@@ -365,5 +390,49 @@ mod tests {
         // Total via count_documents(None) must match sum
         let total = store.count_documents(None).await.unwrap();
         assert_eq!(total, all.values().sum::<u64>());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_get_entity_by_id() {
+        let store = InMemoryGraphStore::new();
+        let entity = Entity {
+            id:           EntityId::new(),
+            name:         "ACME Corp".into(),
+            entity_type:  "Organization".into(),
+            canonical_id: None,
+            source_chunks: vec![],
+            source_uri:   "file://contracts.pdf".into(),
+            collection_id: "col".into(),
+        };
+        let id = entity.id.clone();
+        store.upsert_entities("col", vec![entity]).await.unwrap();
+        let found = store.get_entity_by_id(&id).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().name, "ACME Corp");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_get_entity_by_id_missing() {
+        let store = InMemoryGraphStore::new();
+        let found = store.get_entity_by_id(&EntityId::new()).await.unwrap();
+        assert!(found.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_get_relation() {
+        let store = InMemoryGraphStore::new();
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let rel = Relation {
+            source:        src.clone(),
+            relation_type: "SIGNED".into(),
+            target:        tgt.clone(),
+            confidence:    0.9,
+            source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel]).await.unwrap();
+        let found = store.get_relation(&src, "SIGNED", &tgt).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().relation_type, "SIGNED");
     }
 }

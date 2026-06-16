@@ -13,8 +13,11 @@
 
 use anyhow::Result;
 use arcanum_core::config::ArcanumConfig;
+use arcanum_core::traits::InMemoryChunkMetadataStore;
 use arcanum_engine::ArcanumEngineBuilder;
+use arcanum_evidence::DefaultEvidenceResolver;
 use arcanum_graph::InMemoryGraphStore;
+use arcanum_ingestion::SqliteDocumentVersionStore;
 use arcanum_models::OllamaProvider;
 use arcanum_server::build_app;
 use arcanum_tree::InMemoryTreeStore;
@@ -59,6 +62,23 @@ async fn main() -> Result<()> {
     // Production: PgTreeStore::new(&db_url).await?
     let tree_store = Arc::new(InMemoryTreeStore::new());
 
+    // ── Version store: SQLite local file ──────────────────────────────────────
+    // Production: PostgresDocumentVersionStore::new(&db_url).await?
+    let version_store = Arc::new(SqliteDocumentVersionStore::open("data/versions.db").await?);
+
+    // ── Chunk metadata store: in-memory (dev) — backs the evidence resolver ───
+    // Production: PostgresChunkMetadataStore::new(&db_url).await?
+    let chunk_metadata_store = Arc::new(InMemoryChunkMetadataStore::new());
+
+    // ── Evidence resolver — answers "show me the source" for a chunk/tree
+    // node/entity/relation, served under /evidence/*.
+    let evidence_resolver = Arc::new(DefaultEvidenceResolver::new(
+        chunk_metadata_store.clone(),
+        version_store.clone(),
+        tree_store.clone(),
+        graph_store.clone(),
+    ));
+
     let engine = ArcanumEngineBuilder::new(config)
         .auth_secret(&secret)
         .vector_store(vector_store)
@@ -66,6 +86,15 @@ async fn main() -> Result<()> {
         .enricher(enricher)
         .graph_store(graph_store)
         .tree_store(tree_store)
+        .version_store(version_store)
+        .chunk_metadata_store(chunk_metadata_store)
+        .evidence(evidence_resolver)
+        // GC worker requires Postgres (retention-policy bookkeeping lives in
+        // document_versions). Not wired in this in-memory dev example — production:
+        //   .gc_worker(Arc::new(PostgresGcWorker::new(
+        //       &db_url, version_store, snapshot_store, vector_store,
+        //       tree_store, graph_store, chunk_metadata_store,
+        //   ).await?))
         .build()
         .await?;
 

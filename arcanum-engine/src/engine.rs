@@ -2,7 +2,7 @@ use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
-             SnapshotStore, DocumentVersionStore},
+             SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -54,6 +54,9 @@ pub struct ArcanumEngine {
     pub tree_store: Option<Arc<dyn TreeStore>>,
     pub version_store: Arc<dyn DocumentVersionStore>,
     pub snapshot_store: Arc<dyn SnapshotStore>,
+    pub chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    pub evidence: Option<Arc<dyn EvidenceResolver>>,
+    pub gc_worker: Option<Arc<dyn GcWorker>>,
 }
 
 impl std::fmt::Debug for ArcanumEngine {
@@ -112,6 +115,9 @@ pub struct ArcanumEngineBuilder {
     bm25_index: Option<Arc<Bm25Index>>,
     version_store: Option<Arc<dyn DocumentVersionStore>>,
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
+    chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    evidence: Option<Arc<dyn EvidenceResolver>>,
+    gc_worker: Option<Arc<dyn GcWorker>>,
 }
 
 fn resolve_chunkers(
@@ -151,6 +157,9 @@ impl Default for ArcanumEngineBuilder {
             bm25_index: None,
             version_store: None,
             snapshot_store: None,
+            chunk_metadata_store: None,
+            evidence: None,
+            gc_worker: None,
         }
     }
 }
@@ -219,6 +228,21 @@ impl ArcanumEngineBuilder {
 
     pub fn snapshot_store(mut self, store: Arc<dyn SnapshotStore>) -> Self {
         self.snapshot_store = Some(store);
+        self
+    }
+
+    pub fn chunk_metadata_store(mut self, store: Arc<dyn ChunkMetadataStore>) -> Self {
+        self.chunk_metadata_store = Some(store);
+        self
+    }
+
+    pub fn evidence(mut self, resolver: Arc<dyn EvidenceResolver>) -> Self {
+        self.evidence = Some(resolver);
+        self
+    }
+
+    pub fn gc_worker(mut self, worker: Arc<dyn GcWorker>) -> Self {
+        self.gc_worker = Some(worker);
         self
     }
 
@@ -300,6 +324,7 @@ impl ArcanumEngineBuilder {
                     .unwrap_or_else(|| {
                         Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
                     }),
+                chunk_metadata:    self.chunk_metadata_store.clone(),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
@@ -457,6 +482,9 @@ impl ArcanumEngineBuilder {
                 .unwrap_or_else(|| {
                     Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
                 }),
+            chunk_metadata_store: self.chunk_metadata_store.clone(),
+            evidence: self.evidence.clone(),
+            gc_worker: self.gc_worker.clone(),
         }))
     }
 }

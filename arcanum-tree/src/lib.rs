@@ -111,6 +111,15 @@ impl TreeStore for InMemoryTreeStore {
         Ok(uris.len() as u64)
     }
 
+    async fn get_by_id(&self, node_id: &TreeNodeId) -> arcanum_core::Result<Option<TreeNode>> {
+        let nodes = self.nodes.read().await;
+        Ok(nodes
+            .values()
+            .flat_map(|v| v.iter())
+            .find(|n| n.id.0 == node_id.0)
+            .cloned())
+    }
+
     #[instrument(skip(self), fields(store = "in_memory_tree", collection = collection), err)]
     async fn delete_collection(&self, collection: &str) -> Result<()> {
         let prefix = format!("{}:", collection);
@@ -149,5 +158,33 @@ mod tests {
         let nodes = store.get_level("col", 0).await.unwrap();
         assert_eq!(nodes.len(), 1);
         assert_eq!(nodes[0].source_uri, "file://b.md");
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_get_by_id_returns_inserted_node() {
+        let store = InMemoryTreeStore::new();
+        let node = TreeNode {
+            id:               TreeNodeId::new(),
+            level:            0,
+            text:             "hello".into(),
+            vector:           Vector(vec![0.1, 0.2]),
+            parent:           None,
+            children:         vec![],
+            cluster_centroid: None,
+            source_uri:       "file://doc.pdf".into(),
+            leaf_chunk_ids:   vec![],
+        };
+        let id = node.id.clone();
+        store.insert_node("col", node).await.unwrap();
+        let found = store.get_by_id(&id).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id.0, id.0);
+    }
+
+    #[tokio::test]
+    async fn test_in_memory_get_by_id_returns_none_for_missing() {
+        let store = InMemoryTreeStore::new();
+        let found = store.get_by_id(&TreeNodeId::new()).await.unwrap();
+        assert!(found.is_none());
     }
 }

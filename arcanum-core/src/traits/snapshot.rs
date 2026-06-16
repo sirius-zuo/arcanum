@@ -13,4 +13,7 @@ pub trait SnapshotStore: Send + Sync {
 
     async fn fetch_raw(&self, uri: &str) -> Result<Vec<u8>>;
     async fn fetch_canonical(&self, uri: &str) -> Result<Option<serde_json::Value>>;
+
+    /// Delete raw and optional canonical snapshots at these URIs. No-op if not found.
+    async fn delete(&self, raw_uri: &str, canonical_uri: Option<&str>) -> Result<()>;
 }

@@ -9,6 +9,19 @@ pub struct Neo4jStore {
     graph: Arc<Graph>,
 }
 
+/// Parses stored chunk-id strings into `ChunkId`s, failing loudly on a malformed entry
+/// instead of silently dropping it (a dropped entry would make the evidence resolver
+/// under-report provenance with no indication anything was lost).
+fn parse_chunk_ids(strs: &[String]) -> Result<Vec<ChunkId>> {
+    strs.iter()
+        .map(|s| {
+            uuid::Uuid::parse_str(s)
+                .map(ChunkId)
+                .map_err(|e| ArcanumError::Storage(format!("invalid chunk UUID '{}': {}", s, e)))
+        })
+        .collect()
+}
+
 impl Neo4jStore {
     pub async fn new(uri: &str, user: &str, password: &str) -> Result<Self> {
         let graph = Graph::new(uri, user, password).await
@@ -72,7 +85,7 @@ impl GraphStore for Neo4jStore {
                             query(
                                 "MATCH (s:Entity {id: $source_id}) \
                                  MATCH (t:Entity {id: $target_id}) \
-                                 MERGE (s)-[r:RELATION {type: $relation_type}]->(t) \
+                                 MERGE (s)-[r:RELATION {relation_type: $relation_type}]->(t) \
                                  SET r.confidence = $confidence, r.collection = $collection, \
                                      r.source_chunks = $source_chunks",
                             )
@@ -101,17 +114,20 @@ impl GraphStore for Neo4jStore {
             "MATCH (e:Entity {collection: $collection}) \
              WHERE e.name CONTAINS $name AND e.entity_type = $entity_type \
              RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri"
+                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
+                    e.source_chunks as source_chunks"
         } else if !entity_type.is_empty() {
             "MATCH (e:Entity {collection: $collection}) \
              WHERE e.entity_type = $entity_type \
              RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri"
+                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
+                    e.source_chunks as source_chunks"
         } else if !name_pattern.is_empty() {
             "MATCH (e:Entity {collection: $collection}) \
              WHERE e.name CONTAINS $name \
              RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri"
+                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
+                    e.source_chunks as source_chunks"
         } else {
             "MATCH (e:Entity {collection: $collection}) \
              RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
@@ -141,10 +157,7 @@ impl GraphStore for Neo4jStore {
             let canonical_id: Option<String> = row.get("canonical_id").ok();
             let source_uri: String = row.get("source_uri").unwrap_or_default();
             let source_chunks_raw: Vec<String> = row.get("source_chunks").unwrap_or_default();
-            let source_chunks: Vec<ChunkId> = source_chunks_raw.iter()
-                .filter_map(|s| s.parse::<uuid::Uuid>().ok())
-                .map(ChunkId)
-                .collect();
+            let source_chunks = parse_chunk_ids(&source_chunks_raw)?;
             let id = id_str.parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse uuid: {}", e)))?;
             entities.push(Entity {
@@ -181,7 +194,7 @@ impl GraphStore for Neo4jStore {
         let id_str = entity_id.0.to_string();
 
         let mut stream = self.graph.execute(
-            query("MATCH (s:Entity {id: $id})-[r:RELATION]->(t:Entity) RETURN t.id as target_id, r.type as relation_type, r.confidence as confidence, r.source_chunks as source_chunks")
+            query("MATCH (s:Entity {id: $id})-[r:RELATION]->(t:Entity) RETURN t.id as target_id, r.relation_type as relation_type, r.confidence as confidence, r.source_chunks as source_chunks")
                 .param("id", id_str),
         )
         .await
@@ -201,10 +214,7 @@ impl GraphStore for Neo4jStore {
 
             // Read source_chunks from the relation if stored.
             let source_chunks_raw: Vec<String> = row.get("source_chunks").unwrap_or_default();
-            let source_chunks: Vec<ChunkId> = source_chunks_raw.iter()
-                .filter_map(|s| s.parse::<uuid::Uuid>().ok())
-                .map(ChunkId)
-                .collect();
+            let source_chunks = parse_chunk_ids(&source_chunks_raw)?;
 
             relations.push(Relation {
                 source: EntityId(entity_id.0),
@@ -358,6 +368,81 @@ impl GraphStore for Neo4jStore {
         .await
         .map_err(|e| ArcanumError::Storage(format!("delete_collection metadata: {}", e)))?;
         Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "neo4j", entity_id = %entity_id.0), err)]
+    async fn get_entity_by_id(&self, entity_id: &EntityId) -> Result<Option<Entity>> {
+        let id_str = entity_id.0.to_string();
+        let mut result = self.graph.execute(query(
+            "MATCH (e:Entity {id: $id}) \
+             RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, \
+                    e.canonical_id AS canonical_id, e.source_uri AS source_uri, \
+                    e.collection AS collection, e.source_chunks AS source_chunks"
+        ).param("id", id_str))
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get_entity_by_id: {}", e)))?;
+
+        if let Some(row) = result.next().await
+            .map_err(|e| ArcanumError::Storage(format!("get_entity_by_id row: {}", e)))?
+        {
+            let id_s: String = row.get("id")
+                .map_err(|e| ArcanumError::Storage(format!("get id: {}", e)))?;
+            let name: String = row.get("name")
+                .map_err(|e| ArcanumError::Storage(format!("get name: {}", e)))?;
+            let entity_type: String = row.get("entity_type")
+                .map_err(|e| ArcanumError::Storage(format!("get entity_type: {}", e)))?;
+            let canonical_id: Option<String> = row.get("canonical_id").ok()
+                .and_then(|s: String| if s.is_empty() { None } else { Some(s) });
+            let source_uri: String = row.get("source_uri")
+                .map_err(|e| ArcanumError::Storage(format!("get source_uri: {}", e)))?;
+            let collection_id: String = row.get("collection")
+                .map_err(|e| ArcanumError::Storage(format!("get collection: {}", e)))?;
+            let chunk_strs: Vec<String> = row.get("source_chunks")
+                .map_err(|e| ArcanumError::Storage(format!("get source_chunks: {}", e)))?;
+            let source_chunks = parse_chunk_ids(&chunk_strs)?;
+            let uuid = uuid::Uuid::parse_str(&id_s)
+                .map_err(|e| ArcanumError::Storage(format!("parse entity uuid: {}", e)))?;
+            Ok(Some(Entity { id: EntityId(uuid), name, entity_type, canonical_id, source_chunks, source_uri, collection_id }))
+        } else {
+            Ok(None)
+        }
+    }
+
+    #[instrument(skip(self), fields(store = "neo4j", relation_type), err)]
+    async fn get_relation(
+        &self,
+        source_id:     &EntityId,
+        relation_type: &str,
+        target_id:     &EntityId,
+    ) -> Result<Option<Relation>> {
+        let mut result = self.graph.execute(query(
+            "MATCH (s:Entity {id: $source_id})-[r:RELATION {relation_type: $relation_type}]->(t:Entity {id: $target_id}) \
+             RETURN r.source_chunks AS source_chunks, r.confidence AS confidence"
+        )
+        .param("source_id", source_id.0.to_string())
+        .param("relation_type", relation_type.to_string())
+        .param("target_id", target_id.0.to_string()))
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get_relation: {}", e)))?;
+
+        if let Some(row) = result.next().await
+            .map_err(|e| ArcanumError::Storage(format!("get_relation row: {}", e)))?
+        {
+            let chunk_strs: Vec<String> = row.get("source_chunks")
+                .map_err(|e| ArcanumError::Storage(format!("get source_chunks: {}", e)))?;
+            let source_chunks = parse_chunk_ids(&chunk_strs)?;
+            let confidence: f64 = row.get("confidence")
+                .map_err(|e| ArcanumError::Storage(format!("get confidence: {}", e)))?;
+            Ok(Some(Relation {
+                source:        source_id.clone(),
+                relation_type: relation_type.to_string(),
+                target:        target_id.clone(),
+                confidence:    confidence as f32,
+                source_chunks,
+            }))
+        } else {
+            Ok(None)
+        }
     }
 }
 

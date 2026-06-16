@@ -21,8 +21,10 @@ pub use enrichment::{ContextEnricher, EntityExtractor};
 pub use snapshot::local::LocalSnapshotStore;
 pub use versioning::postgres::PostgresDocumentVersionStore;
 pub use versioning::sqlite::SqliteDocumentVersionStore;
+pub use versioning::chunk_metadata::PostgresChunkMetadataStore;
 
-// TODO: Task 6 replaces this with versioning/postgres.rs
+pub mod gc;
+pub use gc::PostgresGcWorker;
 
 
 pub mod registry;

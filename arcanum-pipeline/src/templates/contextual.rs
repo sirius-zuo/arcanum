@@ -48,7 +48,7 @@ pub fn builder() -> TemplateBuilder {
                     .add_stage(make_tree_chunk_stage(state.clone(), deps.chunkers.tree.clone()))
                     .add_stage(make_context_enrich_stage(state.clone(), enricher.clone()))
                     .add_stage(make_embed_stage_after("context_enrich", state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()))
-                    .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone()))
+                    .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone(), deps.chunk_metadata.clone()))
                     .add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()))
             }
         }
