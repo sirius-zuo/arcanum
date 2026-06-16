@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod evidence;
 pub mod graph_planner;
 pub mod ingestion;
 pub mod lexical_index;
@@ -10,6 +11,7 @@ pub mod store;
 pub mod in_memory_snapshot;
 pub mod versioning;
 pub use cache::*;
+pub use evidence::{EvidenceResolver, ChunkMetadataStore, GcWorker};
 pub use graph_planner::*;
 pub use ingestion::*;
 pub use lexical_index::*;

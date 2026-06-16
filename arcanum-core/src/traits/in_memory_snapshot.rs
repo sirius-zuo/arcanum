@@ -53,6 +53,15 @@ impl SnapshotStore for InMemorySnapshotStore {
         Ok(self.data.lock().unwrap().get(uri)
             .and_then(|b| serde_json::from_slice(b).ok()))
     }
+
+    async fn delete(&self, raw_uri: &str, canonical_uri: Option<&str>) -> Result<()> {
+        let mut data = self.data.lock().unwrap();
+        data.remove(raw_uri);
+        if let Some(u) = canonical_uri {
+            data.remove(u);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]

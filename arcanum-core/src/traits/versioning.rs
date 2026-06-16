@@ -32,6 +32,13 @@ pub trait DocumentVersionStore: Send + Sync {
     /// Remove all version records for a given source URI in a collection.
     /// Used when a document is deleted from the system.
     async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()>;
+
+    /// Look up a specific document version by document_id + version number.
+    async fn get_version(
+        &self,
+        document_id: &DocumentId,
+        version_num: u32,
+    ) -> Result<Option<DocumentVersion>>;
 }
 
 /// No-op implementation for tests and dev setups without Postgres.
@@ -51,4 +58,7 @@ impl DocumentVersionStore for NoOpDocumentVersionStore {
     }
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
+        Ok(None)
+    }
 }
