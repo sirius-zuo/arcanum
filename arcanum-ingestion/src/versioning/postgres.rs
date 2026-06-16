@@ -4,7 +4,7 @@ use arcanum_core::{
     ArcanumError, Result,
 };
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use sqlx::PgPool;
 use std::collections::HashMap;
 use tracing::instrument;
@@ -84,6 +84,45 @@ impl PostgresDocumentVersionStore {
         .await
         .map_err(|e| ArcanumError::Storage(format!("ensure collection_config: {}", e)))?;
 
+        // arcanum_tree_nodes — used by the tree/vector engine
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS arcanum_tree_nodes (
+                id             UUID    PRIMARY KEY,
+                collection     TEXT    NOT NULL,
+                level          INTEGER NOT NULL,
+                text           TEXT    NOT NULL,
+                vector         JSONB   NOT NULL,
+                centroid       JSONB,
+                parent_id      UUID,
+                children       JSONB   NOT NULL DEFAULT '[]',
+                source_uri     TEXT    NOT NULL DEFAULT '',
+                leaf_chunk_ids JSONB   NOT NULL DEFAULT '[]'
+            )
+        "#)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure arcanum_tree_nodes: {}", e)))?;
+
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_tree_nodes_collection_level ON arcanum_tree_nodes (collection, level)")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("ensure tree_nodes index: {}", e)))?;
+
+        // Add leaf_chunk_ids to existing deployments that have the old schema without it.
+        sqlx::query("ALTER TABLE arcanum_tree_nodes ADD COLUMN IF NOT EXISTS leaf_chunk_ids JSONB NOT NULL DEFAULT '[]'")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("alter tree_nodes add leaf_chunk_ids: {}", e)))?;
+
+        sqlx::query(r#"
+            CREATE TABLE IF NOT EXISTS arcanum_tree_collections (
+                name TEXT PRIMARY KEY
+            )
+        "#)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure arcanum_tree_collections: {}", e)))?;
+
         Ok(())
     }
 }
@@ -113,7 +152,7 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
 
         // Get the active version with the highest version_num.
         let row = sqlx::query_as::<_, VersionRow>(
-            r#"SELECT document_id, version_num, snapshot_uri, canonical_uri, mime_type,
+            r#"SELECT document_id, version_num, content_hash, snapshot_uri, canonical_uri, mime_type,
                       status, ingested_at, extra
                FROM document_versions
                WHERE document_id = $1 AND status = 'active'
@@ -142,7 +181,7 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
                     version_num:   r.version_num as u32,
                     source_uri:    source_uri.to_string(),
                     collection_id: collection_id.to_string(),
-                    content_hash:  String::new(), // not stored in this table — caller computes
+                    content_hash:  r.content_hash,
                     snapshot_uri:  r.snapshot_uri,
                     canonical_uri: r.canonical_uri,
                     mime_type:     r.mime_type,
@@ -159,11 +198,13 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
     async fn add_version(&self, version: DocumentVersion) -> Result<()> {
         let doc_id = version.document_id.0;
 
-        // Ensure source document row exists.
-        let _: (uuid::Uuid,) = sqlx::query_as(
+        // Ensure source document row exists; return its document_id whether new or pre-existing.
+        // ON CONFLICT DO UPDATE touches the row so RETURNING always fires (unlike DO NOTHING).
+        let (resolved_id,): (uuid::Uuid,) = sqlx::query_as(
             r#"INSERT INTO source_documents (document_id, source_uri, collection_id)
                VALUES ($1, $2, $3)
-               ON CONFLICT (source_uri, collection_id) DO NOTHING
+               ON CONFLICT (source_uri, collection_id) DO UPDATE
+                   SET source_uri = EXCLUDED.source_uri
                RETURNING document_id"#
         )
         .bind(doc_id)
@@ -173,14 +214,23 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
         .await
         .map_err(|e| ArcanumError::Storage(format!("ensure source document: {}", e)))?;
 
-        // Insert version row.
+        // Insert version row. ON CONFLICT upserts so a concurrent race on the same
+        // (document_id, version_num) doesn't crash — last writer wins.
         sqlx::query(
             r#"INSERT INTO document_versions
                (document_id, version_num, content_hash, snapshot_uri, canonical_uri,
                 mime_type, status, ingested_at, extra)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"#
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+               ON CONFLICT (document_id, version_num) DO UPDATE
+                   SET content_hash  = EXCLUDED.content_hash,
+                       snapshot_uri  = EXCLUDED.snapshot_uri,
+                       canonical_uri = EXCLUDED.canonical_uri,
+                       mime_type     = EXCLUDED.mime_type,
+                       status        = EXCLUDED.status,
+                       ingested_at   = EXCLUDED.ingested_at,
+                       extra         = EXCLUDED.extra"#
         )
-        .bind(doc_id)
+        .bind(resolved_id)
         .bind(version.version_num as i32)
         .bind(&version.content_hash)
         .bind(&version.snapshot_uri)
@@ -215,12 +265,29 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
 
     #[instrument(skip(self), fields(store = "postgres_version", doc_id = %document_id.0), err)]
     async fn list_versions(&self, document_id: &DocumentId) -> Result<Vec<DocumentVersion>> {
-        let rows = sqlx::query_as::<_, VersionRow>(
-            r#"SELECT document_id, version_num, snapshot_uri, canonical_uri, mime_type,
-                      status, ingested_at, extra
-               FROM document_versions
-               WHERE document_id = $1
-               ORDER BY version_num ASC"#
+        #[derive(sqlx::FromRow)]
+        struct ListRow {
+            document_id:   uuid::Uuid,
+            version_num:   i32,
+            source_uri:    String,
+            collection_id: String,
+            content_hash:  String,
+            snapshot_uri:  String,
+            canonical_uri: Option<String>,
+            mime_type:     String,
+            status:        String,
+            ingested_at:   chrono::DateTime<Utc>,
+            extra:         Option<serde_json::Value>,
+        }
+
+        let rows = sqlx::query_as::<_, ListRow>(
+            r#"SELECT dv.document_id, dv.version_num, sd.source_uri, sd.collection_id,
+                      dv.content_hash, dv.snapshot_uri, dv.canonical_uri, dv.mime_type,
+                      dv.status, dv.ingested_at, dv.extra
+               FROM document_versions dv
+               JOIN source_documents sd ON sd.document_id = dv.document_id
+               WHERE dv.document_id = $1
+               ORDER BY dv.version_num ASC"#
         )
         .bind(document_id.0)
         .fetch_all(&self.pool)
@@ -242,9 +309,9 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
             Ok(DocumentVersion {
                 document_id:   DocumentId(r.document_id),
                 version_num:   r.version_num as u32,
-                source_uri:    String::new(),
-                collection_id: String::new(),
-                content_hash:  String::new(),
+                source_uri:    r.source_uri,
+                collection_id: r.collection_id,
+                content_hash:  r.content_hash,
                 snapshot_uri:  r.snapshot_uri,
                 canonical_uri: r.canonical_uri,
                 mime_type:     r.mime_type,
@@ -328,7 +395,10 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
     async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()> {
         sqlx::query(
             r#"DELETE FROM document_versions
-               WHERE source_uri = $1 AND collection_id = $2"#
+               WHERE document_id IN (
+                   SELECT document_id FROM source_documents
+                   WHERE source_uri = $1 AND collection_id = $2
+               )"#
         )
         .bind(source_uri)
         .bind(collection_id)
@@ -341,14 +411,15 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
 
 #[derive(sqlx::FromRow)]
 struct VersionRow {
-    document_id: uuid::Uuid,
-    version_num: i32,
-    snapshot_uri: String,
+    document_id:   uuid::Uuid,
+    version_num:   i32,
+    content_hash:  String,
+    snapshot_uri:  String,
     canonical_uri: Option<String>,
-    mime_type: String,
-    status: String,
-    ingested_at: chrono::DateTime<Utc>,
-    extra: Option<serde_json::Value>,
+    mime_type:     String,
+    status:        String,
+    ingested_at:   chrono::DateTime<Utc>,
+    extra:         Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -391,5 +462,126 @@ mod tests {
         let v = latest.unwrap();
         assert_eq!(v.version_num, 1);
         assert_eq!(v.document_id, doc_id);
+    }
+
+    /// Bug #1 — re-ingesting an existing document used to crash with RowNotFound.
+    #[tokio::test]
+    #[ignore]
+    async fn test_add_version_is_idempotent_for_existing_source_doc() {
+        let db_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/arcanum_test".to_string());
+        let store = PostgresDocumentVersionStore::new(&db_url).await.unwrap();
+
+        let doc = DocumentVersion {
+            document_id:   DocumentId::new(),
+            version_num:   1,
+            source_uri:    "file://bug1-test.md".into(),
+            collection_id: "test-col-bug1".into(),
+            content_hash:  "hash-v1".into(),
+            snapshot_uri:  "file:///snap/v1.raw".into(),
+            canonical_uri: None,
+            mime_type:     "text/markdown".into(),
+            status:        VersionStatus::Active,
+            ingested_at:   Utc::now(),
+            extra:         HashMap::new(),
+        };
+        store.add_version(doc.clone()).await.unwrap();    // first ingestion
+
+        let mut doc_v2 = doc.clone();
+        doc_v2.version_num  = 2;
+        doc_v2.content_hash = "hash-v2".into();
+        doc_v2.snapshot_uri = "file:///snap/v2.raw".into();
+        store.add_version(doc_v2).await.unwrap();         // second ingestion — must not crash
+    }
+
+    /// Bug #3 — get_latest must return the real content_hash.
+    #[tokio::test]
+    #[ignore]
+    async fn test_get_latest_returns_content_hash() {
+        let db_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/arcanum_test".to_string());
+        let store = PostgresDocumentVersionStore::new(&db_url).await.unwrap();
+
+        let doc = DocumentVersion {
+            document_id:   DocumentId::new(),
+            version_num:   1,
+            source_uri:    "file://bug3-test.md".into(),
+            collection_id: "test-col-bug3".into(),
+            content_hash:  "sha256-abc123".into(),
+            snapshot_uri:  "file:///snap/v1.raw".into(),
+            canonical_uri: None,
+            mime_type:     "text/plain".into(),
+            status:        VersionStatus::Active,
+            ingested_at:   Utc::now(),
+            extra:         HashMap::new(),
+        };
+        store.add_version(doc).await.unwrap();
+
+        let latest = store.get_latest("file://bug3-test.md", "test-col-bug3").await.unwrap().unwrap();
+        assert_eq!(latest.content_hash, "sha256-abc123");
+        assert_eq!(latest.source_uri, "file://bug3-test.md");
+        assert_eq!(latest.collection_id, "test-col-bug3");
+    }
+
+    /// Bug #8 — list_versions must return populated source_uri and collection_id.
+    #[tokio::test]
+    #[ignore]
+    async fn test_list_versions_returns_full_document_version() {
+        let db_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/arcanum_test".to_string());
+        let store = PostgresDocumentVersionStore::new(&db_url).await.unwrap();
+
+        let doc_id = DocumentId::new();
+        for v in 1u32..=2 {
+            store.add_version(DocumentVersion {
+                document_id:   doc_id.clone(),
+                version_num:   v,
+                source_uri:    "file://bug8-test.md".into(),
+                collection_id: "test-col-bug8".into(),
+                content_hash:  format!("hash-v{}", v),
+                snapshot_uri:  format!("file:///snap/v{}.raw", v),
+                canonical_uri: None,
+                mime_type:     "text/plain".into(),
+                status:        VersionStatus::Active,
+                ingested_at:   Utc::now(),
+                extra:         HashMap::new(),
+            }).await.unwrap();
+        }
+
+        let versions = store.list_versions(&doc_id).await.unwrap();
+        assert_eq!(versions.len(), 2);
+        for v in &versions {
+            assert_eq!(v.source_uri, "file://bug8-test.md", "source_uri must be populated");
+            assert_eq!(v.collection_id, "test-col-bug8", "collection_id must be populated");
+            assert!(!v.content_hash.is_empty(), "content_hash must be populated");
+        }
+    }
+
+    /// Bug #2 — delete_by_source_uri must not crash with column-not-found.
+    #[tokio::test]
+    #[ignore]
+    async fn test_delete_by_source_uri_works() {
+        let db_url = std::env::var("TEST_DATABASE_URL")
+            .unwrap_or_else(|_| "postgres://postgres:postgres@localhost/arcanum_test".to_string());
+        let store = PostgresDocumentVersionStore::new(&db_url).await.unwrap();
+
+        store.add_version(DocumentVersion {
+            document_id:   DocumentId::new(),
+            version_num:   1,
+            source_uri:    "file://bug2-test.md".into(),
+            collection_id: "test-col-bug2".into(),
+            content_hash:  "hash".into(),
+            snapshot_uri:  "file:///snap.raw".into(),
+            canonical_uri: None,
+            mime_type:     "text/plain".into(),
+            status:        VersionStatus::Active,
+            ingested_at:   Utc::now(),
+            extra:         HashMap::new(),
+        }).await.unwrap();
+
+        store.delete_by_source_uri("test-col-bug2", "file://bug2-test.md").await.unwrap();
+
+        let latest = store.get_latest("file://bug2-test.md", "test-col-bug2").await.unwrap();
+        assert!(latest.is_none(), "deleted doc must not appear in get_latest");
     }
 }
