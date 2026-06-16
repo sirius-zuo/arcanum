@@ -37,6 +37,18 @@ impl RawDocument {
         hasher.update(&self.content);
         hex::encode(hasher.finalize())
     }
+
+    /// Construct a minimal RawDocument for use in tests.
+    /// Uses a fresh DocumentId and empty metadata; callers only specify what the test cares about.
+    pub fn for_test(content: impl Into<Vec<u8>>, mime_type: impl Into<String>) -> Self {
+        Self {
+            id:         DocumentId::new(),
+            content:    content.into(),
+            mime_type:  mime_type.into(),
+            source_uri: "test://fixture".into(),
+            metadata:   HashMap::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

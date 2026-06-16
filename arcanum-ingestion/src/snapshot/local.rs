@@ -5,7 +5,6 @@ use arcanum_core::{
 };
 use async_trait::async_trait;
 use std::path::PathBuf;
-use std::sync::Arc;
 use tracing::instrument;
 
 /// Filesystem-backed SnapshotStore.
@@ -116,6 +115,7 @@ impl SnapshotStore for LocalSnapshotStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn make_store() -> (LocalSnapshotStore, TempDir) {

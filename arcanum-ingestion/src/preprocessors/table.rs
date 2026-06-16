@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Preprocessor, types::{DocumentId, RawDocument}, Result};
+use arcanum_core::{traits::Preprocessor, types::RawDocument, Result};
 use async_trait::async_trait;
 use scraper::{Html, Selector};
 use tracing::instrument;
@@ -55,13 +55,7 @@ mod tests {
     async fn test_table_extractor_converts_html_table() {
         let extractor = TableExtractor::new();
         let html = r#"<html><body><table><tr><th>Name</th><th>Score</th></tr><tr><td>Alice</td><td>95</td></tr></table></body></html>"#;
-        let doc = RawDocument {
-            id: DocumentId::new(),
-            content: html.as_bytes().to_vec(),
-            mime_type: "text/html".to_string(),
-            source_uri: "test://x.html".to_string(),
-            metadata: Default::default(),
-        };
+        let doc = RawDocument::for_test(html, "text/html");
         let result = extractor.process(doc).await.unwrap();
         let text = String::from_utf8(result.content).unwrap();
         assert!(text.contains("Name | Score"));
@@ -71,13 +65,7 @@ mod tests {
     #[tokio::test]
     async fn test_table_extractor_passes_through_non_html() {
         let extractor = TableExtractor::new();
-        let doc = RawDocument {
-            id: DocumentId::new(),
-            content: b"plain text".to_vec(),
-            mime_type: "text/plain".to_string(),
-            source_uri: "test://x".to_string(),
-            metadata: Default::default(),
-        };
+        let doc = RawDocument::for_test("plain text", "text/plain");
         let result = extractor.process(doc).await.unwrap();
         assert_eq!(result.content, b"plain text");
     }

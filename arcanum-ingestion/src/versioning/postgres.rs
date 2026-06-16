@@ -339,7 +339,7 @@ impl DocumentVersionStore for PostgresDocumentVersionStore {
                     "retention_based" => VersioningPolicy::RetentionBased {
                         days: retention_days.unwrap_or(30) as u32,
                     },
-                    _ | _ => VersioningPolicy::Replace,
+                    _ => VersioningPolicy::Replace,
                 };
                 Ok(policy)
             }
