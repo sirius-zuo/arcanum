@@ -202,4 +202,26 @@ mod tests {
         assert_eq!(raw_a, b"content-a");
         assert_eq!(raw_b, b"content-b");
     }
+
+    #[tokio::test]
+    async fn test_delete_raw_snapshot() {
+        let (store, _tmp) = make_store();
+        let doc_id = DocumentId::new();
+        let loc = store.store(&doc_id, 1, b"raw bytes", None).await.unwrap();
+        store.delete(&loc.raw_uri, None).await.unwrap();
+        // File must be gone.
+        let err = store.fetch_raw(&loc.raw_uri).await.unwrap_err();
+        assert!(err.to_string().contains("snapshot not found") || err.to_string().contains("No such file"));
+    }
+
+    #[tokio::test]
+    async fn test_delete_with_canonical_removes_both() {
+        let (store, _tmp) = make_store();
+        let doc_id = DocumentId::new();
+        let cv = serde_json::json!({"blocks": []});
+        let loc = store.store(&doc_id, 1, b"raw bytes", Some(&cv)).await.unwrap();
+        store.delete(&loc.raw_uri, loc.canonical_uri.as_deref()).await.unwrap();
+        assert!(store.fetch_raw(&loc.raw_uri).await.is_err());
+        assert!(store.fetch_canonical(loc.canonical_uri.as_ref().unwrap()).await.is_err());
+    }
 }
