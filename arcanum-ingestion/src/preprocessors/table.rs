@@ -45,13 +45,6 @@ impl Preprocessor for TableExtractor {
         }
         Ok(doc)
     }
-
-    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> {
-        None
-    }
-
-    fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {
-    }
 }
 
 #[cfg(test)]

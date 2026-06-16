@@ -78,24 +78,16 @@ impl Preprocessor for PreprocessorRegistry {
     }
 
     fn canonical(&self, doc_id: &DocumentId) -> Option<serde_json::Value> {
-        // Forward to all registered preprocessors in the chain.
-        // The last preprocessor in the chain that has canonical wins.
         for chain in self.chains.values() {
             for p in chain {
-                if let Some(canon) = p.canonical(doc_id) {
-                    return Some(canon);
+                if let Some(c) = p.canonical(doc_id) {
+                    return Some(c);
                 }
             }
         }
         None
     }
 
-    fn set_canonical(&self, doc_id: &DocumentId, canonical: serde_json::Value) {
-        // Forward to all registered preprocessors in the chain.
-        for chain in self.chains.values() {
-            for p in chain {
-                p.set_canonical(doc_id, canonical.clone());
-            }
-        }
-    }
+    // set_canonical: use the default (no-op).
+    // DoclingPreprocessor sets its own canonical during process() — no external caller needed.
 }

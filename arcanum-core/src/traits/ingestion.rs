@@ -92,10 +92,10 @@ pub trait Preprocessor: Send + Sync {
 
     /// Return structured canonical JSON (e.g. Docling blocks) for this document,
     /// if the preprocessor produces one during `process()`.
-    fn canonical(&self, doc_id: &DocumentId) -> Option<serde_json::Value>;
+    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> { None }
 
     /// Set the canonical JSON produced by `process()` for a given document.
-    fn set_canonical(&self, doc_id: &DocumentId, canonical: serde_json::Value);
+    fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {}
 }
 
 #[async_trait]
