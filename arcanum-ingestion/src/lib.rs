@@ -15,7 +15,7 @@ pub use loaders::{
     DatabaseLoader, CloudStorageLoader, GitLoader, ConnectorLoader,
     LoaderRegistry,
 };
-pub use preprocessors::{HtmlCleaner, PdfParser, EpubParser, PreprocessorRegistry, PreprocessorCatalog, DoclingPreprocessor, DoclingBackend};
+pub use preprocessors::{PreprocessorCatalog, DoclingPreprocessor, DoclingBackend};
 pub use chunkers::{FixedSizeChunker, SemanticChunker, PropositionalChunker};
 pub use enrichment::{ContextEnricher, EntityExtractor};
 pub use snapshot::local::LocalSnapshotStore;

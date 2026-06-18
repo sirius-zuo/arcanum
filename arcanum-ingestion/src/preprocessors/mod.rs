@@ -1,20 +1,5 @@
-mod docling;
-pub use docling::{DoclingPreprocessor, DoclingBackend};
 mod catalog;
 pub use catalog::PreprocessorCatalog;
-mod html;
-mod pdf;
-mod epub;
-mod docx;
-mod language;
-mod table;
-mod image;
-mod registry;
-pub use html::HtmlCleaner;
-pub use pdf::PdfParser;
-pub use epub::EpubParser;
-pub use docx::DocxPreprocessor;
-pub use language::LanguageDetector;
-pub use table::TableExtractor;
-pub use image::ImageCaptioner;
-pub use registry::PreprocessorRegistry;
+
+mod docling;
+pub use docling::{DoclingPreprocessor, DoclingBackend};
