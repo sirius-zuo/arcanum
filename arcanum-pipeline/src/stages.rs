@@ -110,7 +110,7 @@ pub fn make_cleanup_stage(
     PipelineStage {
         id: "cleanup",
         deps: vec!["dedup"],
-        run: Arc::new(move |mut ctx| {
+        run: Arc::new(move |ctx| {
             let state         = state.clone();
             let version_store = version_store.clone();
             let vs            = vector_store.clone();
