@@ -888,32 +888,4 @@ mod tests {
         assert!(pp.canonical(&doc_id).is_some(), "first read should return value");
         assert!(pp.canonical(&doc_id).is_none(), "second read should return None — entry was evicted");
     }
-
-    #[test]
-    fn test_docling_chains_covers_all_supported_mimes() {
-        use crate::preprocessors::registry::PreprocessorRegistry;
-
-        struct NoOp;
-        #[async_trait::async_trait]
-        impl arcanum_core::traits::Preprocessor for NoOp {
-            async fn process(&self, doc: arcanum_core::types::RawDocument) -> arcanum_core::Result<arcanum_core::types::RawDocument> {
-                Ok(doc)
-            }
-            fn canonical(&self, _doc_id: &arcanum_core::types::DocumentId) -> Option<serde_json::Value> {
-                None
-            }
-            fn set_canonical(&self, _doc_id: &arcanum_core::types::DocumentId, _canonical: serde_json::Value) {
-            }
-        }
-
-        let registry = PreprocessorRegistry::docling_chains(std::sync::Arc::new(NoOp));
-        let registered = registry.registered_mimes();
-
-        for mime in SUPPORTED_MIMES {
-            assert!(
-                registered.contains(&mime.to_string()),
-                "MIME {mime:?} is in SUPPORTED_MIMES but not registered in docling_chains()"
-            );
-        }
-    }
 }

@@ -1,9 +1,9 @@
 use arcanum_core::{
     Result,
-    traits::IngestionDepsOverrideResolver,
+    traits::{IngestionDepsOverrideResolver, Preprocessor},
     types::{PerBackendChunkConfig, PerBackendChunkers, ShadowContext},
 };
-use arcanum_ingestion::default_registry;
+use arcanum_ingestion::{default_registry, PreprocessorCatalog};
 use async_trait::async_trait;
 use std::sync::Arc;
 use crate::services::{
@@ -12,9 +12,10 @@ use crate::services::{
 };
 
 pub struct EngineIngestionDepsResolver {
-    pub collection_service: Arc<CollectionService>,
-    pub experiment_service: Arc<ExperimentService>,
-    pub global_chunking:    PerBackendChunkConfig,
+    pub collection_service:   Arc<CollectionService>,
+    pub experiment_service:   Arc<ExperimentService>,
+    pub global_chunking:      PerBackendChunkConfig,
+    pub preprocessor_catalog: Arc<PreprocessorCatalog>,
 }
 
 #[async_trait]
@@ -22,17 +23,23 @@ impl IngestionDepsOverrideResolver for EngineIngestionDepsResolver {
     async fn resolve_for_collection(
         &self,
         collection_id: &str,
-    ) -> Result<(PerBackendChunkers, Option<ShadowContext>)> {
+    ) -> Result<(PerBackendChunkers, Option<ShadowContext>, Option<Arc<dyn Preprocessor>>)> {
         let col_info = match self.collection_service.get(collection_id).await {
             Ok(info) => info,
             Err(_) => {
                 // Collection not found (deleted after task was queued) — use global defaults.
                 let chunkers = resolve_chunkers(None, &self.global_chunking)?;
-                return Ok((chunkers, None));
+                let preprocessor = self.preprocessor_catalog.get("default");
+                return Ok((chunkers, None, preprocessor));
             }
         };
 
         let chunkers = resolve_chunkers(col_info.chunker_config.as_ref(), &self.global_chunking)?;
+
+        let preprocessor = match &col_info.preprocessor {
+            Some(name) => self.preprocessor_catalog.get(name),
+            None => self.preprocessor_catalog.get("default"),
+        };
 
         let shadow = if let Some(exp_id) = col_info.experiment {
             match self.experiment_service.get(collection_id, &exp_id).await {
@@ -54,7 +61,7 @@ impl IngestionDepsOverrideResolver for EngineIngestionDepsResolver {
             None
         };
 
-        Ok((chunkers, shadow))
+        Ok((chunkers, shadow, preprocessor))
     }
 }
 

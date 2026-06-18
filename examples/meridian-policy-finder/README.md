@@ -18,6 +18,20 @@ Internal HR/policy Q&A assistant powered by [Arcanum](../../README.md).
   ```bash
   ollama pull nomic-embed-text
   ```
+- [docling-serve](https://github.com/docling-project/docling-serve) running locally:
+  1. Pull the image (~2.7 GB):
+     ```bash
+     docker pull quay.io/docling-project/docling-serve
+     ```
+  2. Run it:
+     ```bash
+     docker run -p 5001:5001 quay.io/docling-project/docling-serve
+     ```
+  3. Verify it's up:
+     ```bash
+     curl http://localhost:5001/health
+     ```
+  For GPU acceleration, use `quay.io/docling-project/docling-serve-cu128` instead (RapidOCR may need container patching for true CUDA support).
 
 ---
 

@@ -20,6 +20,11 @@ pipeline         = "full"
 worker_pool_size = 2
 queue_capacity   = 100
 
+[ingestion.docling.backend]
+type         = "http"
+base_url     = "http://localhost:5001"
+timeout_secs = 300
+
 [tree]
 raptor_max_depth    = 3
 raptor_cluster_size = 10

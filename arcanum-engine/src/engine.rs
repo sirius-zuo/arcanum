@@ -2,13 +2,14 @@ use arcanum_core::{
     config::{ArcanumConfig, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
-             SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker},
+             SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
+             Preprocessor},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
 use arcanum_ingestion::LocalSnapshotStore;
 use arcanum_graph::GraphQueryPlanner;
-use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry,
+use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader, default_registry,
                         DoclingPreprocessor, DoclingBackend};
 use arcanum_core::types::{PerBackendChunkConfig, PerBackendChunkers};
@@ -118,6 +119,7 @@ pub struct ArcanumEngineBuilder {
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
+    preprocessor_overrides: Vec<(String, Arc<dyn Preprocessor>)>,
 }
 
 fn resolve_chunkers(
@@ -160,6 +162,7 @@ impl Default for ArcanumEngineBuilder {
             chunk_metadata_store: None,
             evidence: None,
             gc_worker: None,
+            preprocessor_overrides: Vec::new(),
         }
     }
 }
@@ -246,6 +249,11 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn register_preprocessor(mut self, name: impl Into<String>, p: Arc<dyn Preprocessor>) -> Self {
+        self.preprocessor_overrides.push((name.into(), p));
+        self
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
 
@@ -267,8 +275,24 @@ impl ArcanumEngineBuilder {
         let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
         let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
 
+        // Build the preprocessor catalog: docling (if configured) registers as
+        // "default"; builder-supplied overrides apply on top and can replace
+        // "default" itself or add additional named preprocessors for specific
+        // collections. Built unconditionally — the engine must build and serve
+        // queries even with no preprocessor configured at all; only ingestion
+        // tasks fail later if nothing resolves.
+        let mut preprocessor_catalog = PreprocessorCatalog::new();
+        if let Some(dc) = &self.config.ingestion.docling {
+            let backend = DoclingBackend::from(&dc.backend);
+            preprocessor_catalog.register("default", Arc::new(DoclingPreprocessor::new(backend)) as Arc<dyn Preprocessor>);
+        }
+        for (name, p) in &self.preprocessor_overrides {
+            preprocessor_catalog.register(name.clone(), p.clone());
+        }
+        let preprocessor_catalog = Arc::new(preprocessor_catalog);
+
         // Collection and experiment services — needed early for per-job resolver.
-        let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone()));
+        let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone(), preprocessor_catalog.clone()));
         let experiment = Arc::new(ExperimentService::new(collection.clone()));
 
         // Shared queue — passed to both IngestionService (push) and workers (pop).
@@ -287,6 +311,7 @@ impl ArcanumEngineBuilder {
             collection_service: collection.clone(),
             experiment_service: experiment.clone(),
             global_chunking:    self.config.ingestion.chunking.clone(),
+            preprocessor_catalog: preprocessor_catalog.clone(),
         }) as Arc<dyn IngestionDepsOverrideResolver>;
 
         // Wire pipeline workers if embedder + vector_store are available.
@@ -298,15 +323,7 @@ impl ArcanumEngineBuilder {
                         .register(Arc::new(FileLoader::new()))
                         .register(Arc::new(HttpLoader::new())),
                 ),
-                preprocessors:     Arc::new(match &self.config.ingestion.docling {
-                    Some(dc) => {
-                        let backend = DoclingBackend::from(&dc.backend);
-                        PreprocessorRegistry::docling_chains(Arc::new(
-                            DoclingPreprocessor::new(backend),
-                        ))
-                    }
-                    None => PreprocessorRegistry::new(),
-                }),
+                preprocessors:     preprocessor_catalog.get("default"),
                 chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
                 shadow:            None,
                 context_enricher:  self.enricher.clone(),
