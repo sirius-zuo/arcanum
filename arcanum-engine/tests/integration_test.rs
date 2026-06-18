@@ -1,5 +1,5 @@
 use arcanum_core::{
-    traits::{Embedder, NoOpDocumentVersionStore, VectorStore, VectorQuery, ScoredChunk},
+    traits::{Embedder, NoOpDocumentVersionStore, Preprocessor, VectorStore, VectorQuery, ScoredChunk},
     types::*,
 };
 use arcanum_engine::{ArcanumEngine, IngestRequest};
@@ -33,6 +33,13 @@ impl Embedder for StubEmbedder {
     fn dimension(&self) -> usize { 2 }
 }
 
+struct StubPreprocessor;
+
+#[async_trait]
+impl Preprocessor for StubPreprocessor {
+    async fn process(&self, doc: RawDocument) -> arcanum_core::Result<RawDocument> { Ok(doc) }
+}
+
 #[tokio::test]
 async fn test_ingest_task_executes_and_writes_to_vector_store() {
     let store = Arc::new(RecordingVectorStore(Mutex::new(vec![])));
@@ -41,6 +48,7 @@ async fn test_ingest_task_executes_and_writes_to_vector_store() {
         .vector_store(store.clone())
         .embedder(Arc::new(StubEmbedder))
         .version_store(Arc::new(NoOpDocumentVersionStore))
+        .register_preprocessor("default", Arc::new(StubPreprocessor))
         .build()
         .await
         .expect("build should succeed");
@@ -69,6 +77,41 @@ async fn test_ingest_task_executes_and_writes_to_vector_store() {
     let writes = store.0.lock().unwrap();
     assert!(writes.contains(&"test-col".to_string()),
         "vector store should have received upsert for 'test-col'");
+}
+
+#[tokio::test]
+async fn test_ingest_fails_when_no_preprocessor_configured() {
+    // Built via the real public ArcanumEngineBuilder API: no docling config,
+    // no register_preprocessor() call. Per spec, the engine must still build
+    // successfully — only the ingestion task itself should fail.
+    let store = Arc::new(RecordingVectorStore(Mutex::new(vec![])));
+    let engine = ArcanumEngine::builder()
+        .auth_secret("a-32-char-secret-for-testing-ok!")
+        .vector_store(store.clone())
+        .embedder(Arc::new(StubEmbedder))
+        .version_store(Arc::new(NoOpDocumentVersionStore))
+        .build()
+        .await
+        .expect("build should succeed even with no preprocessor configured at all");
+
+    let req = IngestRequest {
+        source_uri: "raw://unprocessed.pdf".into(),
+        collection_id: CollectionId("no-preprocessor-col".into()),
+        pipeline_template: None,
+        force: false,
+        content: Some(b"%PDF-1.4 fake pdf bytes, never extracted".to_vec()),
+        mime_hint: Some("application/pdf".into()),
+    };
+    engine.ingestion.ingest(req, "test-user").await
+        .expect("ingest should queue successfully — only the worker's preprocess stage should fail");
+
+    // Give the worker ample time to process (and fail) the task, including any retries.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+
+    assert!(store.0.lock().unwrap().is_empty(),
+        "no preprocessor is configured (no docling, no register_preprocessor) — the ingestion \
+         task must fail at the preprocess stage and never reach the vector store; a write here \
+         means a preprocessor is silently passing documents through unprocessed");
 }
 
 #[tokio::test]

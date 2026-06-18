@@ -13,6 +13,7 @@ pub struct CollectionInfo {
     pub chunk_count: usize,
     pub chunker_config: Option<PerBackendChunkConfig>,
     pub experiment: Option<ExperimentId>,  // active experiment ID if any
+    #[serde(default)]
     pub preprocessor: Option<String>,      // named override into the engine's PreprocessorCatalog
 }
 
@@ -21,6 +22,12 @@ pub struct CollectionService {
     audit: Arc<AuditLogger>,
     auth: Arc<AuthMiddleware>,
     preprocessor_catalog: Arc<PreprocessorCatalog>,
+}
+
+impl std::fmt::Debug for CollectionService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CollectionService").finish_non_exhaustive()
+    }
 }
 
 impl CollectionService {

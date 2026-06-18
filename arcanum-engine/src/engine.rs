@@ -12,21 +12,6 @@ use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader, default_registry,
                         DoclingPreprocessor, DoclingBackend};
-
-/// No-op preprocessor used as the default fallback when no Docling backend
-/// is configured. Passes documents through unchanged.
-struct NoOpPreprocessor;
-#[async_trait::async_trait]
-impl arcanum_core::traits::Preprocessor for NoOpPreprocessor {
-    async fn process(&self, doc: arcanum_core::types::RawDocument) -> arcanum_core::Result<arcanum_core::types::RawDocument> {
-        Ok(doc)
-    }
-    fn canonical(&self, _doc_id: &arcanum_core::types::DocumentId) -> Option<serde_json::Value> {
-        None
-    }
-    fn set_canonical(&self, _doc_id: &arcanum_core::types::DocumentId, _canonical: serde_json::Value) {
-    }
-}
 use arcanum_core::types::{PerBackendChunkConfig, PerBackendChunkers};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
@@ -300,11 +285,6 @@ impl ArcanumEngineBuilder {
         if let Some(dc) = &self.config.ingestion.docling {
             let backend = DoclingBackend::from(&dc.backend);
             preprocessor_catalog.register("default", Arc::new(DoclingPreprocessor::new(backend)) as Arc<dyn Preprocessor>);
-        }
-        // Register a no-op fallback when no docling is configured, so the engine
-        // still works out of the box (existing tests and non-docling users).
-        if preprocessor_catalog.get("default").is_none() {
-            preprocessor_catalog.register("default", Arc::new(NoOpPreprocessor) as Arc<dyn Preprocessor>);
         }
         for (name, p) in &self.preprocessor_overrides {
             preprocessor_catalog.register(name.clone(), p.clone());

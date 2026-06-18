@@ -13,30 +13,6 @@ fn raw_doc(content: Vec<u8>, mime_type: &str) -> RawDocument {
     }
 }
 
-// ── PreprocessorCatalog ──────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn test_catalog_register_and_get() {
-    let mut catalog = PreprocessorCatalog::new();
-    let docling = Arc::new(DoclingPreprocessor::new(DoclingBackend::Http {
-        base_url: "http://localhost:9999".into(),
-        api_key: None,
-        timeout_secs: 5,
-        use_async: false,
-        poll_interval_ms: 2000,
-    }));
-    catalog.register("default", docling);
-    let resolved = catalog.get("default");
-    assert!(resolved.is_some());
-}
-
-#[tokio::test]
-async fn test_catalog_get_unknown_name() {
-    let catalog = PreprocessorCatalog::new();
-    let resolved = catalog.get("nonexistent");
-    assert!(resolved.is_none());
-}
-
 // ── DoclingPreprocessor ──────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -53,18 +29,39 @@ async fn test_docling_http_unavailable() {
     assert!(result.is_err());
 }
 
+// Catalog-dispatch round trip: registers a DoclingPreprocessor under "default"
+// and verifies a document processed through the resolved catalog entry — not
+// DoclingPreprocessor directly — comes back as parsed markdown. Docling's own
+// HTTP request/response details (headers, multipart shape, etc.) are covered
+// by DoclingPreprocessor's internal tests in docling.rs; this test exists to
+// prove the catalog's resolved Arc<dyn Preprocessor> actually does the work.
 #[tokio::test]
-async fn test_docling_http_with_api_key() {
-    let pp = DoclingPreprocessor::new(DoclingBackend::Http {
-        base_url: "http://localhost:9999".into(),
-        api_key: Some("test-token".into()),
-        timeout_secs: 5,
+async fn test_catalog_dispatched_docling_converts_pdf_to_markdown() {
+    use wiremock::{MockServer, Mock, ResponseTemplate};
+    use wiremock::matchers::{method, path};
+
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/convert/file"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "document": { "md_content": "# PDF content" },
+            "status": "success"
+        })))
+        .mount(&server)
+        .await;
+
+    let mut catalog = PreprocessorCatalog::new();
+    catalog.register("default", Arc::new(DoclingPreprocessor::new(DoclingBackend::Http {
+        base_url: server.uri(),
+        api_key: None,
+        timeout_secs: 10,
         use_async: false,
         poll_interval_ms: 2000,
-    });
-    // Use a MIME that triggers HTTP conversion (not passthrough)
-    let doc = raw_doc(b"test".to_vec(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
-    let result = pp.process(doc).await;
-    // Should error (no server), but proves api_key is wired
-    assert!(result.is_err());
+    })));
+
+    let pp = catalog.get("default").expect("default preprocessor should be registered");
+    let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
+    let out = pp.process(doc).await.unwrap();
+    assert_eq!(out.mime_type, "text/markdown");
+    assert!(String::from_utf8(out.content).unwrap().contains("PDF content"));
 }
