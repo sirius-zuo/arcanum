@@ -1,4 +1,5 @@
 use arcanum_core::{config::ArcanumConfig, types::*, Result, ArcanumError};
+use arcanum_ingestion::PreprocessorCatalog;
 use std::{collections::HashMap, sync::Arc};
 use tokio::sync::RwLock;
 use tracing::instrument;
@@ -12,18 +13,24 @@ pub struct CollectionInfo {
     pub chunk_count: usize,
     pub chunker_config: Option<PerBackendChunkConfig>,
     pub experiment: Option<ExperimentId>,  // active experiment ID if any
+    pub preprocessor: Option<String>,      // named override into the engine's PreprocessorCatalog
 }
 
-#[derive(Debug)]
 pub struct CollectionService {
     collections: Arc<RwLock<HashMap<String, CollectionInfo>>>,
     audit: Arc<AuditLogger>,
     auth: Arc<AuthMiddleware>,
+    preprocessor_catalog: Arc<PreprocessorCatalog>,
 }
 
 impl CollectionService {
-    pub fn new(_config: ArcanumConfig, audit: Arc<AuditLogger>, auth: Arc<AuthMiddleware>) -> Self {
-        Self { collections: Arc::new(RwLock::new(HashMap::new())), audit, auth }
+    pub fn new(
+        _config: ArcanumConfig,
+        audit: Arc<AuditLogger>,
+        auth: Arc<AuthMiddleware>,
+        preprocessor_catalog: Arc<PreprocessorCatalog>,
+    ) -> Self {
+        Self { collections: Arc::new(RwLock::new(HashMap::new())), audit, auth, preprocessor_catalog }
     }
 
     #[instrument(skip(self, claims), fields(collection_id = %id.0), err)]
@@ -36,7 +43,9 @@ impl CollectionService {
         if map.contains_key(&id.0) {
             return Err(ArcanumError::Storage(format!("collection '{}' already exists", id.0)));
         }
-        map.insert(id.0.clone(), CollectionInfo { id: id.clone(), description, chunk_count: 0, chunker_config: None, experiment: None });
+        map.insert(id.0.clone(), CollectionInfo {
+            id: id.clone(), description, chunk_count: 0, chunker_config: None, experiment: None, preprocessor: None,
+        });
         self.audit.log(AuditEntry {
             operation: "create_collection".into(), user_id: claims.user_id.clone(),
             collection_id: id.0, result: "ok".into(),
@@ -98,6 +107,26 @@ impl CollectionService {
         let col = map.get_mut(id)
             .ok_or_else(|| ArcanumError::NotFound(format!("collection '{}'", id)))?;
         col.experiment = exp_id;
+        Ok(())
+    }
+
+    /// Set or clear the named preprocessor override for a collection. Validates
+    /// the name against the engine's PreprocessorCatalog eagerly — an unknown
+    /// name is rejected immediately rather than silently failing at ingest time.
+    pub async fn set_preprocessor(
+        &self,
+        id: &str,
+        name: Option<String>,
+    ) -> Result<()> {
+        if let Some(n) = &name {
+            if self.preprocessor_catalog.get(n).is_none() {
+                return Err(ArcanumError::Config(format!("unknown preprocessor '{}'", n)));
+            }
+        }
+        let mut map = self.collections.write().await;
+        let col = map.get_mut(id)
+            .ok_or_else(|| ArcanumError::NotFound(format!("collection '{}'", id)))?;
+        col.preprocessor = name;
         Ok(())
     }
 }

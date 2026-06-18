@@ -22,10 +22,12 @@ fn fixed_config(size: u64) -> PerBackendChunkConfig {
 fn mock_collection_service() -> Arc<CollectionService> {
     use arcanum_engine::audit::AuditLogger;
     use arcanum_engine::auth::AuthMiddleware;
+    use arcanum_ingestion::PreprocessorCatalog;
     Arc::new(CollectionService::new(
         ArcanumConfig::default(),
         Arc::new(AuditLogger::new()),
         Arc::new(AuthMiddleware::new("a-32-char-secret-for-testing-ok!")),
+        Arc::new(PreprocessorCatalog::new()),
     ))
 }
 
@@ -228,6 +230,7 @@ async fn collection_chunker_override_is_applied_to_ingestion_jobs() {
     use arcanum_engine::ingestion_deps_resolver::EngineIngestionDepsResolver;
     use arcanum_core::traits::IngestionDepsOverrideResolver;
     use arcanum_core::types::{ChunkStrategyConfig, PerBackendChunkConfig};
+    use arcanum_ingestion::PreprocessorCatalog;
 
     let collections = mock_collection_service();
     let experiment_svc = ExperimentService::new(collections.clone());
@@ -253,9 +256,10 @@ async fn collection_chunker_override_is_applied_to_ingestion_jobs() {
         collection_service: collections.clone(),
         experiment_service: Arc::new(experiment_svc),
         global_chunking: global_cfg,
+        preprocessor_catalog: Arc::new(PreprocessorCatalog::new()),
     };
 
-    let (chunkers, shadow) = resolver.resolve_for_collection(&col_id.0).await.unwrap();
+    let (chunkers, shadow, _preprocessor) = resolver.resolve_for_collection(&col_id.0).await.unwrap();
     assert!(shadow.is_none(), "no active experiment, shadow must be None");
     // The resolved chunkers should be built from the custom config.
     // We can't easily inspect the Arc<dyn Chunker> type directly,
@@ -267,6 +271,7 @@ async fn collection_chunker_override_is_applied_to_ingestion_jobs() {
 async fn active_experiment_produces_shadow_context_with_correct_namespace() {
     use arcanum_engine::ingestion_deps_resolver::EngineIngestionDepsResolver;
     use arcanum_core::traits::IngestionDepsOverrideResolver;
+    use arcanum_ingestion::PreprocessorCatalog;
 
     let collections = mock_collection_service();
     let experiment_svc = Arc::new(ExperimentService::new(collections.clone()));
@@ -283,9 +288,10 @@ async fn active_experiment_produces_shadow_context_with_correct_namespace() {
         collection_service: collections.clone(),
         experiment_service: experiment_svc.clone(),
         global_chunking: arcanum_core::types::PerBackendChunkConfig::default(),
+        preprocessor_catalog: Arc::new(PreprocessorCatalog::new()),
     };
 
-    let (_chunkers, shadow) = resolver.resolve_for_collection(&col_id.0).await.unwrap();
+    let (_chunkers, shadow, _preprocessor) = resolver.resolve_for_collection(&col_id.0).await.unwrap();
     let shadow = shadow.expect("active experiment must produce a ShadowContext");
     let expected_ns = format!("{}__shadow_{}", col_id.0, exp.id.0);
     assert_eq!(shadow.shadow_collection_id, expected_ns,
