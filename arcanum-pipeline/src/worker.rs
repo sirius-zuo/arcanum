@@ -62,13 +62,13 @@ impl IngestionWorker {
     async fn resolve_task_deps(&self, collection_id: &str) -> Arc<PipelineDeps> {
         let Some(resolver) = &self.resolver else { return self.deps.clone(); };
         match resolver.resolve_for_collection(collection_id).await {
-            Ok((chunkers, shadow)) => {
+            Ok((chunkers, shadow, preprocessors)) => {
                 Arc::new(PipelineDeps {
                     chunkers,
                     shadow,
+                    preprocessors,
                     // All other fields are cheap Arc clones from the shared base deps.
                     loaders:           self.deps.loaders.clone(),
-                    preprocessors:     self.deps.preprocessors.clone(),
                     context_enricher:  self.deps.context_enricher.clone(),
                     entity_extractor:  self.deps.entity_extractor.clone(),
                     embedder:          self.deps.embedder.clone(),

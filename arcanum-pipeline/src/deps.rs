@@ -1,14 +1,14 @@
 use arcanum_core::traits::{TextEnricher, Embedder, VectorStore, GraphStore, TreeStore,
                             CacheInvalidationBroadcaster, DocumentVersionStore, SnapshotStore,
-                            ChunkMetadataStore};
+                            ChunkMetadataStore, Preprocessor};
 use arcanum_core::types::{PerBackendChunkers, ShadowContext};
-use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry};
+use arcanum_ingestion::LoaderRegistry;
 use arcanum_middleware::{RetryPolicy, CircuitBreaker};
 use std::sync::Arc;
 
 pub struct PipelineDeps {
     pub loaders:           Arc<LoaderRegistry>,
-    pub preprocessors:     Arc<PreprocessorRegistry>,
+    pub preprocessors:     Option<Arc<dyn Preprocessor>>,
     pub chunkers:          PerBackendChunkers,
     pub shadow:            Option<ShadowContext>,
     pub context_enricher:  Option<Arc<dyn TextEnricher>>,

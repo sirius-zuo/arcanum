@@ -5,8 +5,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 fn stub_deps() -> Arc<PipelineDeps> {
-    use arcanum_ingestion::{LoaderRegistry, PreprocessorRegistry, RawLoader};
-    use arcanum_core::traits::{Chunker, Embedder, VectorStore};
+    use arcanum_ingestion::{LoaderRegistry, RawLoader};
+    use arcanum_core::traits::{Chunker, Embedder, Preprocessor, VectorStore};
     use arcanum_core::types::*;
     use async_trait::async_trait;
 
@@ -14,6 +14,11 @@ fn stub_deps() -> Arc<PipelineDeps> {
     #[async_trait]
     impl Chunker for StubChunker {
         async fn chunk(&self, _doc: &RawDocument) -> arcanum_core::Result<Vec<Chunk>> { Ok(vec![]) }
+    }
+    struct StubPreprocessor;
+    #[async_trait]
+    impl Preprocessor for StubPreprocessor {
+        async fn process(&self, doc: RawDocument) -> arcanum_core::Result<RawDocument> { Ok(doc) }
     }
     struct StubEmbedder;
     #[async_trait]
@@ -33,7 +38,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
 
     Arc::new(PipelineDeps {
         loaders: Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new()))),
-        preprocessors: Arc::new(PreprocessorRegistry::new()),
+        preprocessors: Some(Arc::new(StubPreprocessor)),
         chunkers: PerBackendChunkers {
             vector: Arc::new(StubChunker),
             graph:  Arc::new(StubChunker),

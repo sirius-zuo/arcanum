@@ -3,7 +3,7 @@ use arcanum_core::{traits::{DocumentVersionStore, SnapshotStore, ChunkMetadataSt
     types::{ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
     ArcanumError};
 use arcanum_ingestion::{
-    LoaderRegistry, PreprocessorRegistry, MimeDetector,
+    LoaderRegistry, MimeDetector,
     ContextEnricher, EntityExtractor,
 };
 use arcanum_middleware::CircuitBreaker;
@@ -241,20 +241,25 @@ pub fn make_snapshot_stage(
 
 pub fn make_preprocess_stage(
     state: Arc<Mutex<IngestionState>>,
-    preprocessors: Arc<PreprocessorRegistry>,
+    preprocessor: Option<Arc<dyn Preprocessor>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "preprocess",
         deps: vec!["cleanup"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
-            let pp = preprocessors.clone();
+            let pp = preprocessor.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "preprocess", "executing preprocess stage");
                 if skip(&ctx) { return Ok(ctx); }
                 let doc = state.lock().await.doc.clone().ok_or_else(|| {
                     ArcanumError::Pipeline { stage: "preprocess".into(), message: "no doc".into() }
                 })?;
+                let Some(pp) = pp else {
+                    return Err(ArcanumError::Ingestion(
+                        "no preprocessor configured for this collection".into(),
+                    ));
+                };
                 let processed = pp.process(doc).await?;
                 // Capture canonical JSON if the preprocessor produced one.
                 let canonical = pp.canonical(&processed.id);
