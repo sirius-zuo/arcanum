@@ -1,5 +1,7 @@
 mod docling;
 pub use docling::{DoclingPreprocessor, DoclingBackend};
+mod catalog;
+pub use catalog::PreprocessorCatalog;
 mod html;
 mod pdf;
 mod epub;
