@@ -1,4 +1,4 @@
-use arcanum_core::{ArcanumError, traits::*, types::*, Result};
+use arcanum_core::{ArcanumError, traits::*, types::*, Result, traits::store::{relation_identity_key, relation_touches_removed_entity, merge_relation}};
 use async_trait::async_trait;
 use std::{collections::{HashMap, HashSet}, sync::Arc};
 use tokio::sync::RwLock;
@@ -20,16 +20,13 @@ pub struct GraphTraversalPlan {
     pub relation_types: Vec<String>,
 }
 
-fn relation_key(source: &EntityId, relation_type: &str, target: &EntityId) -> String {
-    format!("{}\0{}\0{}", source.0, relation_type, target.0)
-}
-
 pub struct InMemoryGraphStore {
     // outer key: collection name; inner key: entity ID string
     entities:  Arc<RwLock<HashMap<String, HashMap<String, Entity>>>>,
-    // key: "{source_id}\0{relation_type}\0{target_id}" — global, not collection-scoped
-    // (Neo4jStore's relation identity is global too; its `collection` property is write-only).
-    relations: Arc<RwLock<HashMap<String, Relation>>>,
+    // key: relation_identity_key(source, relation_type, target) — global,
+    // not collection-scoped (Neo4jStore's relation identity is global too;
+    // its `collection` property is write-only).
+    relations: Arc<RwLock<HashMap<Vec<u8>, Relation>>>,
     // tracks explicitly created collections (including empty ones)
     created:   Arc<RwLock<HashSet<String>>>,
 }
@@ -62,10 +59,28 @@ impl GraphStore for InMemoryGraphStore {
 
     #[instrument(skip(self, relations), fields(store = "in_memory_graph", collection, relation_count = relations.len()), err)]
     async fn upsert_relations(&self, _collection: &str, relations: Vec<Relation>) -> Result<()> {
-        let mut map = self.relations.write().await;
+        let mut to_store = Vec::with_capacity(relations.len());
         for r in relations {
-            let key = relation_key(&r.source, &r.relation_type, &r.target);
-            map.insert(key, r);
+            let source_exists = self.get_entity_by_id(&r.source).await?.is_some();
+            let target_exists = self.get_entity_by_id(&r.target).await?.is_some();
+            if source_exists && target_exists {
+                to_store.push(r);
+            } else {
+                tracing::warn!(
+                    store = "in_memory_graph",
+                    source_exists, target_exists,
+                    "upsert_relations skipping relation with missing endpoint entity",
+                );
+            }
+        }
+        let mut map = self.relations.write().await;
+        for r in to_store {
+            let key = relation_identity_key(&r.source, &r.relation_type, &r.target);
+            let merged = match map.remove(&key) {
+                Some(existing) => merge_relation(existing, r),
+                None => r,
+            };
+            map.insert(key, merged);
         }
         Ok(())
     }
@@ -112,10 +127,7 @@ impl GraphStore for InMemoryGraphStore {
         drop(entities);
 
         let mut relations = self.relations.write().await;
-        relations.retain(|_, r| {
-            !removed_ids.contains(&r.source.0.to_string())
-            && !removed_ids.contains(&r.target.0.to_string())
-        });
+        relations.retain(|_, r| !relation_touches_removed_entity(&removed_ids, r));
         Ok(())
     }
 
@@ -197,10 +209,7 @@ impl GraphStore for InMemoryGraphStore {
         drop(entities);
 
         let mut relations = self.relations.write().await;
-        relations.retain(|_, r| {
-            !removed_ids.contains(&r.source.0.to_string())
-            && !removed_ids.contains(&r.target.0.to_string())
-        });
+        relations.retain(|_, r| !relation_touches_removed_entity(&removed_ids, r));
         drop(relations);
 
         self.created.write().await.remove(collection);
@@ -222,7 +231,7 @@ impl GraphStore for InMemoryGraphStore {
         relation_type: &str,
         target_id:     &EntityId,
     ) -> Result<Option<Relation>> {
-        let key = relation_key(source_id, relation_type, target_id);
+        let key = relation_identity_key(source_id, relation_type, target_id);
         Ok(self.relations.read().await.get(&key).cloned())
     }
 }
@@ -437,6 +446,15 @@ mod tests {
         let store = InMemoryGraphStore::new();
         let src = EntityId::new();
         let tgt = EntityId::new();
+        let e_src = Entity {
+            id: src.clone(), name: "S".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        let e_tgt = Entity {
+            id: tgt.clone(), name: "T".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e_src, e_tgt]).await.unwrap();
         let rel = Relation {
             source:        src.clone(),
             relation_type: "SIGNED".into(),
@@ -451,24 +469,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn upsert_relations_is_idempotent_by_source_type_target() {
+    async fn upsert_relations_merges_evidence_instead_of_overwriting() {
         let store = InMemoryGraphStore::new();
         let src = EntityId::new();
         let tgt = EntityId::new();
+        let e_src = Entity {
+            id: src.clone(), name: "S".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        let e_tgt = Entity {
+            id: tgt.clone(), name: "T".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e_src, e_tgt]).await.unwrap();
+        let chunk_a = arcanum_core::types::ChunkId::new();
+        let chunk_b = arcanum_core::types::ChunkId::new();
         let rel_v1 = Relation {
             source: src.clone(), relation_type: "SIGNED".into(), target: tgt.clone(),
-            confidence: 0.5, source_chunks: vec![],
+            confidence: 0.5, source_chunks: vec![chunk_a.clone()],
         };
         let rel_v2 = Relation {
             source: src.clone(), relation_type: "SIGNED".into(), target: tgt.clone(),
-            confidence: 0.9, source_chunks: vec![],
+            confidence: 0.9, source_chunks: vec![chunk_b.clone()],
         };
         store.upsert_relations("col", vec![rel_v1]).await.unwrap();
         store.upsert_relations("col", vec![rel_v2]).await.unwrap();
 
         let relations = store.get_relations(&src).await.unwrap();
         assert_eq!(relations.len(), 1, "re-upserting the same (source, type, target) must not duplicate");
-        assert_eq!(relations[0].confidence, 0.9, "re-upsert must overwrite, not append");
+        assert_eq!(relations[0].confidence, 0.9, "merge must keep the higher confidence");
+        assert_eq!(relations[0].source_chunks.len(), 2, "merge must keep evidence from both upserts, not overwrite");
+        assert!(relations[0].source_chunks.contains(&chunk_a));
+        assert!(relations[0].source_chunks.contains(&chunk_b));
     }
 
     #[tokio::test]
