@@ -1,0 +1,268 @@
+use arcanum_core::{traits::GraphStore, traits::store::GraphQuery, types::*, ArcanumError, Result};
+use async_trait::async_trait;
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
+use tokio::sync::Mutex;
+use tracing::instrument;
+
+fn entity_key(collection: &str, entity_id: &str) -> Vec<u8> {
+    format!("{collection}\0{entity_id}").into_bytes()
+}
+
+fn entity_prefix(collection: &str) -> Vec<u8> {
+    format!("{collection}\0").into_bytes()
+}
+
+fn relation_key(source: &EntityId, relation_type: &str, target: &EntityId) -> Vec<u8> {
+    format!("{}\0{}\0{}", source.0, relation_type, target.0).into_bytes()
+}
+
+/// Sled-backed GraphStore for persistent local dev/test use — no server process required.
+/// Relations are stored globally (not collection-partitioned), matching Neo4jStore's real
+/// MERGE semantics; entities stay collection-partitioned, matching Neo4jStore's e.collection filter.
+pub struct SledGraphStore {
+    db:          sled::Db,
+    entities:    sled::Tree,
+    relations:   sled::Tree,
+    collections: sled::Tree,
+    write_lock:  Mutex<()>,
+}
+
+impl SledGraphStore {
+    pub fn new(path: impl AsRef<Path>) -> Result<Self> {
+        let db = sled::open(path.as_ref())
+            .map_err(|e| ArcanumError::Storage(format!("open sled db: {e}")))?;
+        let entities = db.open_tree("entities")
+            .map_err(|e| ArcanumError::Storage(format!("open entities tree: {e}")))?;
+        let relations = db.open_tree("relations")
+            .map_err(|e| ArcanumError::Storage(format!("open relations tree: {e}")))?;
+        let collections = db.open_tree("collections")
+            .map_err(|e| ArcanumError::Storage(format!("open collections tree: {e}")))?;
+        Ok(Self { db, entities, relations, collections, write_lock: Mutex::new(()) })
+    }
+}
+
+#[async_trait]
+impl GraphStore for SledGraphStore {
+    #[instrument(skip(self, entities), fields(store = "sled_graph", collection, entity_count = entities.len()), err)]
+    async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        for e in &entities {
+            let key = entity_key(collection, &e.id.0.to_string());
+            let value = serde_json::to_vec(e)
+                .map_err(|err| ArcanumError::Storage(format!("serialize entity: {err}")))?;
+            self.entities.insert(key, value)
+                .map_err(|err| ArcanumError::Storage(format!("insert entity: {err}")))?;
+        }
+        self.collections.insert(collection.as_bytes(), Vec::<u8>::new())
+            .map_err(|err| ArcanumError::Storage(format!("mark collection: {err}")))?;
+        self.db.flush_async().await
+            .map_err(|err| ArcanumError::Storage(format!("flush: {err}")))?;
+        Ok(())
+    }
+
+    #[instrument(skip(self), fields(store = "sled_graph", collection, relation_count = 0), err)]
+    async fn upsert_relations(&self, _collection: &str, _relations: Vec<Relation>) -> Result<()> {
+        unimplemented!("added in Task 3")
+    }
+
+    #[instrument(skip(self, q), fields(store = "sled_graph", collection, result_count), err)]
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
+        let prefix = entity_prefix(collection);
+        let mut results = vec![];
+        for item in self.entities.scan_prefix(&prefix) {
+            let (_, value) = item.map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+            let entity: Entity = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+            let name_ok = q.entity_name.as_deref().map(|n| entity.name.contains(n)).unwrap_or(true);
+            let type_ok = q.entity_type.as_deref().map(|t| entity.entity_type == t).unwrap_or(true);
+            if name_ok && type_ok {
+                results.push(entity);
+            }
+        }
+        tracing::Span::current().record("result_count", results.len());
+        Ok(results)
+    }
+
+    async fn get_relations(&self, _entity_id: &EntityId) -> Result<Vec<Relation>> {
+        unimplemented!("added in Task 3")
+    }
+
+    async fn delete_by_source_uri(&self, _collection: &str, _source_uri: &str) -> Result<()> {
+        unimplemented!("added in Task 4")
+    }
+
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        let mut names: HashSet<String> = HashSet::new();
+        for item in self.collections.iter() {
+            let (key, _) = item.map_err(|e| ArcanumError::Storage(format!("scan collections: {e}")))?;
+            names.insert(String::from_utf8_lossy(&key).to_string());
+        }
+        for item in self.entities.iter() {
+            let (key, _) = item.map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+            let key_str = String::from_utf8_lossy(&key);
+            if let Some(idx) = key_str.find('\0') {
+                names.insert(key_str[..idx].to_string());
+            }
+        }
+        let mut result: Vec<String> = names.into_iter().collect();
+        result.sort();
+        Ok(result)
+    }
+
+    async fn create_collection(&self, collection: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let already_marked = self.collections.contains_key(collection.as_bytes())
+            .map_err(|e| ArcanumError::Storage(format!("check collection: {e}")))?;
+        let already_has_entities = self.entities.scan_prefix(entity_prefix(collection)).next().is_some();
+        if already_marked || already_has_entities {
+            return Err(ArcanumError::AlreadyExists(
+                format!("collection '{}' already exists", collection),
+            ));
+        }
+        self.collections.insert(collection.as_bytes(), Vec::<u8>::new())
+            .map_err(|e| ArcanumError::Storage(format!("create collection: {e}")))?;
+        self.db.flush_async().await
+            .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
+        Ok(())
+    }
+
+    async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let items: Vec<(sled::IVec, sled::IVec)> = match collection {
+            Some(col) => self.entities.scan_prefix(entity_prefix(col))
+                .collect::<sled::Result<Vec<_>>>()
+                .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?,
+            None => self.entities.iter()
+                .collect::<sled::Result<Vec<_>>>()
+                .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?,
+        };
+        let mut uris: HashSet<String> = HashSet::new();
+        for (_, value) in items {
+            let entity: Entity = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+            if !entity.source_uri.is_empty() {
+                uris.insert(entity.source_uri);
+            }
+        }
+        Ok(uris.len() as u64)
+    }
+
+    async fn count_documents_all(&self) -> Result<HashMap<String, u64>> {
+        let mut map: HashMap<String, u64> = HashMap::new();
+        for item in self.collections.iter() {
+            let (key, _) = item.map_err(|e| ArcanumError::Storage(format!("scan collections: {e}")))?;
+            map.insert(String::from_utf8_lossy(&key).to_string(), 0);
+        }
+        let mut per_collection_uris: HashMap<String, HashSet<String>> = HashMap::new();
+        for item in self.entities.iter() {
+            let (key, value) = item.map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+            let key_str = String::from_utf8_lossy(&key);
+            let collection = match key_str.find('\0') {
+                Some(idx) => key_str[..idx].to_string(),
+                None => continue,
+            };
+            let entity: Entity = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+            if !entity.source_uri.is_empty() {
+                per_collection_uris.entry(collection).or_default().insert(entity.source_uri);
+            }
+        }
+        for (col, uris) in per_collection_uris {
+            map.insert(col, uris.len() as u64);
+        }
+        Ok(map)
+    }
+
+    async fn delete_collection(&self, _collection: &str) -> Result<()> {
+        unimplemented!("added in Task 4")
+    }
+
+    async fn get_entity_by_id(&self, entity_id: &EntityId) -> Result<Option<Entity>> {
+        for item in self.entities.iter() {
+            let (_, value) = item.map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+            let entity: Entity = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+            if entity.id.0 == entity_id.0 {
+                return Ok(Some(entity));
+            }
+        }
+        Ok(None)
+    }
+
+    async fn get_relation(
+        &self,
+        _source_id:     &EntityId,
+        _relation_type: &str,
+        _target_id:     &EntityId,
+    ) -> Result<Option<Relation>> {
+        unimplemented!("added in Task 3")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn make_store() -> (SledGraphStore, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let store = SledGraphStore::new(tmp.path()).unwrap();
+        (store, tmp)
+    }
+
+    #[tokio::test]
+    async fn upsert_and_query_entity_by_name_substring() {
+        let (store, _tmp) = make_store();
+        let entity = Entity {
+            id: EntityId::new(), name: "ACME Corp".into(), entity_type: "Organization".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://contracts.pdf".into(),
+            collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![entity]).await.unwrap();
+
+        let results = store.query("col", &GraphQuery {
+            entity_name: Some("ACME".into()), entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "ACME Corp");
+    }
+
+    #[tokio::test]
+    async fn upsert_entity_overwrites_by_id() {
+        let (store, _tmp) = make_store();
+        let id = EntityId::new();
+        let v1 = Entity {
+            id: id.clone(), name: "Old Name".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        let v2 = Entity {
+            id: id.clone(), name: "New Name".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![v1]).await.unwrap();
+        store.upsert_entities("col", vec![v2]).await.unwrap();
+
+        let found = store.get_entity_by_id(&id).await.unwrap().unwrap();
+        assert_eq!(found.name, "New Name");
+    }
+
+    #[tokio::test]
+    async fn collections_are_isolated() {
+        let (store, _tmp) = make_store();
+        let e1 = Entity {
+            id: EntityId::new(), name: "Alpha".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(), collection_id: "col-a".into(),
+        };
+        let e2 = Entity {
+            id: EntityId::new(), name: "Beta".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(), collection_id: "col-b".into(),
+        };
+        store.upsert_entities("col-a", vec![e1]).await.unwrap();
+        store.upsert_entities("col-b", vec![e2]).await.unwrap();
+
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        let col_a = store.query("col-a", &gq).await.unwrap();
+        assert_eq!(col_a.len(), 1);
+        assert_eq!(col_a[0].name, "Alpha");
+    }
+}

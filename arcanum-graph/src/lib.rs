@@ -10,6 +10,9 @@ pub use query_planner::GraphQueryPlanner;
 pub mod neo4j_store;
 pub use neo4j_store::Neo4jStore;
 
+pub mod sled_store;
+pub use sled_store::SledGraphStore;
+
 #[derive(Debug, Clone)]
 pub struct GraphTraversalPlan {
     pub seed_entities: Vec<String>,
