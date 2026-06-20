@@ -17,11 +17,16 @@ pub struct GraphTraversalPlan {
     pub relation_types: Vec<String>,
 }
 
+fn relation_key(source: &EntityId, relation_type: &str, target: &EntityId) -> String {
+    format!("{}\0{}\0{}", source.0, relation_type, target.0)
+}
+
 pub struct InMemoryGraphStore {
     // outer key: collection name; inner key: entity ID string
     entities:  Arc<RwLock<HashMap<String, HashMap<String, Entity>>>>,
-    // outer key: collection name
-    relations: Arc<RwLock<HashMap<String, Vec<Relation>>>>,
+    // key: "{source_id}\0{relation_type}\0{target_id}" — global, not collection-scoped
+    // (Neo4jStore's relation identity is global too; its `collection` property is write-only).
+    relations: Arc<RwLock<HashMap<String, Relation>>>,
     // tracks explicitly created collections (including empty ones)
     created:   Arc<RwLock<HashSet<String>>>,
 }
@@ -53,11 +58,12 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     #[instrument(skip(self, relations), fields(store = "in_memory_graph", collection, relation_count = relations.len()), err)]
-    async fn upsert_relations(&self, collection: &str, relations: Vec<Relation>) -> Result<()> {
-        self.relations.write().await
-            .entry(collection.to_string())
-            .or_default()
-            .extend(relations);
+    async fn upsert_relations(&self, _collection: &str, relations: Vec<Relation>) -> Result<()> {
+        let mut map = self.relations.write().await;
+        for r in relations {
+            let key = relation_key(&r.source, &r.relation_type, &r.target);
+            map.insert(key, r);
+        }
         Ok(())
     }
 
@@ -77,7 +83,6 @@ impl GraphStore for InMemoryGraphStore {
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
         let all = self.relations.read().await;
         Ok(all.values()
-            .flat_map(|v| v.iter())
             .filter(|r| r.source.0 == entity_id.0)
             .cloned()
             .collect())
@@ -101,14 +106,13 @@ impl GraphStore for InMemoryGraphStore {
         if let Some(col) = entities.get_mut(collection) {
             col.retain(|id, _| !removed_ids.contains(id));
         }
+        drop(entities);
 
         let mut relations = self.relations.write().await;
-        if let Some(col_rels) = relations.get_mut(collection) {
-            col_rels.retain(|r| {
-                !removed_ids.contains(&r.source.0.to_string())
-                && !removed_ids.contains(&r.target.0.to_string())
-            });
-        }
+        relations.retain(|_, r| {
+            !removed_ids.contains(&r.source.0.to_string())
+            && !removed_ids.contains(&r.target.0.to_string())
+        });
         Ok(())
     }
 
@@ -181,8 +185,21 @@ impl GraphStore for InMemoryGraphStore {
     }
 
     async fn delete_collection(&self, collection: &str) -> Result<()> {
-        self.entities.write().await.remove(collection);
-        self.relations.write().await.remove(collection);
+        let mut entities = self.entities.write().await;
+        let removed_ids: HashSet<String> = entities
+            .get(collection)
+            .map(|col| col.keys().cloned().collect())
+            .unwrap_or_default();
+        entities.remove(collection);
+        drop(entities);
+
+        let mut relations = self.relations.write().await;
+        relations.retain(|_, r| {
+            !removed_ids.contains(&r.source.0.to_string())
+            && !removed_ids.contains(&r.target.0.to_string())
+        });
+        drop(relations);
+
         self.created.write().await.remove(collection);
         Ok(())
     }
@@ -202,14 +219,8 @@ impl GraphStore for InMemoryGraphStore {
         relation_type: &str,
         target_id:     &EntityId,
     ) -> Result<Option<Relation>> {
-        let all = self.relations.read().await;
-        Ok(all
-            .values()
-            .flat_map(|v| v.iter())
-            .find(|r| r.source.0 == source_id.0
-                    && r.relation_type == relation_type
-                    && r.target.0 == target_id.0)
-            .cloned())
+        let key = relation_key(source_id, relation_type, target_id);
+        Ok(self.relations.read().await.get(&key).cloned())
     }
 }
 
@@ -434,5 +445,54 @@ mod tests {
         let found = store.get_relation(&src, "SIGNED", &tgt).await.unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().relation_type, "SIGNED");
+    }
+
+    #[tokio::test]
+    async fn upsert_relations_is_idempotent_by_source_type_target() {
+        let store = InMemoryGraphStore::new();
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let rel_v1 = Relation {
+            source: src.clone(), relation_type: "SIGNED".into(), target: tgt.clone(),
+            confidence: 0.5, source_chunks: vec![],
+        };
+        let rel_v2 = Relation {
+            source: src.clone(), relation_type: "SIGNED".into(), target: tgt.clone(),
+            confidence: 0.9, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel_v1]).await.unwrap();
+        store.upsert_relations("col", vec![rel_v2]).await.unwrap();
+
+        let relations = store.get_relations(&src).await.unwrap();
+        assert_eq!(relations.len(), 1, "re-upserting the same (source, type, target) must not duplicate");
+        assert_eq!(relations[0].confidence, 0.9, "re-upsert must overwrite, not append");
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_cascades_when_deleted_entity_is_relation_target() {
+        let store = InMemoryGraphStore::new();
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let e1 = Entity {
+            id: id1.clone(), name: "Doc A".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(), collection_id: "test-col".into(),
+        };
+        let e2 = Entity {
+            id: id2.clone(), name: "Doc B".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(), collection_id: "test-col".into(),
+        };
+        store.upsert_entities("test-col", vec![e1, e2]).await.unwrap();
+        // Relation e1 -> e2: e2 is the target.
+        let rel = arcanum_core::types::Relation {
+            source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("test-col", vec![rel]).await.unwrap();
+
+        // Delete e2 (the target side) by its source_uri.
+        store.delete_by_source_uri("test-col", "file://b.md").await.unwrap();
+
+        let relations = store.get_relations(&id1).await.unwrap();
+        assert!(relations.is_empty(), "relation must be cascade-deleted when its target entity is removed");
     }
 }
