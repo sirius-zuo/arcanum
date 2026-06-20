@@ -61,9 +61,19 @@ impl GraphStore for SledGraphStore {
         Ok(())
     }
 
-    #[instrument(skip(self), fields(store = "sled_graph", collection, relation_count = 0), err)]
-    async fn upsert_relations(&self, _collection: &str, _relations: Vec<Relation>) -> Result<()> {
-        unimplemented!("added in Task 3")
+    #[instrument(skip(self, relations), fields(store = "sled_graph", collection, relation_count = relations.len()), err)]
+    async fn upsert_relations(&self, _collection: &str, relations: Vec<Relation>) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        for r in &relations {
+            let key = relation_key(&r.source, &r.relation_type, &r.target);
+            let value = serde_json::to_vec(r)
+                .map_err(|e| ArcanumError::Storage(format!("serialize relation: {e}")))?;
+            self.relations.insert(key, value)
+                .map_err(|e| ArcanumError::Storage(format!("insert relation: {e}")))?;
+        }
+        self.db.flush_async().await
+            .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
+        Ok(())
     }
 
     #[instrument(skip(self, q), fields(store = "sled_graph", collection, result_count), err)]
@@ -84,8 +94,17 @@ impl GraphStore for SledGraphStore {
         Ok(results)
     }
 
-    async fn get_relations(&self, _entity_id: &EntityId) -> Result<Vec<Relation>> {
-        unimplemented!("added in Task 3")
+    async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
+        let mut results = vec![];
+        for item in self.relations.iter() {
+            let (_, value) = item.map_err(|e| ArcanumError::Storage(format!("scan relations: {e}")))?;
+            let relation: Relation = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize relation: {e}")))?;
+            if relation.source.0 == entity_id.0 {
+                results.push(relation);
+            }
+        }
+        Ok(results)
     }
 
     async fn delete_by_source_uri(&self, _collection: &str, _source_uri: &str) -> Result<()> {
@@ -191,11 +210,21 @@ impl GraphStore for SledGraphStore {
 
     async fn get_relation(
         &self,
-        _source_id:     &EntityId,
-        _relation_type: &str,
-        _target_id:     &EntityId,
+        source_id:     &EntityId,
+        relation_type: &str,
+        target_id:     &EntityId,
     ) -> Result<Option<Relation>> {
-        unimplemented!("added in Task 3")
+        let key = relation_key(source_id, relation_type, target_id);
+        match self.relations.get(&key)
+            .map_err(|e| ArcanumError::Storage(format!("get relation: {e}")))?
+        {
+            Some(bytes) => {
+                let relation = serde_json::from_slice(&bytes)
+                    .map_err(|e| ArcanumError::Storage(format!("deserialize relation: {e}")))?;
+                Ok(Some(relation))
+            }
+            None => Ok(None),
+        }
     }
 }
 
@@ -264,5 +293,45 @@ mod tests {
         let col_a = store.query("col-a", &gq).await.unwrap();
         assert_eq!(col_a.len(), 1);
         assert_eq!(col_a[0].name, "Alpha");
+    }
+
+    #[tokio::test]
+    async fn upsert_relations_is_idempotent_by_source_type_target() {
+        let (store, _tmp) = make_store();
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let rel_v1 = Relation {
+            source: src.clone(), relation_type: "SIGNED".into(), target: tgt.clone(),
+            confidence: 0.5, source_chunks: vec![],
+        };
+        let rel_v2 = Relation {
+            source: src.clone(), relation_type: "SIGNED".into(), target: tgt.clone(),
+            confidence: 0.9, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel_v1]).await.unwrap();
+        store.upsert_relations("col", vec![rel_v2]).await.unwrap();
+
+        let relations = store.get_relations(&src).await.unwrap();
+        assert_eq!(relations.len(), 1);
+        assert_eq!(relations[0].confidence, 0.9);
+    }
+
+    #[tokio::test]
+    async fn get_relation_looks_up_by_source_type_target() {
+        let (store, _tmp) = make_store();
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let rel = Relation {
+            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
+            confidence: 0.9, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel]).await.unwrap();
+
+        let found = store.get_relation(&src, "WORKS_AT", &tgt).await.unwrap();
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().relation_type, "WORKS_AT");
+
+        let missing = store.get_relation(&src, "OTHER_TYPE", &tgt).await.unwrap();
+        assert!(missing.is_none());
     }
 }
