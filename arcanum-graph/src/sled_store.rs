@@ -555,4 +555,40 @@ mod tests {
         assert_eq!(col_b_results.len(), 1, "e_b must remain in col-b after deleting e_a from col-a");
         assert_eq!(col_b_results[0].name, "DocB");
     }
+
+    #[tokio::test]
+    async fn data_survives_drop_and_reopen() {
+        let tmp = TempDir::new().unwrap();
+        let entity_id = EntityId::new();
+
+        {
+            let store = SledGraphStore::new(tmp.path()).unwrap();
+            let entity = Entity {
+                id: entity_id.clone(), name: "Persisted Entity".into(), entity_type: "T".into(),
+                canonical_id: None, source_chunks: vec![], source_uri: "file://doc.md".into(),
+                collection_id: "col".into(),
+            };
+            store.upsert_entities("col", vec![entity]).await.unwrap();
+            let rel = Relation {
+                source: entity_id.clone(), relation_type: "SELF".into(), target: entity_id.clone(),
+                confidence: 1.0, source_chunks: vec![],
+            };
+            store.upsert_relations("col", vec![rel]).await.unwrap();
+            // store is dropped here, closing the sled db.
+        }
+
+        let reopened = SledGraphStore::new(tmp.path()).unwrap();
+        let found = reopened.get_entity_by_id(&entity_id).await.unwrap();
+        assert!(found.is_some(), "entity must survive a drop + reopen of the store");
+        assert_eq!(found.unwrap().name, "Persisted Entity");
+
+        let relations = reopened.get_relations(&entity_id).await.unwrap();
+        assert_eq!(relations.len(), 1, "relation must survive a drop + reopen of the store");
+    }
+
+    #[test]
+    fn sled_graph_store_is_send_and_sync() {
+        fn _assert_send_sync<T: Send + Sync>() {}
+        _assert_send_sync::<SledGraphStore>();
+    }
 }
