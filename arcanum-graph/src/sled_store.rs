@@ -40,6 +40,26 @@ impl SledGraphStore {
             .map_err(|e| ArcanumError::Storage(format!("open collections tree: {e}")))?;
         Ok(Self { db, entities, relations, collections, write_lock: Mutex::new(()) })
     }
+
+    fn cascade_delete_relations(&self, removed_ids: &HashSet<String>) -> Result<()> {
+        if removed_ids.is_empty() {
+            return Ok(());
+        }
+        let items: Vec<(sled::IVec, sled::IVec)> = self.relations.iter()
+            .collect::<sled::Result<Vec<_>>>()
+            .map_err(|e| ArcanumError::Storage(format!("scan relations: {e}")))?;
+        for (key, value) in items {
+            let relation: Relation = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize relation: {e}")))?;
+            if removed_ids.contains(&relation.source.0.to_string())
+                || removed_ids.contains(&relation.target.0.to_string())
+            {
+                self.relations.remove(&key)
+                    .map_err(|e| ArcanumError::Storage(format!("remove relation: {e}")))?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -107,8 +127,30 @@ impl GraphStore for SledGraphStore {
         Ok(results)
     }
 
-    async fn delete_by_source_uri(&self, _collection: &str, _source_uri: &str) -> Result<()> {
-        unimplemented!("added in Task 4")
+    #[instrument(skip(self), fields(store = "sled_graph", collection, source_uri), err)]
+    async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
+        if source_uri.is_empty() {
+            tracing::warn!(store = "sled_graph", "delete_by_source_uri called with empty source_uri — skipping");
+            return Ok(());
+        }
+        let _guard = self.write_lock.lock().await;
+        let items: Vec<(sled::IVec, sled::IVec)> = self.entities.scan_prefix(entity_prefix(collection))
+            .collect::<sled::Result<Vec<_>>>()
+            .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+        let mut removed_ids: HashSet<String> = HashSet::new();
+        for (key, value) in items {
+            let entity: Entity = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+            if entity.source_uri == source_uri {
+                removed_ids.insert(entity.id.0.to_string());
+                self.entities.remove(&key)
+                    .map_err(|e| ArcanumError::Storage(format!("remove entity: {e}")))?;
+            }
+        }
+        self.cascade_delete_relations(&removed_ids)?;
+        self.db.flush_async().await
+            .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
+        Ok(())
     }
 
     async fn list_collections(&self) -> Result<Vec<String>> {
@@ -192,8 +234,25 @@ impl GraphStore for SledGraphStore {
         Ok(map)
     }
 
-    async fn delete_collection(&self, _collection: &str) -> Result<()> {
-        unimplemented!("added in Task 4")
+    async fn delete_collection(&self, collection: &str) -> Result<()> {
+        let _guard = self.write_lock.lock().await;
+        let items: Vec<(sled::IVec, sled::IVec)> = self.entities.scan_prefix(entity_prefix(collection))
+            .collect::<sled::Result<Vec<_>>>()
+            .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+        let mut removed_ids: HashSet<String> = HashSet::new();
+        for (key, value) in items {
+            let entity: Entity = serde_json::from_slice(&value)
+                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+            removed_ids.insert(entity.id.0.to_string());
+            self.entities.remove(&key)
+                .map_err(|e| ArcanumError::Storage(format!("remove entity: {e}")))?;
+        }
+        self.collections.remove(collection.as_bytes())
+            .map_err(|e| ArcanumError::Storage(format!("remove collection marker: {e}")))?;
+        self.cascade_delete_relations(&removed_ids)?;
+        self.db.flush_async().await
+            .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
+        Ok(())
     }
 
     async fn get_entity_by_id(&self, entity_id: &EntityId) -> Result<Option<Entity>> {
@@ -333,5 +392,131 @@ mod tests {
 
         let missing = store.get_relation(&src, "OTHER_TYPE", &tgt).await.unwrap();
         assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_empty_string_is_noop() {
+        let (store, _tmp) = make_store();
+        let e = Entity {
+            id: EntityId::new(), name: "Foo".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "test-col".into(),
+        };
+        store.upsert_entities("test-col", vec![e]).await.unwrap();
+        store.delete_by_source_uri("test-col", "").await.unwrap();
+        let results = store.query("test-col", &GraphQuery {
+            entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 1, "entity with source_uri='' must not be deleted by empty-string call");
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_removes_entities_and_relations() {
+        let (store, _tmp) = make_store();
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let e1 = Entity {
+            id: id1.clone(), name: "Doc A".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(), collection_id: "test-col".into(),
+        };
+        let e2 = Entity {
+            id: id2.clone(), name: "Doc B".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(), collection_id: "test-col".into(),
+        };
+        store.upsert_entities("test-col", vec![e1, e2]).await.unwrap();
+        let rel = Relation {
+            source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("test-col", vec![rel]).await.unwrap();
+
+        store.delete_by_source_uri("test-col", "file://a.md").await.unwrap();
+
+        let results = store.query("test-col", &GraphQuery {
+            entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].name, "Doc B");
+
+        let relations = store.get_relations(&id1).await.unwrap();
+        assert!(relations.is_empty(), "relation from deleted source entity must be cascade-removed");
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_cascades_when_deleted_entity_is_relation_target() {
+        let (store, _tmp) = make_store();
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let e1 = Entity {
+            id: id1.clone(), name: "Doc A".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(), collection_id: "test-col".into(),
+        };
+        let e2 = Entity {
+            id: id2.clone(), name: "Doc B".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(), collection_id: "test-col".into(),
+        };
+        store.upsert_entities("test-col", vec![e1, e2]).await.unwrap();
+        let rel = Relation {
+            source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("test-col", vec![rel]).await.unwrap();
+
+        // Delete e2, the relation's target.
+        store.delete_by_source_uri("test-col", "file://b.md").await.unwrap();
+
+        let relations = store.get_relations(&id1).await.unwrap();
+        assert!(relations.is_empty(), "relation must be cascade-deleted when its target entity is removed");
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_scoped_to_collection() {
+        let (store, _tmp) = make_store();
+        let e_a = Entity {
+            id: EntityId::new(), name: "InA".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://shared.md".into(), collection_id: "col-a".into(),
+        };
+        let e_b = Entity {
+            id: EntityId::new(), name: "InB".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://shared.md".into(), collection_id: "col-b".into(),
+        };
+        store.upsert_entities("col-a", vec![e_a]).await.unwrap();
+        store.upsert_entities("col-b", vec![e_b]).await.unwrap();
+
+        store.delete_by_source_uri("col-a", "file://shared.md").await.unwrap();
+
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        assert!(store.query("col-a", &gq).await.unwrap().is_empty());
+        assert_eq!(store.query("col-b", &gq).await.unwrap().len(), 1, "col-b unaffected");
+    }
+
+    #[tokio::test]
+    async fn delete_collection_removes_entities_and_relations() {
+        let (store, _tmp) = make_store();
+        let id1 = EntityId::new();
+        let id2 = EntityId::new();
+        let e1 = Entity {
+            id: id1.clone(), name: "Foo".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://x.md".into(), collection_id: "col".into(),
+        };
+        let e2 = Entity {
+            id: id2.clone(), name: "Bar".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://y.md".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e1, e2]).await.unwrap();
+        let rel = Relation {
+            source: id1.clone(), relation_type: "links_to".into(), target: id2.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel]).await.unwrap();
+
+        store.delete_collection("col").await.unwrap();
+
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        let results = store.query("col", &gq).await.unwrap();
+        assert!(results.is_empty());
+        let cols = store.list_collections().await.unwrap();
+        assert!(!cols.contains(&"col".to_string()));
+        let relations = store.get_relations(&id1).await.unwrap();
+        assert!(relations.is_empty(), "relations must be cascade-removed when the collection is deleted");
     }
 }
