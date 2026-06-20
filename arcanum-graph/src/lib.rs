@@ -112,6 +112,11 @@ impl GraphStore for InMemoryGraphStore {
             tracing::warn!(store = "in_memory_graph", "delete_by_source_uri called with empty source_uri — skipping");
             return Ok(());
         }
+        // Read `created` and fully release it BEFORE touching `entities` —
+        // other methods (create_collection) lock created-then-entities, so
+        // holding both at once in the opposite order here would deadlock.
+        let was_explicitly_created = self.created.read().await.contains(collection);
+
         let mut entities = self.entities.write().await;
         let removed_ids: HashSet<String> = entities
             .get(collection)
@@ -123,6 +128,10 @@ impl GraphStore for InMemoryGraphStore {
 
         if let Some(col) = entities.get_mut(collection) {
             col.retain(|id, _| !removed_ids.contains(id));
+        }
+        let now_empty = entities.get(collection).is_some_and(|c| c.is_empty());
+        if now_empty && !was_explicitly_created {
+            entities.remove(collection);
         }
         drop(entities);
 
@@ -565,6 +574,39 @@ mod tests {
 
         let relations = store.get_relations(&src).await.unwrap();
         assert_eq!(relations.len(), 1, "a relation must still be stored when both endpoints exist");
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_removes_ghost_collection_when_never_explicitly_created() {
+        let store = InMemoryGraphStore::new();
+        let e = Entity {
+            id: EntityId::new(), name: "Solo".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://solo.md".into(), collection_id: "col".into(),
+        };
+        // Never call create_collection — this collection only ever exists
+        // because upsert_entities populated it.
+        store.upsert_entities("col", vec![e]).await.unwrap();
+        store.delete_by_source_uri("col", "file://solo.md").await.unwrap();
+
+        let cols = store.list_collections().await.unwrap();
+        assert!(!cols.contains(&"col".to_string()),
+            "an entity-only collection must disappear once its last entity is deleted, matching Neo4jStore");
+    }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_keeps_explicitly_created_collection_even_when_emptied() {
+        let store = InMemoryGraphStore::new();
+        store.create_collection("col").await.unwrap();
+        let e = Entity {
+            id: EntityId::new(), name: "Solo".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://solo.md".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e]).await.unwrap();
+        store.delete_by_source_uri("col", "file://solo.md").await.unwrap();
+
+        let cols = store.list_collections().await.unwrap();
+        assert!(cols.contains(&"col".to_string()),
+            "an explicitly create_collection'd collection must survive being emptied, matching Neo4jStore's GraphCollection metadata node");
     }
 
     #[tokio::test]
