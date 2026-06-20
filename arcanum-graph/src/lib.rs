@@ -504,6 +504,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn upsert_relations_skips_relation_with_missing_source_entity() {
+        let store = InMemoryGraphStore::new();
+        let missing_src = EntityId::new();
+        let tgt = EntityId::new();
+        let e_tgt = Entity {
+            id: tgt.clone(), name: "Target".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e_tgt]).await.unwrap();
+        let rel = Relation {
+            source: missing_src.clone(), relation_type: "X".into(), target: tgt.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel]).await.unwrap();
+
+        let relations = store.get_relations(&missing_src).await.unwrap();
+        assert!(relations.is_empty(), "a relation whose source entity doesn't exist must be silently skipped");
+    }
+
+    #[tokio::test]
+    async fn upsert_relations_skips_relation_with_missing_target_entity() {
+        let store = InMemoryGraphStore::new();
+        let src = EntityId::new();
+        let missing_tgt = EntityId::new();
+        let e_src = Entity {
+            id: src.clone(), name: "Source".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e_src]).await.unwrap();
+        let rel = Relation {
+            source: src.clone(), relation_type: "X".into(), target: missing_tgt.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel]).await.unwrap();
+
+        let relations = store.get_relations(&src).await.unwrap();
+        assert!(relations.is_empty(), "a relation whose target entity doesn't exist must be silently skipped");
+    }
+
+    #[tokio::test]
+    async fn upsert_relations_keeps_relation_when_both_entities_exist() {
+        let store = InMemoryGraphStore::new();
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let e_src = Entity {
+            id: src.clone(), name: "S".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        let e_tgt = Entity {
+            id: tgt.clone(), name: "T".into(), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        };
+        store.upsert_entities("col", vec![e_src, e_tgt]).await.unwrap();
+        let rel = Relation {
+            source: src.clone(), relation_type: "X".into(), target: tgt.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("col", vec![rel]).await.unwrap();
+
+        let relations = store.get_relations(&src).await.unwrap();
+        assert_eq!(relations.len(), 1, "a relation must still be stored when both endpoints exist");
+    }
+
+    #[tokio::test]
     async fn delete_by_source_uri_cascades_when_deleted_entity_is_relation_target() {
         let store = InMemoryGraphStore::new();
         let id1 = EntityId::new();
