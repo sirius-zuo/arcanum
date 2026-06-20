@@ -89,10 +89,13 @@ impl GraphStore for InMemoryGraphStore {
     async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
         let map = self.entities.read().await;
         let entities = map.get(collection).cloned().unwrap_or_default();
-        let results: Vec<Entity> = entities.values().filter(|e| {
+        let mut results: Vec<Entity> = entities.values().filter(|e| {
             q.entity_name.as_deref().map(|n| e.name.contains(n)).unwrap_or(true)
             && q.entity_type.as_deref().map(|t| e.entity_type == t).unwrap_or(true)
         }).cloned().collect();
+        if q.entity_name.is_none() && q.entity_type.is_none() {
+            results.truncate(100);
+        }
         tracing::Span::current().record("result_count", results.len());
         Ok(results)
     }
@@ -574,6 +577,36 @@ mod tests {
 
         let relations = store.get_relations(&src).await.unwrap();
         assert_eq!(relations.len(), 1, "a relation must still be stored when both endpoints exist");
+    }
+
+    #[tokio::test]
+    async fn query_caps_unfiltered_results_at_100_like_neo4j_store() {
+        let store = InMemoryGraphStore::new();
+        let entities: Vec<Entity> = (0..150).map(|i| Entity {
+            id: EntityId::new(), name: format!("E{i}"), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        }).collect();
+        store.upsert_entities("col", entities).await.unwrap();
+
+        let results = store.query("col", &GraphQuery {
+            entity_name: None, entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 100, "unfiltered query must cap at 100, matching Neo4jStore's LIMIT 100");
+    }
+
+    #[tokio::test]
+    async fn query_does_not_cap_filtered_results() {
+        let store = InMemoryGraphStore::new();
+        let entities: Vec<Entity> = (0..150).map(|i| Entity {
+            id: EntityId::new(), name: format!("Match{i}"), entity_type: "T".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "".into(), collection_id: "col".into(),
+        }).collect();
+        store.upsert_entities("col", entities).await.unwrap();
+
+        let results = store.query("col", &GraphQuery {
+            entity_name: Some("Match".into()), entity_type: None, max_hops: 1, relation_filter: None,
+        }).await.unwrap();
+        assert_eq!(results.len(), 150, "a name-filtered query must not be capped, matching Neo4jStore");
     }
 
     #[tokio::test]

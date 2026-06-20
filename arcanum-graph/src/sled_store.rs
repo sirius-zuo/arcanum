@@ -128,6 +128,9 @@ impl GraphStore for SledGraphStore {
                 results.push(entity);
             }
         }
+        if q.entity_name.is_none() && q.entity_type.is_none() {
+            results.truncate(100);
+        }
         tracing::Span::current().record("result_count", results.len());
         Ok(results)
     }
