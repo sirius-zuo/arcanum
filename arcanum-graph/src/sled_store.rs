@@ -519,4 +519,40 @@ mod tests {
         let relations = store.get_relations(&id1).await.unwrap();
         assert!(relations.is_empty(), "relations must be cascade-removed when the collection is deleted");
     }
+
+    #[tokio::test]
+    async fn delete_by_source_uri_cascades_relation_across_collections() {
+        let (store, _tmp) = make_store();
+        let e_a_id = EntityId::new();
+        let e_b_id = EntityId::new();
+        let e_a = Entity {
+            id: e_a_id.clone(), name: "DocA".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://a.md".into(), collection_id: "col-a".into(),
+        };
+        let e_b = Entity {
+            id: e_b_id.clone(), name: "DocB".into(), entity_type: "Doc".into(),
+            canonical_id: None, source_chunks: vec![], source_uri: "file://b.md".into(), collection_id: "col-b".into(),
+        };
+        store.upsert_entities("col-a", vec![e_a]).await.unwrap();
+        store.upsert_entities("col-b", vec![e_b]).await.unwrap();
+
+        let rel = Relation {
+            source: e_a_id.clone(), relation_type: "links_to".into(), target: e_b_id.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        store.upsert_relations("col-a", vec![rel]).await.unwrap();
+
+        // Delete e_a from col-a; e_b remains in col-b.
+        store.delete_by_source_uri("col-a", "file://a.md").await.unwrap();
+
+        // Relation should be cascade-deleted despite reaching across collections.
+        let relations = store.get_relations(&e_a_id).await.unwrap();
+        assert!(relations.is_empty(), "relation must be cascade-deleted across collections");
+
+        // Confirm e_b is still present in col-b (genuine cross-collection scenario).
+        let gq = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+        let col_b_results = store.query("col-b", &gq).await.unwrap();
+        assert_eq!(col_b_results.len(), 1, "e_b must remain in col-b after deleting e_a from col-a");
+        assert_eq!(col_b_results[0].name, "DocB");
+    }
 }
