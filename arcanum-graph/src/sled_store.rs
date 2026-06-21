@@ -2,7 +2,7 @@ use arcanum_core::{traits::GraphStore, traits::store::GraphQuery, types::*, Arca
 use async_trait::async_trait;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use tracing::instrument;
 
 fn entity_key(collection: &str, entity_id: &str) -> Vec<u8> {
@@ -21,7 +21,7 @@ pub struct SledGraphStore {
     entities:    sled::Tree,
     relations:   sled::Tree,
     collections: sled::Tree,
-    write_lock:  Mutex<()>,
+    lock:        RwLock<()>,
 }
 
 impl SledGraphStore {
@@ -34,7 +34,7 @@ impl SledGraphStore {
             .map_err(|e| ArcanumError::Storage(format!("open relations tree: {e}")))?;
         let collections = db.open_tree("collections")
             .map_err(|e| ArcanumError::Storage(format!("open collections tree: {e}")))?;
-        Ok(Self { db, entities, relations, collections, write_lock: Mutex::new(()) })
+        Ok(Self { db, entities, relations, collections, lock: RwLock::new(()) })
     }
 
     fn cascade_delete_relations(&self, removed_ids: &HashSet<String>) -> Result<()> {
@@ -60,16 +60,18 @@ impl SledGraphStore {
 impl GraphStore for SledGraphStore {
     #[instrument(skip(self, entities), fields(store = "sled_graph", collection, entity_count = entities.len()), err)]
     async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()> {
-        let _guard = self.write_lock.lock().await;
-        for e in &entities {
-            let key = entity_key(collection, &e.id.0.to_string());
-            let value = serde_json::to_vec(e)
-                .map_err(|err| ArcanumError::Storage(format!("serialize entity: {err}")))?;
-            self.entities.insert(key, value)
-                .map_err(|err| ArcanumError::Storage(format!("insert entity: {err}")))?;
+        {
+            let _guard = self.lock.write().await;
+            for e in &entities {
+                let key = entity_key(collection, &e.id.0.to_string());
+                let value = serde_json::to_vec(e)
+                    .map_err(|err| ArcanumError::Storage(format!("serialize entity: {err}")))?;
+                self.entities.insert(key, value)
+                    .map_err(|err| ArcanumError::Storage(format!("insert entity: {err}")))?;
+            }
+            self.collections.insert(collection.as_bytes(), Vec::<u8>::new())
+                .map_err(|err| ArcanumError::Storage(format!("mark collection: {err}")))?;
         }
-        self.collections.insert(collection.as_bytes(), Vec::<u8>::new())
-            .map_err(|err| ArcanumError::Storage(format!("mark collection: {err}")))?;
         self.db.flush_async().await
             .map_err(|err| ArcanumError::Storage(format!("flush: {err}")))?;
         Ok(())
@@ -91,23 +93,25 @@ impl GraphStore for SledGraphStore {
                 );
             }
         }
-        let _guard = self.write_lock.lock().await;
-        for r in to_store {
-            let key = relation_identity_key(&r.source, &r.relation_type, &r.target);
-            let merged = match self.relations.get(&key)
-                .map_err(|e| ArcanumError::Storage(format!("get relation for merge: {e}")))?
-            {
-                Some(bytes) => {
-                    let existing: Relation = serde_json::from_slice(&bytes)
-                        .map_err(|e| ArcanumError::Storage(format!("deserialize relation: {e}")))?;
-                    merge_relation(existing, r)
-                }
-                None => r,
-            };
-            let value = serde_json::to_vec(&merged)
-                .map_err(|e| ArcanumError::Storage(format!("serialize relation: {e}")))?;
-            self.relations.insert(key, value)
-                .map_err(|e| ArcanumError::Storage(format!("insert relation: {e}")))?;
+        {
+            let _guard = self.lock.write().await;
+            for r in to_store {
+                let key = relation_identity_key(&r.source, &r.relation_type, &r.target);
+                let merged = match self.relations.get(&key)
+                    .map_err(|e| ArcanumError::Storage(format!("get relation for merge: {e}")))?
+                {
+                    Some(bytes) => {
+                        let existing: Relation = serde_json::from_slice(&bytes)
+                            .map_err(|e| ArcanumError::Storage(format!("deserialize relation: {e}")))?;
+                        merge_relation(existing, r)
+                    }
+                    None => r,
+                };
+                let value = serde_json::to_vec(&merged)
+                    .map_err(|e| ArcanumError::Storage(format!("serialize relation: {e}")))?;
+                self.relations.insert(key, value)
+                    .map_err(|e| ArcanumError::Storage(format!("insert relation: {e}")))?;
+            }
         }
         self.db.flush_async().await
             .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
@@ -116,6 +120,7 @@ impl GraphStore for SledGraphStore {
 
     #[instrument(skip(self, q), fields(store = "sled_graph", collection, result_count), err)]
     async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
+        let _guard = self.lock.read().await;
         let prefix = entity_prefix(collection);
         let mut results = vec![];
         for item in self.entities.scan_prefix(&prefix) {
@@ -136,6 +141,7 @@ impl GraphStore for SledGraphStore {
     }
 
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>> {
+        let _guard = self.lock.read().await;
         let mut results = vec![];
         for item in self.relations.iter() {
             let (_, value) = item.map_err(|e| ArcanumError::Storage(format!("scan relations: {e}")))?;
@@ -154,27 +160,30 @@ impl GraphStore for SledGraphStore {
             tracing::warn!(store = "sled_graph", "delete_by_source_uri called with empty source_uri — skipping");
             return Ok(());
         }
-        let _guard = self.write_lock.lock().await;
-        let items: Vec<(sled::IVec, sled::IVec)> = self.entities.scan_prefix(entity_prefix(collection))
-            .collect::<sled::Result<Vec<_>>>()
-            .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
-        let mut removed_ids: HashSet<String> = HashSet::new();
-        for (key, value) in items {
-            let entity: Entity = serde_json::from_slice(&value)
-                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
-            if entity.source_uri == source_uri {
-                removed_ids.insert(entity.id.0.to_string());
-                self.entities.remove(&key)
-                    .map_err(|e| ArcanumError::Storage(format!("remove entity: {e}")))?;
+        {
+            let _guard = self.lock.write().await;
+            let items: Vec<(sled::IVec, sled::IVec)> = self.entities.scan_prefix(entity_prefix(collection))
+                .collect::<sled::Result<Vec<_>>>()
+                .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+            let mut removed_ids: HashSet<String> = HashSet::new();
+            for (key, value) in items {
+                let entity: Entity = serde_json::from_slice(&value)
+                    .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+                if entity.source_uri == source_uri {
+                    removed_ids.insert(entity.id.0.to_string());
+                    self.entities.remove(&key)
+                        .map_err(|e| ArcanumError::Storage(format!("remove entity: {e}")))?;
+                }
             }
+            self.cascade_delete_relations(&removed_ids)?;
         }
-        self.cascade_delete_relations(&removed_ids)?;
         self.db.flush_async().await
             .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
         Ok(())
     }
 
     async fn list_collections(&self) -> Result<Vec<String>> {
+        let _guard = self.lock.read().await;
         let mut names: HashSet<String> = HashSet::new();
         for item in self.collections.iter() {
             let (key, _) = item.map_err(|e| ArcanumError::Storage(format!("scan collections: {e}")))?;
@@ -193,23 +202,26 @@ impl GraphStore for SledGraphStore {
     }
 
     async fn create_collection(&self, collection: &str) -> Result<()> {
-        let _guard = self.write_lock.lock().await;
-        let already_marked = self.collections.contains_key(collection.as_bytes())
-            .map_err(|e| ArcanumError::Storage(format!("check collection: {e}")))?;
-        let already_has_entities = self.entities.scan_prefix(entity_prefix(collection)).next().is_some();
-        if already_marked || already_has_entities {
-            return Err(ArcanumError::AlreadyExists(
-                format!("collection '{}' already exists", collection),
-            ));
+        {
+            let _guard = self.lock.write().await;
+            let already_marked = self.collections.contains_key(collection.as_bytes())
+                .map_err(|e| ArcanumError::Storage(format!("check collection: {e}")))?;
+            let already_has_entities = self.entities.scan_prefix(entity_prefix(collection)).next().is_some();
+            if already_marked || already_has_entities {
+                return Err(ArcanumError::AlreadyExists(
+                    format!("collection '{}' already exists", collection),
+                ));
+            }
+            self.collections.insert(collection.as_bytes(), Vec::<u8>::new())
+                .map_err(|e| ArcanumError::Storage(format!("create collection: {e}")))?;
         }
-        self.collections.insert(collection.as_bytes(), Vec::<u8>::new())
-            .map_err(|e| ArcanumError::Storage(format!("create collection: {e}")))?;
         self.db.flush_async().await
             .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
         Ok(())
     }
 
     async fn count_documents(&self, collection: Option<&str>) -> Result<u64> {
+        let _guard = self.lock.read().await;
         let items: Vec<(sled::IVec, sled::IVec)> = match collection {
             Some(col) => self.entities.scan_prefix(entity_prefix(col))
                 .collect::<sled::Result<Vec<_>>>()
@@ -230,6 +242,7 @@ impl GraphStore for SledGraphStore {
     }
 
     async fn count_documents_all(&self) -> Result<HashMap<String, u64>> {
+        let _guard = self.lock.read().await;
         let mut map: HashMap<String, u64> = HashMap::new();
         for item in self.collections.iter() {
             let (key, _) = item.map_err(|e| ArcanumError::Storage(format!("scan collections: {e}")))?;
@@ -256,27 +269,30 @@ impl GraphStore for SledGraphStore {
     }
 
     async fn delete_collection(&self, collection: &str) -> Result<()> {
-        let _guard = self.write_lock.lock().await;
-        let items: Vec<(sled::IVec, sled::IVec)> = self.entities.scan_prefix(entity_prefix(collection))
-            .collect::<sled::Result<Vec<_>>>()
-            .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
-        let mut removed_ids: HashSet<String> = HashSet::new();
-        for (key, value) in items {
-            let entity: Entity = serde_json::from_slice(&value)
-                .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
-            removed_ids.insert(entity.id.0.to_string());
-            self.entities.remove(&key)
-                .map_err(|e| ArcanumError::Storage(format!("remove entity: {e}")))?;
+        {
+            let _guard = self.lock.write().await;
+            let items: Vec<(sled::IVec, sled::IVec)> = self.entities.scan_prefix(entity_prefix(collection))
+                .collect::<sled::Result<Vec<_>>>()
+                .map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
+            let mut removed_ids: HashSet<String> = HashSet::new();
+            for (key, value) in items {
+                let entity: Entity = serde_json::from_slice(&value)
+                    .map_err(|e| ArcanumError::Storage(format!("deserialize entity: {e}")))?;
+                removed_ids.insert(entity.id.0.to_string());
+                self.entities.remove(&key)
+                    .map_err(|e| ArcanumError::Storage(format!("remove entity: {e}")))?;
+            }
+            self.collections.remove(collection.as_bytes())
+                .map_err(|e| ArcanumError::Storage(format!("remove collection marker: {e}")))?;
+            self.cascade_delete_relations(&removed_ids)?;
         }
-        self.collections.remove(collection.as_bytes())
-            .map_err(|e| ArcanumError::Storage(format!("remove collection marker: {e}")))?;
-        self.cascade_delete_relations(&removed_ids)?;
         self.db.flush_async().await
             .map_err(|e| ArcanumError::Storage(format!("flush: {e}")))?;
         Ok(())
     }
 
     async fn get_entity_by_id(&self, entity_id: &EntityId) -> Result<Option<Entity>> {
+        let _guard = self.lock.read().await;
         for item in self.entities.iter() {
             let (_, value) = item.map_err(|e| ArcanumError::Storage(format!("scan entities: {e}")))?;
             let entity: Entity = serde_json::from_slice(&value)
@@ -294,6 +310,7 @@ impl GraphStore for SledGraphStore {
         relation_type: &str,
         target_id:     &EntityId,
     ) -> Result<Option<Relation>> {
+        let _guard = self.lock.read().await;
         let key = relation_identity_key(source_id, relation_type, target_id);
         match self.relations.get(&key)
             .map_err(|e| ArcanumError::Storage(format!("get relation: {e}")))?
