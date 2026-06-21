@@ -14,3 +14,8 @@ anyhow       = { workspace = true }
 neo4rs       = "0.7"
 uuid         = { workspace = true }
 futures      = "0.3"
+sled         = "0.34"
+
+[dev-dependencies]
+serial_test  = "3"
+tempfile     = "3"

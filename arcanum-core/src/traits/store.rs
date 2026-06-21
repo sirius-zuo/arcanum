@@ -93,6 +93,57 @@ pub trait GraphStore: Send + Sync {
     }
 }
 
+/// Builds the canonical, flat (not collection-scoped) identity key for a
+/// relation — matching `Neo4jStore`'s `MERGE`-by-`(source, relation_type,
+/// target)` semantics. `EntityId`'s `Display` format is always exactly 36
+/// ASCII bytes (lowercase hex + hyphens) and can never contain a `\0`, so
+/// this key is unambiguous regardless of what bytes `relation_type`
+/// contains: the fixed-width, NUL-free source/target segments pin the
+/// string's prefix and suffix, which forces the middle segment — and
+/// therefore the whole key — to be unique per distinct triple.
+pub fn relation_identity_key(
+    source: &EntityId,
+    relation_type: &str,
+    target: &EntityId,
+) -> Vec<u8> {
+    format!("{}\0{}\0{}", source.0, relation_type, target.0).into_bytes()
+}
+
+/// True if `relation` touches (as source or target) any entity id in
+/// `removed_ids` — i.e. it must be cascade-deleted, matching `Neo4jStore`'s
+/// `DETACH DELETE` semantics (which removes relationships regardless of
+/// which side of the relationship the deleted entity was on, and regardless
+/// of which collection the relationship's `collection` property names).
+pub fn relation_touches_removed_entity(
+    removed_ids: &std::collections::HashSet<String>,
+    relation: &Relation,
+) -> bool {
+    removed_ids.contains(&relation.source.0.to_string())
+        || removed_ids.contains(&relation.target.0.to_string())
+}
+
+/// Merges a newly-upserted relation into an already-stored relation for the
+/// same `(source, relation_type, target)` identity, preserving evidence from
+/// both instead of letting the newer upsert silently discard the older
+/// one's `source_chunks`/`confidence`. Identity fields (source, relation_type,
+/// target) are taken from `incoming` (they're equal to `existing`'s by
+/// construction — both have already been matched on the same identity key).
+pub fn merge_relation(existing: Relation, incoming: Relation) -> Relation {
+    let mut source_chunks = existing.source_chunks;
+    for c in incoming.source_chunks {
+        if !source_chunks.contains(&c) {
+            source_chunks.push(c);
+        }
+    }
+    Relation {
+        source: incoming.source,
+        relation_type: incoming.relation_type,
+        target: incoming.target,
+        confidence: existing.confidence.max(incoming.confidence),
+        source_chunks,
+    }
+}
+
 #[async_trait]
 pub trait TreeStore: Send + Sync {
     async fn insert_node(&self, collection: &str, node: TreeNode) -> Result<()>;
@@ -116,6 +167,94 @@ pub trait TreeStore: Send + Sync {
 pub trait SecretStore: Send + Sync {
     async fn get(&self, key: &str) -> Result<String>;
     async fn reload(&self) -> Result<()>;
+}
+
+#[cfg(test)]
+mod helper_tests {
+    use super::*;
+    use crate::types::{ChunkId, EntityId, Relation};
+
+    #[test]
+    fn relation_identity_key_is_stable_and_distinct() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let k1 = relation_identity_key(&a, "WORKS_AT", &b);
+        let k2 = relation_identity_key(&a, "WORKS_AT", &b);
+        let k3 = relation_identity_key(&a, "MANAGES", &b);
+        assert_eq!(k1, k2, "same triple must produce the same key");
+        assert_ne!(k1, k3, "different relation_type must produce a different key");
+    }
+
+    #[test]
+    fn relation_identity_key_survives_embedded_nul_in_relation_type() {
+        let a = EntityId::new();
+        let b = EntityId::new();
+        let weird = relation_identity_key(&a, "FOO\0BAR", &b);
+        let plain_foo = relation_identity_key(&a, "FOO", &b);
+        let plain_bar = relation_identity_key(&a, "BAR", &b);
+        assert_ne!(weird, plain_foo);
+        assert_ne!(weird, plain_bar);
+    }
+
+    #[test]
+    fn relation_touches_removed_entity_checks_both_endpoints() {
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let other = EntityId::new();
+        let rel = Relation {
+            source: src.clone(), relation_type: "X".into(), target: tgt.clone(),
+            confidence: 1.0, source_chunks: vec![],
+        };
+        let mut removed = std::collections::HashSet::new();
+        removed.insert(src.0.to_string());
+        assert!(relation_touches_removed_entity(&removed, &rel), "source match must cascade");
+
+        let mut removed_target = std::collections::HashSet::new();
+        removed_target.insert(tgt.0.to_string());
+        assert!(relation_touches_removed_entity(&removed_target, &rel), "target match must cascade");
+
+        let mut removed_other = std::collections::HashSet::new();
+        removed_other.insert(other.0.to_string());
+        assert!(!relation_touches_removed_entity(&removed_other, &rel), "unrelated id must not cascade");
+    }
+
+    #[test]
+    fn merge_relation_unions_source_chunks_and_keeps_max_confidence() {
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let c1 = ChunkId::new();
+        let c2 = ChunkId::new();
+        let existing = Relation {
+            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
+            confidence: 0.5, source_chunks: vec![c1.clone()],
+        };
+        let incoming = Relation {
+            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
+            confidence: 0.9, source_chunks: vec![c2.clone()],
+        };
+        let merged = merge_relation(existing, incoming);
+        assert_eq!(merged.confidence, 0.9, "merge must keep the higher confidence");
+        assert_eq!(merged.source_chunks.len(), 2, "merge must union source_chunks, not overwrite");
+        assert!(merged.source_chunks.contains(&c1));
+        assert!(merged.source_chunks.contains(&c2));
+    }
+
+    #[test]
+    fn merge_relation_does_not_duplicate_shared_chunk() {
+        let src = EntityId::new();
+        let tgt = EntityId::new();
+        let shared = ChunkId::new();
+        let existing = Relation {
+            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
+            confidence: 0.5, source_chunks: vec![shared.clone()],
+        };
+        let incoming = Relation {
+            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
+            confidence: 0.9, source_chunks: vec![shared.clone()],
+        };
+        let merged = merge_relation(existing, incoming);
+        assert_eq!(merged.source_chunks.len(), 1, "re-citing the same chunk must not duplicate it");
+    }
 }
 
 #[cfg(test)]
