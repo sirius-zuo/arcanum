@@ -362,8 +362,9 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
   `LoaderRegistry`. `GitLoader`, `DatabaseLoader`, `CloudStorageLoader`,
   and `ConnectorLoader` compile, implement `supports()` correctly, and
   always return an `ArcanumError::Ingestion("... not yet implemented")`
-  from `load()` — they have no call site anywhere in the workspace outside
-  their own module.
+  from `load()` — outside `arcanum-ingestion/tests/loader_test.rs`, which
+  exercises them directly, nothing in the workspace constructs or calls
+  them, and no production path registers them.
 - **`metadata/` extractors have no callers (debt).** `extract_title`,
   `extract_keywords`, and `extract_hierarchy` (`metadata/title.rs`,
   `keyword.rs`, `hierarchy.rs`) are exported from `arcanum-ingestion` but
