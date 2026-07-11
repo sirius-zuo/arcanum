@@ -234,13 +234,17 @@ wiring status.
 - **Alternatives rejected** — PR #30's fix #1 records that an unguarded
   `delete_by_source_uri("")` would mass-delete every chunk in a collection;
   rather than trust callers never to pass an empty string, an explicit
-  early-return guard was added to all six store implementations.
+  early-return guard was added to all six store implementations. PR #30
+  also replaced ad hoc `deregister()` with a CAS-based `try_set_replacing`
+  transition to close a concurrent-worker race on the registry.
 - **Consequences** — every `VectorStore`/`GraphStore`/`TreeStore`
   implementation, present or future, must guard the empty-`source_uri`
-  case itself — it is not enforced by the trait signature. PR #30 also
-  replaced ad hoc `deregister()` with a CAS-based `try_set_replacing`
-  transition to close a concurrent-worker race on the registry.
-- **Ref** — 2026-06-04, PR #29 and PR #30.
+  case itself — it is not enforced by the trait signature. **Superseded** —
+  PR #44 (Evidence Phase 1) later replaced `DocumentRegistry` and its
+  CAS-based `try_set_replacing`/`deregister()` transition with
+  `DocumentVersionStore`; `delete_by_source_uri` itself is unaffected and
+  is still called by the current cleanup stage (see Implementation Notes).
+- **Ref** — 2026-06-04, PR #29 and PR #30; superseded by 2026-06-16, PR #44.
 
 ### LexicalIndex and GraphPlanner extracted so arcanum-retrieval depends only on arcanum-core
 - **Decision** — introduced `LexicalIndex` (`async search(collection_id,
@@ -313,10 +317,22 @@ wiring status.
   setting either in a config file currently has no effect.
 - `relation_identity_key`, `relation_touches_removed_entity`, and
   `merge_relation` in `traits::store` are free functions, not trait
-  methods — they encode `Neo4jStore`'s `MERGE`-by-`(source, relation_type,
-  target)` and `DETACH DELETE` semantics once so every `GraphStore`
-  implementation shares the same identity/merge behavior instead of
-  reimplementing it.
+  methods, called by `InMemoryGraphStore` (`arcanum-graph/src/lib.rs`) and
+  `SledGraphStore` (`arcanum-graph/src/sled_store.rs`) to mirror
+  `Neo4jStore`'s `MERGE`-by-`(source, relation_type, target)` and
+  `DETACH DELETE` semantics, which `Neo4jStore`
+  (`arcanum-graph/src/neo4j_store.rs`) implements independently in Cypher
+  and never calls these functions — a fix to `merge_relation` changes the
+  in-memory and Sled backends' behavior but has no effect on the Neo4j
+  backend.
+- **Superseded dedup mechanism (drift).** `DocumentRegistry` and its
+  `try_set_replacing`/`deregister()` transition (Key Decisions, PR #29/#30)
+  no longer exist in source — `arcanum-ingestion/src/document_registry.rs`
+  is now a two-line stub. The current `make_dedup_stage`/
+  `make_cleanup_stage` (`arcanum-pipeline/src/stages.rs`) take `Arc<dyn
+  DocumentVersionStore>`, calling `get_latest()` to decide skip/replace and
+  `supersede_active(document_id)` (an `Active` → `Superseded`
+  `VersionStatus` transition) in place of the old registry's CAS state.
 - `IngestionDepsOverrideResolver` inverts the usual direction: the trait is
   defined in `arcanum-core` but implemented by `arcanum-engine` and called
   by each `arcanum-pipeline` worker — the consumer (pipeline) sits below
