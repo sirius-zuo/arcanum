@@ -10,9 +10,11 @@ templates (`templates/`) by name, and `worker.rs`'s `IngestionWorker`
 pulls tasks off a queue, resolves per-collection dependency overrides, and
 drives each task through the DAG with a retry-and-requeue loop. This page
 also covers `arcanum-middleware`, a small crate of three reliability
-primitives — `BoundedQueue`, `RetryPolicy`, `CircuitBreaker` — that exist
-solely to back this crate's queueing, retry, and failure-isolation
-behavior; no other crate constructs one. Splitting DAG orchestration and
+primitives — `BoundedQueue`, `RetryPolicy`, `CircuitBreaker` — that back
+this crate's queueing, retry, and failure-isolation behavior;
+`ArcanumEngineBuilder::build` (`arcanum-engine/src/engine.rs`) is where
+all three are actually constructed and configured, then handed to this
+crate. Splitting DAG orchestration and
 stage sequencing into their own crate keeps `arcanum-engine` a
 composition root rather than a place where ingestion control flow lives.
 
@@ -29,8 +31,11 @@ composition root rather than a place where ingestion control flow lives.
 `ContextEnricher`, `EntityExtractor` types (not trait objects), and
 `arcanum-tree`'s concrete `RaptorBuilder`. It also consumes
 `arcanum-middleware`'s `BoundedQueue`, `RetryPolicy`, `CircuitBreaker` as
-concrete types, not trait objects — this crate is `arcanum-middleware`'s
-only real caller in the workspace.
+concrete types, not trait objects — [Engine](engine.md) constructs them
+(`CircuitBreaker::new("embedding", ...)`, `BoundedQueue::new("ingestion",
+...)`, `RetryPolicy::new` in `ArcanumEngineBuilder::build`) and
+`IngestionService` pushes onto the same `BoundedQueue`; this crate is
+where they gate stage execution.
 
 - [Engine](engine.md) — `ArcanumEngineBuilder` assembles the shared
   `PipelineDeps` and `ArcanumPipelineRegistry`, then builds

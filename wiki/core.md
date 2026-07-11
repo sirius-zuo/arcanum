@@ -330,9 +330,12 @@ wiring status.
   no longer exist in source — `arcanum-ingestion/src/document_registry.rs`
   is now a two-line stub. The current `make_dedup_stage`/
   `make_cleanup_stage` (`arcanum-pipeline/src/stages.rs`) take `Arc<dyn
-  DocumentVersionStore>`, calling `get_latest()` to decide skip/replace and
-  `supersede_active(document_id)` (an `Active` → `Superseded`
-  `VersionStatus` transition) in place of the old registry's CAS state.
+  DocumentVersionStore>`, calling `get_latest()` to decide skip/replace;
+  the `supersede_active(document_id)` call (an `Active` → `Superseded`
+  `VersionStatus` transition) that replaces the old registry's CAS state
+  actually fires from `make_snapshot_stage` under
+  `VersioningPolicy::Replace` — `make_cleanup_stage`'s own supersede guard
+  is unreachable (see [Pipeline](pipeline.md)).
 - `IngestionDepsOverrideResolver` inverts the usual direction: the trait is
   defined in `arcanum-core` but implemented by `arcanum-engine` and called
   by each `arcanum-pipeline` worker — the consumer (pipeline) sits below

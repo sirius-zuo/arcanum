@@ -182,9 +182,12 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
    version: no prior version proceeds as new, a matching hash sets the
    pipeline's skip flag, a differing hash sets its replace flag.
    `make_cleanup_stage` runs only when replacing: it calls
-   `supersede_active(document_id)` then `delete_by_source_uri` on the
-   vector/graph/tree stores (see [Storage](storage.md)) before the new
-   version is written.
+   `delete_by_source_uri` on the vector/graph/tree stores (see
+   [Storage](storage.md)) before the new version is written. The
+   `supersede_active(document_id)` status flip happens later, from
+   `make_snapshot_stage` under `VersioningPolicy::Replace` —
+   `make_cleanup_stage`'s own supersede guard reads a state field that is
+   never set before it runs (see [Pipeline](pipeline.md)).
 3. `make_preprocess_stage` resolves a preprocessor by name via
    `PreprocessorCatalog::get` (see Flow 2) and calls
    `Preprocessor::process`. For `DoclingPreprocessor` in `Http` mode with
