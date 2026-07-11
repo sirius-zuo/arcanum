@@ -336,6 +336,13 @@ Newest first.
   -keyed fusion for. `Bm25Retriever`'s own doc comment separately warns
   not to treat its `DocumentId`/`ChunkId` as authoritative "until a
   metadata lookup is wired in."
+- **`LanceDbStore`'s hardcoded `score: 1.0` degrades per-doc chunk
+  selection (gap, see [Storage](storage.md)).** `reduce_to_best_per_doc`
+  keeps the chunk with the highest score per document (`chunk.score >
+  existing.score`); when `VectorRetriever` is backed by `LanceDbStore`,
+  every candidate arrives scored `1.0`, so "highest-scoring" silently
+  degenerates to "first-seen" — only `PgVectorStore` (real cosine scores)
+  gets meaningful best-chunk selection.
 - **`ColBertRetriever` is implemented and tested but never constructed by
   the engine (gap).** `ArcanumEngineBuilder::build` adds `VectorRetriever`,
   `GraphRetriever`, `RaptorRetriever`, and `Bm25Retriever` conditionally,
