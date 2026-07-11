@@ -234,10 +234,13 @@ build a tree against whichever concrete store the engine wired in without
   extraction from the serialized `chunk_json` blob.
 - **Context** — the PR body states this "makes deletion O(index) instead of
   O(n·JSON-parse) and enables single-pass source_uri filtering in search."
-  PR #36 then replaced `LanceDbStore`'s fragile `LIKE`+`ESCAPE` delete
-  predicate with the new column's exact-equality `lance_eq_filter`, and
-  excluded empty `source_uri` from `PgVectorStore::count_documents` so
-  un-attributed chunks stop inflating the document count.
+  `LanceDbStore`'s fragile `LIKE`+`ESCAPE` delete predicate had already
+  been replaced with an exact-equality predicate on the first-class column
+  by PR #30 (finding #5, commit `310cf81e`); PR #36 then extracted that
+  already-exact-equality inline predicate into the reusable
+  `lance_eq_filter` helper, and excluded empty `source_uri` from
+  `PgVectorStore::count_documents` so un-attributed chunks stop inflating
+  the document count.
 - **Alternatives rejected** — PR #36 also introduced, then this workspace
   later abandoned, a metadata-blob-based `ChunkMetadata::source_uri()`
   helper (extracting from the JSON metadata map). PR #44 (Evidence Phase 1)
@@ -249,7 +252,8 @@ build a tree against whichever concrete store the engine wired in without
 - **Consequences** — `LanceDbStore::search`/`PgVectorStore::search` support
   only `FilterOp::Eq` on `source_uri`; any other operator or field is logged
   via `tracing::warn!` and silently ignored rather than erroring.
-- **Ref** — 2026-06-06, PR #35; 2026-06-07, PR #36; 2026-06-16, PR #44.
+- **Ref** — 2026-06-04, PR #30 (commit `310cf81e`); 2026-06-06, PR #35;
+  2026-06-07, PR #36; 2026-06-16, PR #44.
 
 ### k-means replaced pair-wise grouping for RAPTOR clustering
 - **Decision** — `RaptorBuilder`'s per-level clustering step was replaced:
