@@ -147,11 +147,14 @@ Newest first.
 - **Decision** — the fan-out path (tree node/entity/relation resolution)
   dedups `raw_sources` with a `HashSet`-backed `retain` over
   `(snapshot_uri, offset_start, offset_end)`, not on `snapshot_uri` alone.
-- **Context** — the PR's fix table records the prior behavior — a
-  `Vec::dedup_by_key` keyed on `snapshot_uri` alone — as a bug: it "only
-  collapses *consecutive* duplicates" and "silently dropped distinct
-  passages (different offsets) from the same document whenever they
-  happened to land next to each other in iteration order."
+- **Context** — PR #45's code-review-fixes list records the prior
+  behavior as a silent-data-loss bug: "`dedup_by_key` collapsed distinct
+  passages from the same document." The doc-comment on
+  `dedup_raw_sources` (`resolver.rs`) spells out the mechanism:
+  `Vec::dedup_by_key` "only collapses *consecutive* duplicates" and,
+  keyed on `snapshot_uri` alone, "silently dropped distinct passages
+  (different offsets) from the same document whenever they happened to
+  land next to each other in iteration order."
 - **Alternatives rejected** — the PR body records the `snapshot_uri`-only
   key as the bug being fixed, not a considered alternative.
 - **Consequences** — two distinct passages from the same snapshot (e.g.
@@ -222,6 +225,34 @@ Newest first.
   logs.
 - **Ref** — 2026-06-16, PR #45.
 
+### Evidence delivered as two phases: foundations first, resolution second
+- **Decision** — the evidence layer landed as two separately merged
+  phases: Phase 1 (PR #44) built the foundations — raw snapshot
+  persistence (`LocalSnapshotStore`), typed `ChunkProvenance` replacing
+  loose metadata fields, document versioning
+  (`PostgresDocumentVersionStore`/`SqliteDocumentVersionStore`),
+  `TreeNode.leaf_chunk_ids`, and `Relation.source_chunks` — with no
+  resolver; Phase 2 (PR #45) added everything that reads those
+  foundations back: the proof-chain types, `ChunkMetadataStore`,
+  `DefaultEvidenceResolver`, `PostgresGcWorker`, and the `/evidence/*`
+  REST routes.
+- **Context** — PR #44's summary scopes itself to "raw snapshot
+  persistence, typed `ChunkProvenance`, document versioning, tree
+  `leaf_chunk_ids`, graph `source_chunks`"; PR #45's summary states it
+  "implements all 11 tasks of the evidence-phase2 plan — proof chains,
+  chunk metadata, GC worker, and REST routes."
+- **Alternatives rejected** — No PR or design doc records a rationale
+  for the two-phase split itself or alternatives to it; observed current
+  state: Phase 1's write-side types were already consumed by the
+  ingestion pipeline (see [Pipeline](pipeline.md)) one PR before any
+  read-side resolution existed.
+- **Consequences** — write-side provenance (every chunk carries
+  `ChunkProvenance`, every ingest registers a version and snapshot) is
+  unconditional, while read-side resolution stays optional
+  (`ArcanumEngineBuilder::evidence` defaults to `None` — see
+  Implementation Notes).
+- **Ref** — 2026-06-16, PR #44 (Phase 1) and PR #45 (Phase 2).
+
 ## Implementation Notes
 
 - **Nothing in the shipped engine wires `DefaultEvidenceResolver` in
@@ -239,7 +270,7 @@ Newest first.
   anywhere in the codebase" before the fix that wired the resolver into
   the example app.
 - **`PostgresGcWorker` wiring is documentation-only outside the
-  example.** Per the same PR #45 fix table, `PostgresGcWorker`'s
+  example.** Per PR #45's Task 10 checklist, `PostgresGcWorker`'s
   production wiring is "documented in its BUILD.md," not constructed by
   any shipped binary; `POST /admin/gc` (see [Interfaces](interfaces.md))
   is reachable only when a caller supplies a `GcWorker` the same way.
