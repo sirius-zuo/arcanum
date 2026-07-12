@@ -253,14 +253,17 @@ Newest first.
 - **Ref** — 2026-06-08, PR #40.
 
 ### `arcanum-eval`'s metrics and evaluator/runner types (E1/E2 series)
-- **Decision** — `metrics.rs`'s five IR metric functions were added
-  first (commit `e2cd31cf`, "E1"), followed by four independent
-  consumers in the same crate: `BenchmarkDataset` (`35851773`),
-  `EvalScheduler` (`73b8e67e`), `StandardEvaluator` implementing
+- **Decision** — `metrics.rs` began with `compute_hit_rate_at_k`/
+  `compute_mrr`/`compute_ndcg_at_k` plus `EvalRunner` and `EvalReport`
+  (commit `f69b7958`); commit `e2cd31cf` ("E1") then added
+  `compute_precision_at_k`/`compute_recall_at_k` and two LLM-judge
+  helpers on that base, followed by four independent consumers in the
+  same crate: `BenchmarkDataset` (`35851773`), `EvalScheduler`
+  (`73b8e67e`), `StandardEvaluator` implementing
   `arcanum_core::traits::Evaluator` (`0e7bd582`), and `EvalReport`'s
   `Precision@K`/`Recall@K`/optional-LLM extension (`220b645f`).
 - **Context** — No PR or design doc records a rationale for splitting
-  the work into this five-commit sequence; observed current state: each
+  the work into this commit sequence; observed current state: each
   commit's subject line is the only record (e.g. "add StandardEvaluator
   implementing Evaluator trait (E2)"), with no PR body or design-doc
   cross-reference in this repository.
@@ -269,8 +272,8 @@ Newest first.
   "run an eval" abstractions (`EvalRunner`/`EvalReport` vs.
   `StandardEvaluator`/`EvalMetrics`) built on the same metric functions,
   per Architecture above; neither has a production caller.
-- **Ref** — 2026-05-30, commits `e2cd31cf`, `35851773`, `73b8e67e`,
-  `0e7bd582`, `220b645f`.
+- **Ref** — 2026-05-29, commit `f69b7958`; 2026-05-30, commits
+  `e2cd31cf`, `35851773`, `73b8e67e`, `0e7bd582`, `220b645f`.
 
 ## Implementation Notes
 
