@@ -269,9 +269,10 @@ Newest first.
   pattern; observed current state: commit `4f3141cd` registers
   `FileLoader`/`HttpLoader` into the `LoaderRegistry` alongside the
   existing `RawLoader`, and commit `706c25b3` adds `graph_store` as a
-  public `Option<Arc<dyn GraphStore>>` field on `ArcanumEngine` "for the
-  /api/v1/graph endpoint" (commit subject) — both small, additive diffs
-  to the same `build()`/struct rather than a new construction path.
+  public `Option<Arc<dyn GraphStore>>` field on `ArcanumEngine` —
+  "exposed for the /api/v1/graph endpoint" per the field's doc comment in
+  `engine.rs` — both small, additive diffs to the same `build()`/struct
+  rather than a new construction path.
 - **Alternatives rejected** — not recorded.
 - **Consequences** — every new store or loader this crate exposes needs
   a matching edit to both `build()` and, if engine-visible, the
@@ -284,7 +285,9 @@ Newest first.
   what `config.validate()` checks (gap).** The README states the three
   runtime tiers are "enforced at startup" and that `enterprise` mode
   means "full RBAC + audit retention + secret rotation." In source,
-  `ArcanumConfig::validate` enforces exactly one thing: `RuntimeMode::
+  `ArcanumConfig::validate` enforces exactly one runtime-tier rule (its
+  only other cross-field check is Docling backend validation — see
+  [Core](core.md)): `RuntimeMode::
   Production` and `RuntimeMode::Enterprise` are both rejected if
   `storage.metadata_backend == MetadataBackend::Sqlite` — the two
   non-`Development` tiers are otherwise handled identically; nothing in
