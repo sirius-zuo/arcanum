@@ -357,3 +357,5 @@ build a tree against whichever concrete store the engine wired in without
 - [Pipeline](pipeline.md)
 - [Retrieval](retrieval.md)
 - [Engine](engine.md)
+- [Interfaces](interfaces.md)
+- [Ingestion](ingestion.md)

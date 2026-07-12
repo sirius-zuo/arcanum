@@ -359,3 +359,4 @@ Newest first.
 - [Engine](engine.md)
 - [Evidence](evidence.md)
 - [Evaluation](evaluation.md)
+- [Retrieval](retrieval.md)

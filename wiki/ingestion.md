@@ -415,3 +415,4 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
 - [Pipeline](pipeline.md)
 - [Evidence](evidence.md)
 - [Engine](engine.md)
+- [Evaluation](evaluation.md)

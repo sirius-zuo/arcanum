@@ -56,15 +56,15 @@ graph TD
 
 | Page | Covers | Summary |
 |------|--------|---------|
-| [core](core.md) | `arcanum-core`, `arcanum-models` | Shared domain types, error taxonomy, and the port traits every backend implements; model-provider clients for embedding and generation. |
-| [storage](storage.md) | `arcanum-vector`, `arcanum-graph`, `arcanum-tree` | The three storage backends — vector index, knowledge graph, RAPTOR tree — and their pluggable store implementations. |
-| [ingestion](ingestion.md) | `arcanum-ingestion` | Document loading and preprocessing: the Docling integration and the name-keyed PreprocessorCatalog. |
-| [pipeline](pipeline.md) | `arcanum-pipeline`, `arcanum-middleware` | The DAG stage runner, pipeline templates, per-backend chunk stages, and cross-cutting middleware. |
-| [retrieval](retrieval.md) | `arcanum-retrieval` | Retrieval orchestration strategies and document-level RRF fusion across backends. |
-| [evidence](evidence.md) | `arcanum-evidence` | Document versioning, raw snapshots, typed chunk provenance, proof chains, and retention GC. |
-| [engine](engine.md) | `arcanum-engine` | The ArcanumEngine facade: service composition, auth, audit, events, and circuit breakers. |
-| [interfaces](interfaces.md) | `arcanum-server`, `arcanum-mcp`, `arcanum-telemetry` | The REST/WebSocket server, the native MCP server, and observability wiring. |
-| [evaluation](evaluation.md) | `arcanum-eval`, `arcanum-chunk-eval` | Retrieval evaluation, the offline chunking benchmark harness, inspect API, and shadow experiments. |
+| [core](core.md) | `arcanum-core`, `arcanum-models` | Shared domain types, the error taxonomy, layered `ArcanumConfig`, and the port traits (`VectorStore`, `Chunker`, `Embedder`, `EvidenceResolver`, and more) every backend is written against; `arcanum-models`' nine provider implementations of the `Embedder`/`TextEnricher` ports. |
+| [storage](storage.md) | `arcanum-vector`, `arcanum-graph`, `arcanum-tree` | The concrete storage backends — `arcanum-vector`'s LanceDB/PgVector stores and BM25 lexical index, `arcanum-graph`'s in-memory/Sled/Neo4j graph stores, `arcanum-tree`'s RAPTOR-tree builder — each implementing `arcanum-core`'s storage port traits. |
+| [ingestion](ingestion.md) | `arcanum-ingestion` | Document loading, Docling preprocessing, five name-keyed chunking strategies, and the persistence layer — document version history, raw/canonical snapshots, per-chunk provenance, and retention-based GC — that makes re-ingestion idempotent. |
+| [pipeline](pipeline.md) | `arcanum-pipeline`, `arcanum-middleware` | The DAG stage runner and executor that turn one `IngestionTask` into a completed ingest, the pipeline-template registry, `IngestionWorker`'s queue/retry loop, and the `arcanum-middleware` reliability primitives (`BoundedQueue`, `RetryPolicy`, `CircuitBreaker`) backing it. |
+| [retrieval](retrieval.md) | `arcanum-retrieval` | `RetrievalOrchestrator` runs a configurable subset of five strategy retrievers (vector, BM25, graph, RAPTOR, ColBERT) in parallel and merges their hits with document-level RRF fusion. |
+| [evidence](evidence.md) | `arcanum-evidence` | Resolves a chunk, tree node, entity, or relation back to the raw source bytes it came from via `DefaultEvidenceResolver`, returning an auditable `ProofChain`. |
+| [engine](engine.md) | `arcanum-engine` | The composition root: `ArcanumEngineBuilder::build` wires every configured store/provider into a running `ArcanumEngine` — pipeline workers, the retrieval orchestrator, per-domain services, and the cross-cutting auth, audit, events, and circuit breakers they share. |
+| [interfaces](interfaces.md) | `arcanum-server`, `arcanum-mcp`, `arcanum-telemetry` | The workspace's outward-facing edge: `arcanum-server`'s REST/WebSocket API, `arcanum-mcp`'s native JSON-RPC MCP server, and `arcanum-telemetry`'s tracing/metrics wiring. |
+| [evaluation](evaluation.md) | `arcanum-eval`, `arcanum-chunk-eval` | `arcanum-eval`'s scaffolded retrieval-quality metrics and scheduler, `arcanum-chunk-eval`'s deterministic chunking-strategy inspect/benchmark harness, and the shadow-experiment lifecycle built on top of it. |
 
 ## Maintenance Convention
 

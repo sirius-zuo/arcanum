@@ -300,3 +300,5 @@ Newest first.
 - [Ingestion](ingestion.md)
 - [Pipeline](pipeline.md)
 - [Interfaces](interfaces.md)
+- [Retrieval](retrieval.md)
+- [Engine](engine.md)
