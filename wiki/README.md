@@ -1,6 +1,6 @@
 # Arcanum — Internal Architecture Wiki
 
-Arcanum is a production-grade Retrieval-Augmented Generation engine written in Rust. It combines five retrieval strategies — dense vector, BM25 lexical, knowledge graph, hierarchical RAPTOR tree, and token-level ColBERT — behind a single orchestrator, with document-level RRF fusion across backends. A hexagonal architecture is enforced at the type level: every storage backend, model provider, and external service sits behind a trait defined in `arcanum-core`, so backends (LanceDB vs. PgVector, Neo4j vs. in-memory Sled) swap with a builder change rather than a pipeline rewrite.
+Arcanum is a production-grade Retrieval-Augmented Generation engine written in Rust. `arcanum-retrieval` defines five retrieval strategies — dense vector, BM25 lexical, knowledge graph, hierarchical RAPTOR tree, and token-level ColBERT — behind a single orchestrator with document-level RRF fusion, though (see [Retrieval](retrieval.md)'s Implementation Notes) `ArcanumEngineBuilder` wires at most four of the five in practice, and two strategies don't yet participate correctly in the document-level fusion they're meant to share. A hexagonal architecture is enforced at the type level: every storage backend, model provider, and external service sits behind a trait defined in `arcanum-core`, so backends (LanceDB vs. PgVector, Neo4j vs. in-memory Sled) swap with a builder change rather than a pipeline rewrite.
 
 The workspace is sixteen crates layered as a strict DAG. `arcanum-core` holds the shared domain types and ports; `arcanum-vector`, `arcanum-graph`, and `arcanum-tree` implement the storage backends, each with its own chunking strategy; `arcanum-ingestion` and `arcanum-pipeline` turn raw documents into indexed chunks through a DAG stage runner; `arcanum-retrieval` fuses backend results; `arcanum-evidence` traces every chunk back to an exact document version and byte range; and `arcanum-engine` composes it all into services consumed by the REST server and the native MCP server. Shadow chunk-strategy experiments and an offline benchmark harness (`arcanum-chunk-eval`, `arcanum-eval`) let changes be measured before they are committed.
 
@@ -14,7 +14,6 @@ The workspace is sixteen crates layered as a strict DAG. `arcanum-core` holds th
 graph TD
     server[arcanum-server] --> engine[arcanum-engine]
     server --> chunk-eval[arcanum-chunk-eval]
-    server --> telemetry[arcanum-telemetry]
     server --> core[arcanum-core]
     mcp[arcanum-mcp] --> engine
     mcp --> core
@@ -35,11 +34,7 @@ graph TD
     pipeline --> models
     pipeline --> middleware
     pipeline --> core
-    retrieval --> graph
-    retrieval --> vector
     retrieval --> core
-    evidence --> tree
-    evidence --> graph
     evidence --> core
     chunk-eval --> ingestion
     chunk-eval --> core

@@ -245,8 +245,9 @@ Newest first.
   `ExperimentService` lifecycle; its own review found "shadow spawn had
   no vector store write." PR #42's fix table records the correction: a
   full `ShadowWriteContext` with "actual vector store upsert in detached
-  task," and a namespace renamed from "a raw experiment UUID" to the
-  deterministic `"{collection}__shadow_{experiment}"`.
+  task," and, per the same fix table, "shadow namespace was raw
+  experiment UUID" — replaced with the deterministic
+  `"{collection}__shadow_{experiment}"`.
 - **Alternatives rejected** — no PR records an alternative to a
   detached, best-effort shadow write; PR #42 treats the original
   write-less path as the bug, not a rejected design.

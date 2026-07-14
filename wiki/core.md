@@ -294,7 +294,7 @@ wiring status.
   `EmbeddingParallelismRouter` used for embedding, because embedding has
   no intent to key on.
 - **Ref** — 2026-05-28, commit `447321f7` (traits); 2026-05-29, commit
-  `de5ad7c2` (dispatcher/router); 2026-05-31/2026-06-01, commits
+  `de5ad7c2` (dispatcher/router); 2026-05-30, commits
   `54685d22` and `e29d62c2` (V5 provider additions); the architecture
   design doc (untracked).
 
