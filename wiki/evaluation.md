@@ -15,10 +15,14 @@ standing up a full ingestion + embedding pipeline. `arcanum-engine`'s
 `ExperimentService` builds a third, adjacent piece on top of
 `arcanum-chunk-eval`'s config types: a shadow-experiment lifecycle for
 comparing a challenger chunking config against the champion on live
-traffic. As detailed below, only the chunk-eval half and the experiment
-lifecycle's start/promote/abandon calls are reachable from production
-routes today; `arcanum-eval` itself and the "compare" step of the
-experiment lifecycle are not.
+traffic. As detailed below, the chunk-eval half, the full experiment
+lifecycle (including the "compare" step), and part of `arcanum-eval`
+are now reachable from production routes: the new `eval_experiment`
+route constructs `arcanum-eval`'s `EvalRunner` directly and feeds its
+output into `ExperimentService::update_metrics`, the one call that can
+move a shadow experiment to `ReadyToPromote` and unblock `promote`.
+`EvalService`/`StandardEvaluator` remain unreachable stubs — the new
+route bypasses `EvalService` entirely.
 
 ## Position in the System
 
@@ -44,9 +48,9 @@ experiment lifecycle are not.
 - [Interfaces](interfaces.md) — `arcanum-server`'s `routes/api.rs`
   (`chunk_inspect`, `chunk_benchmark`) and `routes/experiments.rs`
   (`start_experiment`, `get_experiment`, `promote_experiment`,
-  `abandon_experiment`) are the only production callers into this page's
-  code; MCP's advertised-but-unimplemented `eval_run` tool is documented
-  there.
+  `abandon_experiment`, `eval_experiment`) are the only production
+  callers into this page's code; MCP's advertised-but-unimplemented
+  `eval_run` tool is documented there.
 - Nothing in the workspace depends on `arcanum-eval` or
   `arcanum-chunk-eval` besides `arcanum-server` and `arcanum-engine`, per
   the dependency direction in the workspace `Cargo.toml`.
@@ -136,7 +140,7 @@ namespace a challenger's shadow writes land in:
 
 ## Runtime Flows
 
-**1. Retrieval eval run (structural — no live caller)**
+**1. Retrieval eval run (`StandardEvaluator` half structural; `EvalRunner` half now live, via flow 2)**
 1. A caller would build `results: &[(Query, Vec<RetrievedChunk>)]` from
    `RetrievalService::search` output (see [Retrieval](retrieval.md)) and
    a `&[GroundTruth]` golden set, then call
@@ -146,12 +150,15 @@ namespace a challenger's shadow writes land in:
    `RetrievedChunk::indexed_chunk.chunk.id` per result, and averages
    `compute_hit_rate_at_k`/`compute_mrr`/`compute_ndcg_at_k` across all
    pairs into one `EvalMetrics`.
-3. Nothing calls this in production: `EvalService::list_datasets`
-   (`arcanum-engine/src/services/eval.rs`) always returns `Ok(vec![])`
-   and `EvalService::get_report` always returns `Ok(None)`, regardless
-   of argument — `arcanum-server` has no route that touches
-   `engine.eval` at all. `EvalRunner` (the other evaluation path) is
-   never constructed anywhere, including in its own module's tests.
+3. Nothing calls `StandardEvaluator::evaluate` in production, and
+   `EvalService::list_datasets` (`arcanum-engine/src/services/eval.rs`)
+   always returns `Ok(vec![])` and `EvalService::get_report` always
+   returns `Ok(None)`, regardless of argument — `arcanum-server` has no
+   route that touches `engine.eval` at all. `EvalRunner` — the other,
+   structurally different evaluation path (see Architecture) — is no
+   longer uncalled: PR #50 added a production caller, `eval_experiment`,
+   that constructs it directly and bypasses `EvalService`; see flow 2,
+   step 3.
 
 **2. Shadow experiment lifecycle**
 1. `POST /api/v1/collections/{id}/experiments` → `start_experiment` →
@@ -165,20 +172,33 @@ namespace a challenger's shadow writes land in:
    `status == Active` — builds a `ShadowContext` with the challenger's
    chunkers and `shadow_namespace(collection_id)`; the pipeline's shadow
    write against that namespace is [Pipeline](pipeline.md)'s concern.
-3. Nothing in production ever calls `ExperimentService::update_metrics`
-   — the only method that can move a `ShadowExperiment` out of `Active`
-   into `ReadyToPromote`. Its callers are exclusively
-   `arcanum-engine/tests/experiment_test.rs`. Consequently
-   `POST .../promote` → `ExperimentService::promote`, which requires
-   `status == ReadyToPromote`, cannot succeed against a live experiment
-   today (see Implementation Notes); `DELETE .../{id}` →
-   `ExperimentService::abandon` has no such guard and always closes the
-   experiment.
+3. `POST .../experiments/{id}/eval` → `eval_experiment` (PR #50) is now
+   the production caller of `ExperimentService::update_metrics` — the
+   only method that can move a `ShadowExperiment` out of `Active` into
+   `ReadyToPromote`. The caller supplies labeled `GoldenSample` queries
+   (`query` + `relevant_chunk_ids`) directly in the request body, since
+   no persistent benchmark-query store exists yet (see Implementation
+   Notes and the Key Decision below). For each sample, `eval_experiment`
+   runs `RetrievalService::search` against both the collection's live
+   namespace (champion) and the experiment's `shadow_namespace`
+   (challenger) under a system-level `ApiKeyClaims`, collects the
+   resulting `ChunkId`s per side, and scores each with
+   `EvalRunner::new(5).evaluate`. The two `recall_at_k` values are packed
+   into an `ExperimentMetrics` and passed to `update_metrics`, which sets
+   `status = ReadyToPromote` when `sample_size >= 50 &&
+   challenger_recall_at_5 > champion_recall_at_5 + 0.05`.
+4. `POST .../promote` → `ExperimentService::promote`, which requires
+   `status == ReadyToPromote`, can now genuinely succeed given a step-3
+   eval run showing sufficient improvement (previously unreachable
+   outside tests; the trigger is still manual — see Implementation
+   Notes). `DELETE .../{id}` → `ExperimentService::abandon` has no status
+   guard and always closes the experiment regardless of eval state.
 
 **3. Chunk inspect and offline benchmark**
-1. `POST /api/v1/chunk/inspect` → `chunk_inspect` (no bearer-token check
-   — see Implementation Notes) → `arcanum_chunk_eval::inspect`, which
-   builds one `Chunker` per requested `ChunkStrategyConfig` from
+1. `POST /api/v1/chunk/inspect` → `chunk_inspect` (bearer-token checked
+   via `validate_bearer`, same as its sibling route below — see
+   Implementation Notes) → `arcanum_chunk_eval::inspect`, which builds
+   one `Chunker` per requested `ChunkStrategyConfig` from
    `default_registry()`, chunks the request body, and returns one
    `InspectResult` per strategy with per-chunk `AnnotatedChunk` stats.
 2. `POST /api/v1/chunk/benchmark` → `chunk_benchmark` (bearer-token
@@ -191,6 +211,31 @@ namespace a challenger's shadow writes land in:
 ## Key Decisions
 
 Newest first.
+
+### Manual `POST .../experiments/{id}/eval` trigger, not an automatic background loop
+- **Decision** — PR #50 (item 2.5) adds `eval_experiment`, a route the
+  caller invokes explicitly with labeled `GoldenSample` queries in the
+  request body, rather than building a persistent `BenchmarkQueryStore`
+  and wiring the hourly background-eval stub to run automatically. The
+  route builds a system-level `ApiKeyClaims { is_admin: true, .. }` for
+  the champion/shadow searches, after confirming the caller can access
+  the *parent* collection with their own claims.
+- **Context** — the commit body: "`ExperimentService::update_metrics`
+  was never called by any code path, so `promote()` ... was permanently
+  unreachable ... No persistent `BenchmarkQueryStore` exists yet for the
+  engine's own background eval loop ..., so this route takes labeled
+  queries directly in the request body rather than pulling from
+  storage"; and "the caller's own `allowed_collections` ACL was never
+  meant to include the synthetic shadow-namespace string."
+- **Alternatives rejected** — the persistent `BenchmarkQueryStore` +
+  automatic background loop; deferred as a recorded followup, not
+  rejected outright.
+- **Consequences** — `update_metrics` now has a real production caller,
+  so `promote`/`ReadyToPromote` (see the entry below) are reachable
+  end-to-end, but only via an operator or external caller explicitly
+  invoking the eval route with their own labeled queries; the background
+  loop in `engine.rs` still only logs (see Implementation Notes).
+- **Ref** — 2026-07-15, PR #50, commit `b7e81d70`.
 
 ### `promote`/`update_metrics` gain status guards; `start` gains a TOCTOU fix
 - **Decision** — `ExperimentService::promote` now requires
@@ -277,53 +322,63 @@ Newest first.
 
 ## Implementation Notes
 
-- **`ExperimentService::update_metrics` has no production caller, so
-  `promote` cannot succeed against a live experiment (gap).** The only
-  code path that sets a `ShadowExperiment`'s status to `ReadyToPromote`
-  is `update_metrics`, whose only callers are four tests in
-  `arcanum-engine/tests/experiment_test.rs`. The background eval loop in
-  `ArcanumEngineBuilder::build` (`arcanum-engine/src/engine.rs`) that
-  would compute and feed those metrics is a stub — it iterates
+- **`ExperimentService::update_metrics` now has a production caller
+  (`eval_experiment`, PR #50); `promote` can succeed against a live
+  experiment given a qualifying eval run — but the trigger is manual,
+  not automatic (gap, narrowed from the original finding).** `POST
+  .../experiments/{id}/eval` computes recall@5 for both namespaces via
+  `EvalRunner` and calls `update_metrics`, which sets `ReadyToPromote`
+  when `sample_size >= 50 && challenger_recall_at_5 >
+  champion_recall_at_5 + 0.05` — see Runtime Flows, flow 2. The
+  background eval loop in `ArcanumEngineBuilder::build`
+  (`arcanum-engine/src/engine.rs`) that would compute and feed those
+  metrics automatically is still a stub — it iterates
   `ExperimentService::active_experiments` hourly and only logs; see
-  [Engine](engine.md) for that stub's own documentation. The log
-  message it emits reads `"background eval stub: use POST
-  /collections/{}/experiments/{}/eval to trigger manually"`, but no
-  such route exists anywhere in `arcanum-server`'s route table
-  (`server.rs` registers only `POST .../experiments`, `GET
-  .../experiments/{id}`, `POST .../experiments/{id}/promote`, and
-  `DELETE .../experiments/{id}`) — the operator instruction in that log
-  line points at an endpoint that was never implemented.
-- **`chunk_inspect` performs no auth check; `chunk_benchmark` does
-  (inconsistency).** `chunk_inspect` (`arcanum-server/src/routes/api.rs`)
-  takes `_headers: HeaderMap` and never calls `validate_bearer`;
-  `chunk_benchmark`, registered one line below it in `server.rs` and
-  otherwise structurally identical, does call `validate_bearer` and
-  returns 401 without a valid bearer token. No PR or design doc records
-  a rationale for the difference.
+  [Engine](engine.md) for that stub's own documentation. Its log message
+  ("background eval stub: use POST .../experiments/{}/eval to trigger
+  manually") now points at a route that genuinely exists
+  (`server.rs` registers `POST .../experiments/:experiment_id/eval`), so
+  the operator instruction is accurate again rather than dangling; the
+  remaining gap is that nothing calls the route automatically.
+- **`chunk_inspect` and `chunk_benchmark` now both perform the same auth
+  check (gap closed by PR #49).** `chunk_inspect`
+  (`arcanum-server/src/routes/api.rs`) previously took `_headers:
+  HeaderMap` and never called `validate_bearer`, unlike its sibling
+  `chunk_benchmark`. PR #49 wired the same check into `chunk_inspect`,
+  "mirroring `chunk_benchmark`'s pattern exactly" per the fix commit's
+  own message; both routes now return 401 without a valid bearer token.
 - **`chunk_experiments` migration exists but nothing reads or writes
-  it (gap).** `migrations/0001_chunk_experiments.sql`'s own header
-  comment states this directly: "The current in-memory runtime does not
-  yet persist experiments. This migration is provided for future
-  persistent storage." `ExperimentService` stores all state in an
-  in-process `HashMap`; a process restart silently drops every active or
-  closed experiment, and none of the migration's columns
-  (`challenger_config`, `metrics`, `status`, `started_at`, `closed_at`)
-  are populated by any code in the workspace.
-- **`EvalService` is a stub with no route or caller.** Both of its
-  methods (`list_datasets`, `get_report`) return hardcoded empty
-  results regardless of input, and are exercised only by their own
-  `#[cfg(test)]` module — consistent with [Interfaces](interfaces.md)'s
-  documented finding that MCP's advertised `eval_run` tool has no
-  dispatch arm at all.
-- **`EvalRunner` and `StandardEvaluator` are two unconverged
-  "run an eval" abstractions (dead code / duplication).** See
-  Architecture — both wrap the same five `metrics.rs` functions with
-  different input/output shapes, and neither is constructed outside
-  `arcanum-eval`'s own unit tests (`StandardEvaluator`) or nowhere at
-  all (`EvalRunner`). A future implementation of live retrieval
-  evaluation will need to pick one shape (most likely
-  `arcanum_core::traits::Evaluator`, since that's the trait `EvalService`
-  would plausibly be extended to hold) rather than both.
+  it (gap, unaffected by PR #50).** `migrations/0001_chunk_experiments.sql`'s
+  own header comment states this directly: "The current in-memory
+  runtime does not yet persist experiments. This migration is provided
+  for future persistent storage." `ExperimentService` stores all state
+  in an in-process `HashMap`; a process restart silently drops every
+  active or closed experiment. The new `eval_experiment` route doesn't
+  touch this table either — it takes labeled queries directly in the
+  request body rather than reading a persisted golden set, so this gap
+  remains fully open.
+- **`EvalService` is a stub with no route or caller — and the new eval
+  route does not close this gap, since it bypasses `EvalService`
+  entirely.** Both of `EvalService`'s methods (`list_datasets`,
+  `get_report`) return hardcoded empty results regardless of input,
+  exercised only by their own `#[cfg(test)]` module — consistent with
+  [Interfaces](interfaces.md)'s documented finding that MCP's advertised
+  `eval_run` tool has no dispatch arm at all. `eval_experiment` calls
+  `EvalRunner`/`ExperimentService` directly and never touches
+  `engine.eval`, so `EvalService` is exactly as unreachable after PR #50
+  as before it.
+- **`EvalRunner` and `StandardEvaluator` remain two unconverged
+  "run an eval" abstractions, though `EvalRunner` now has a narrow
+  production use (partial progress, not resolved).** Both wrap the same
+  five `metrics.rs` functions with different input/output shapes (see
+  Architecture). `EvalRunner` is no longer uncalled: `eval_experiment`
+  constructs one directly. `StandardEvaluator` is still exercised only by
+  `arcanum-eval`'s own unit tests. PR #49 (Stage 3, item 3.12) considered
+  and deferred consolidating the two: its PR body states they "turned out
+  to be genuinely different abstractions (sync vs. async, different
+  input/output shapes), not duplicates; merging them is a real design
+  decision, not cleanup" — consistent with `EvalRunner::evaluate` being
+  sync against `StandardEvaluator::evaluate`'s `#[async_trait]`.
 
 ## Source Anchors
 
