@@ -49,6 +49,8 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
             axum::routing::post(experiments::promote_experiment))
         .route("/api/v1/collections/:collection_id/experiments/:experiment_id",
             axum::routing::delete(experiments::abandon_experiment))
+        .route("/api/v1/collections/:collection_id/experiments/:experiment_id/eval",
+            axum::routing::post(experiments::eval_experiment))
         .route("/admin/sources",     get(admin::list_ingestion_sources))
         .route("/admin/audit",       get(admin::get_audit_logs))
         .route("/admin/rotate-keys", post(admin::rotate_keys))
