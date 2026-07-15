@@ -116,7 +116,13 @@ covering load, dedup, cleanup, preprocess, snapshot, the three chunk
 stages, context enrich, entity extract, embed (vector and tree), vector
 write, and version registration — each closing over a shared
 `Arc<Mutex<IngestionState>>` and its own typed dependencies to produce
-one `PipelineStage`. `stage_failure.rs` defines `StageFailure` (`Core {
+one `PipelineStage`. `make_vector_write_stage` and `make_raptor_build_stage`
+each also take one optional dependency from `PipelineDeps` —
+`bm25_index: Option<Arc<Bm25Index>>` and `enricher: Option<Arc<dyn
+TextEnricher>>` (reusing `deps.context_enricher`) — and both are
+`None`-safe: `vector_write` skips its BM25 batch-write and
+`raptor_build` falls back to a placeholder cluster summary when
+unconfigured. `stage_failure.rs` defines `StageFailure` (`Core {
 stage, error }` / `NonCore { stage, error }`) and `is_core_stage` (`true`
 for `load`, `preprocess`, `vector_chunk`, `graph_chunk`, `tree_chunk`,
 `embed`, `vector_write`) — see Implementation Notes for how far this
@@ -201,10 +207,8 @@ on; this account stays at the stage-wiring level)
    which sets `CTX_REPLACE` unconditionally without checking the store.
 2. `make_cleanup_stage` runs only when `CTX_REPLACE` is set: it calls
    `delete_by_source_uri` on `vector_store` and, if configured,
-   `graph_store`/`tree_store`, before `preprocess` runs. It also holds a
-   `supersede_active` guard keyed on `state.snapshot_document_id`, but
-   see Implementation Notes — that branch cannot fire within a single
-   `run_task` call.
+   `graph_store`/`tree_store`, before `preprocess` runs — it does not
+   itself call `supersede_active` (see Implementation Notes).
 3. The version actually gets superseded, when it does, from a different
    path: `make_snapshot_stage` calls `get_versioning_policy` and, under
    `VersioningPolicy::Replace` with a prior version present, calls
@@ -214,6 +218,28 @@ on; this account stays at the stage-wiring level)
 ## Key Decisions
 
 Newest first.
+
+### `vector_write`/`raptor_build` wire previously-unused `Bm25Index`/`TextEnricher` dependencies
+- **Decision** — `make_vector_write_stage` gained a 5th parameter,
+  `bm25_index: Option<Arc<Bm25Index>>` (best-effort batch-write to
+  `Bm25Index::index_chunks` after a successful vector-store upsert), and
+  `make_raptor_build_stage` gained a 4th parameter, `enricher:
+  Option<Arc<dyn TextEnricher>>` (passed to `RaptorBuilder::with_enricher`,
+  reusing `deps.context_enricher` rather than a new `PipelineDeps` field).
+- **Context** — the commit messages record both as previously-dead
+  capability: `Bm25Retriever` "read from an index that ingestion never
+  populated"; RAPTOR summaries were "the literal placeholder string ...
+  never LLM-generated."
+- **Alternatives rejected** — No PR or design doc records an alternative;
+  both commits wire an existing unused field/instance into the write path
+  rather than introducing a new one.
+- **Consequences** — BM25 search and RAPTOR cluster summaries now reflect
+  ingested content when configured; both fail open (warn-and-continue for
+  BM25, placeholder fallback for RAPTOR on a missing/failing enricher).
+  Known follow-up gap, see Implementation Notes: `Bm25Index` has no
+  delete-by-`source_uri`, so `make_cleanup_stage`'s replace-path deletes
+  don't reach it.
+- **Ref** — 2026-07-15, PR #50, commit `b7e81d70`.
 
 ### `register_version` deferred until after `vector_write` succeeds
 - **Decision** — `make_snapshot_stage` builds a `pending_version:
@@ -304,35 +330,46 @@ Newest first.
   retry re-queue and these two types together was titled "add
   IngestionReport generation and retry re-queue on core stage failure,"
   but the re-queue condition it shipped was always attempt-count only.
-- **`make_cleanup_stage`'s `supersede_active` guard cannot fire (bug).**
-  It reads `document_id` from `state.snapshot_document_id`, set only by
-  `make_snapshot_stage` — which runs strictly after `cleanup` in every
-  template's DAG (`cleanup` → `preprocess` → `snapshot`), so the field is
-  always `None` when `make_cleanup_stage` reads it and the branch is dead
-  within a single `run_task` call. The version that actually gets
-  superseded on a replace comes from `make_snapshot_stage` itself
-  (Runtime Flow 3, step 3), gated on the store's global
-  `VersioningPolicy` rather than the dedup-driven `CTX_REPLACE` flag.
+- **`make_cleanup_stage`'s dead `supersede_active` guard was removed
+  (resolved).** PR #49 (commit `31c83450`) deleted the guard: it read
+  `document_id` from `state.snapshot_document_id`, set only by
+  `make_snapshot_stage`, which runs strictly after `cleanup` in every
+  template's DAG, so the branch was always dead within a single
+  `run_task` call. The now-fully-unused `version_store` parameter was
+  renamed to `_version_store` instead, avoiding a signature ripple across
+  all 5 templates. The version that actually gets superseded on a
+  replace still comes from `make_snapshot_stage` (Runtime Flow 3, step
+  3), gated on `VersioningPolicy` rather than `CTX_REPLACE`.
+- **`Bm25Index` has no delete-by-`source_uri`, so `make_cleanup_stage`
+  can't clean it up on replace (debt).** `make_cleanup_stage` deletes
+  stale `vector_store`/`graph_store`/`tree_store` data by `source_uri` on
+  replace, but `Bm25Index` only supports single-chunk delete-by-id — a
+  replaced document's old BM25 entries persist. PR #50 (commit
+  `b7e81d70`) recorded this as an intentionally deferred gap when it
+  wired `Bm25Index` into `make_vector_write_stage` (see Key Decisions).
 - **Chunk stages run in one dependency wave, not concurrently.**
   `vector_chunk`/`graph_chunk`/`tree_chunk` share no dependency on each
   other, but `DagExecutor::execute`'s own comment — "Run ready stages
   sequentially (parallel would require ctx cloning strategy)" — confirms
   they still execute one at a time within that wave (see the chunk-split
   Key Decision).
-- **Cache invalidation is gated on `force` only (drift).** `run_task`
-  calls `CacheInvalidationBroadcaster::invalidate_document` only when
-  `IngestionTask.force` is `true`. No PR or design doc records a
-  rationale; observed current state: the introducing commit (`c7b77c2d`)
-  originally gated the same call on `force || already_seen` via a
-  now-deleted `hash_tracker` field (superseded by `DocumentVersionStore`,
-  see [Ingestion](ingestion.md)), and `already_seen` was never replaced —
-  so a normal, non-forced re-ingest that `make_dedup_stage` detects as
-  changed (`CTX_REPLACE`) does not invalidate downstream caches today.
-- **`PipelineTemplate` enum is unused (dead code).** `lib.rs` defines
-  `PipelineTemplate { Standard, Contextual, Graph, Raptor, Full,
-  Custom(PipelineDAG) }`, but nothing constructs or matches on it —
-  template selection goes through `ArcanumPipelineRegistry::build`'s
-  string name instead.
+- **Cache invalidation now fires on any genuine content change, not just
+  `force` (resolved).** PR #49 (commit `31c83450`) moved the
+  `CacheInvalidationBroadcaster::invalidate_document` call from before
+  the pipeline ran (gated on `IngestionTask.force`) to after
+  `DagExecutor::execute` completes, gated on `!skipped` instead — one
+  condition covering force, a genuine content change (dedup's `CTX_REPLACE`),
+  and a brand-new document (a harmless no-op). The introducing commit
+  (`c7b77c2d`) originally gated the same call on `force || already_seen`
+  via a now-deleted `hash_tracker` field (superseded by
+  `DocumentVersionStore`, see [Ingestion](ingestion.md)); `already_seen`
+  was never replaced until this fix.
+- **`PipelineTemplate` enum was removed (resolved).** PR #49 (commit
+  `31c83450`) deleted the dead `PipelineTemplate { Standard, Contextual,
+  Graph, Raptor, Full, Custom(PipelineDAG) }` enum from `lib.rs` — zero
+  references workspace-wide; template selection goes through
+  `ArcanumPipelineRegistry::build`'s string name instead, as it already
+  did before removal.
 
 ## Source Anchors
 
