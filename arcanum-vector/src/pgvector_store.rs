@@ -134,6 +134,7 @@ impl VectorStore for PgVectorStore {
         let vec_literal = Self::vector_to_pg_literal(&query.vector);
 
         let mut source_uri_filter: Option<String> = None;
+        let mut chunk_id_filter: Option<Vec<String>> = None;
         for f in &query.filters {
             if f.field == "source_uri" {
                 if !matches!(f.op, FilterOp::Eq) {
@@ -150,6 +151,26 @@ impl VectorStore for PgVectorStore {
                         "source_uri filter value is not a string — ignoring"
                     );
                 }
+            } else if f.field == "chunk_id" {
+                if !matches!(f.op, FilterOp::In) {
+                    tracing::warn!(
+                        store = "pgvector",
+                        op = ?f.op,
+                        "unsupported filter op for chunk_id (only In is supported) — ignoring"
+                    );
+                } else if let Some(arr) = f.value.as_array() {
+                    let ids: Vec<String> = arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    if !ids.is_empty() {
+                        chunk_id_filter = Some(ids);
+                    }
+                } else {
+                    tracing::warn!(
+                        store = "pgvector",
+                        "chunk_id filter value is not an array — ignoring"
+                    );
+                }
             } else {
                 tracing::warn!(
                     store = "pgvector",
@@ -159,36 +180,34 @@ impl VectorStore for PgVectorStore {
             }
         }
 
-        let rows = if let Some(ref uri) = source_uri_filter {
-            sqlx::query(
-                "SELECT chunk_json, 1 - (embedding <=> $1::vector) AS score
-                 FROM arcanum_chunks
-                 WHERE collection = $2 AND source_uri = $3
-                 ORDER BY embedding <=> $1::vector
-                 LIMIT $4",
-            )
-            .bind(&vec_literal)
-            .bind(collection)
-            .bind(uri)
+        let mut sql = String::from(
+            "SELECT chunk_json, 1 - (embedding <=> $1::vector) AS score
+             FROM arcanum_chunks
+             WHERE collection = $2",
+        );
+        let mut next_bind = 3;
+        if source_uri_filter.is_some() {
+            sql.push_str(&format!(" AND source_uri = ${next_bind}"));
+            next_bind += 1;
+        }
+        if chunk_id_filter.is_some() {
+            sql.push_str(&format!(" AND id = ANY(${next_bind})"));
+            next_bind += 1;
+        }
+        sql.push_str(&format!(" ORDER BY embedding <=> $1::vector LIMIT ${next_bind}"));
+
+        let mut q = sqlx::query(&sql).bind(&vec_literal).bind(collection);
+        if let Some(ref uri) = source_uri_filter {
+            q = q.bind(uri);
+        }
+        if let Some(ref ids) = chunk_id_filter {
+            q = q.bind(ids);
+        }
+        let rows = q
             .bind(query.top_k as i64)
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| ArcanumError::Storage(e.to_string()))?
-        } else {
-            sqlx::query(
-                "SELECT chunk_json, 1 - (embedding <=> $1::vector) AS score
-                 FROM arcanum_chunks
-                 WHERE collection = $2
-                 ORDER BY embedding <=> $1::vector
-                 LIMIT $3",
-            )
-            .bind(&vec_literal)
-            .bind(collection)
-            .bind(query.top_k as i64)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| ArcanumError::Storage(e.to_string()))?
-        };
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
         let mut results = Vec::with_capacity(rows.len());
         for row in rows {
@@ -421,8 +440,6 @@ mod tests {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let store = PgVectorStore::new(&url, 3).await.unwrap();
 
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("source_uri".to_string(), serde_json::json!("file:///doc-a.pdf"));
         let chunk = IndexedChunk {
             chunk: Chunk {
                 id: ChunkId::new(),
@@ -430,8 +447,11 @@ mod tests {
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("src_uri_col_test".into()),
                 position: ChunkPosition { start: 0, end: 9, index: 0 },
-                metadata: ChunkMetadata(meta),
-                provenance: arcanum_core::types::ChunkProvenance::default(),
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///doc-a.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: Vector(vec![0.1, 0.2, 0.3]),
             token_vectors: None,
@@ -452,8 +472,6 @@ mod tests {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let store = PgVectorStore::new(&url, 3).await.unwrap();
 
-        let mut meta_a = std::collections::HashMap::new();
-        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///doc-a.pdf"));
         let chunk_a = IndexedChunk {
             chunk: Chunk {
                 id: ChunkId::new(),
@@ -461,16 +479,17 @@ mod tests {
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("del_uri_test".into()),
                 position: ChunkPosition { start: 0, end: 5, index: 0 },
-                metadata: ChunkMetadata(meta_a),
-                provenance: arcanum_core::types::ChunkProvenance::default(),
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///doc-a.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: Vector(vec![0.1, 0.2, 0.3]),
             token_vectors: None,
             store_id: String::new(),
         };
 
-        let mut meta_b = std::collections::HashMap::new();
-        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///doc-b.pdf"));
         let chunk_b = IndexedChunk {
             chunk: Chunk {
                 id: ChunkId::new(),
@@ -478,8 +497,11 @@ mod tests {
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("del_uri_test".into()),
                 position: ChunkPosition { start: 0, end: 5, index: 0 },
-                metadata: ChunkMetadata(meta_b),
-                provenance: arcanum_core::types::ChunkProvenance::default(),
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///doc-b.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: Vector(vec![0.4, 0.5, 0.6]),
             token_vectors: None,
@@ -503,8 +525,6 @@ mod tests {
         let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let store = PgVectorStore::new(&url, 3).await.unwrap();
 
-        let mut meta_a = std::collections::HashMap::new();
-        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///filter-a.pdf"));
         let chunk_a = IndexedChunk {
             chunk: Chunk {
                 id: ChunkId::new(),
@@ -512,16 +532,17 @@ mod tests {
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("filter_test".into()),
                 position: ChunkPosition { start: 0, end: 5, index: 0 },
-                metadata: ChunkMetadata(meta_a),
-                provenance: arcanum_core::types::ChunkProvenance::default(),
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///filter-a.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: Vector(vec![1.0, 0.0, 0.0]),
             token_vectors: None,
             store_id: String::new(),
         };
 
-        let mut meta_b = std::collections::HashMap::new();
-        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///filter-b.pdf"));
         let chunk_b = IndexedChunk {
             chunk: Chunk {
                 id: ChunkId::new(),
@@ -529,8 +550,11 @@ mod tests {
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("filter_test".into()),
                 position: ChunkPosition { start: 0, end: 5, index: 0 },
-                metadata: ChunkMetadata(meta_b),
-                provenance: arcanum_core::types::ChunkProvenance::default(),
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance {
+                    source_uri: "file:///filter-b.pdf".into(),
+                    ..Default::default()
+                },
             },
             vector: Vector(vec![0.0, 1.0, 0.0]),
             token_vectors: None,
@@ -550,12 +574,65 @@ mod tests {
         }).await.unwrap();
 
         assert_eq!(results.len(), 1, "filter should return only doc-a");
-        let uri = results[0].chunk.chunk.metadata.0
-            .get("source_uri").and_then(|v| v.as_str()).unwrap_or("");
-        assert_eq!(uri, "file:///filter-a.pdf");
+        assert_eq!(results[0].chunk.chunk.provenance.source_uri, "file:///filter-a.pdf");
 
         // Cleanup
         store.delete_collection("filter_test").await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn test_pg_search_chunk_id_filter() {
+        let url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let store = PgVectorStore::new(&url, 3).await.unwrap();
+
+        let keep_id = ChunkId::new();
+        let drop_id = ChunkId::new();
+        let keep = IndexedChunk {
+            chunk: Chunk {
+                id: keep_id.clone(),
+                text: "keep".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("pg_chunk_id_test".into()),
+                position: ChunkPosition { start: 0, end: 4, index: 0 },
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
+            },
+            vector: Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        let drop = IndexedChunk {
+            chunk: Chunk {
+                id: drop_id.clone(),
+                text: "drop".into(),
+                document_id: DocumentId::new(),
+                collection_id: CollectionId("pg_chunk_id_test".into()),
+                position: ChunkPosition { start: 0, end: 4, index: 0 },
+                metadata: ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
+            },
+            vector: Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        store.upsert("pg_chunk_id_test", vec![keep, drop]).await.unwrap();
+
+        let results = store.search("pg_chunk_id_test", &VectorQuery {
+            vector: Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![MetadataFilter {
+                field: "chunk_id".into(),
+                op: FilterOp::In,
+                value: serde_json::json!([keep_id.0.to_string()]),
+            }],
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1, "only the chunk_id-filtered-in chunk should return");
+        assert_eq!(results[0].chunk.chunk.text, "keep");
+
+        // Cleanup
+        store.delete_collection("pg_chunk_id_test").await.unwrap();
     }
 
     #[tokio::test]
