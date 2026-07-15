@@ -845,15 +845,14 @@ A single version's deletion failure (e.g. a transient store error) is recorded i
 
 ## 15. MCP Integration
 
-Mount the MCP server alongside your HTTP server to expose search and ingestion to AI assistants:
+`arcanum-mcp` is a handler crate, not a standalone binary — no `[[bin]]` target ships in this repo. Construct the JSON-RPC handler and mount `McpServer` yourself, e.g. in your own `main.rs` alongside your HTTP server:
 
 ```rust
-use arcanum_mcp::McpServer;
+use arcanum_mcp::{McpServer, McpJsonRpcHandler};
+use std::sync::Arc;
 
-McpServer::new(engine.clone())
-    .bind("0.0.0.0:3000")
-    .start()
-    .await?;
+let handler = Arc::new(McpJsonRpcHandler::new(engine.clone()));
+McpServer::new(handler, 3000).start().await?;
 ```
 
 Configure Claude to use it in `.claude/config.json`:
@@ -869,7 +868,7 @@ Configure Claude to use it in `.claude/config.json`:
 }
 ```
 
-Claude can then call `search`, `ingest`, `list_collections`, and `eval_run` directly in its tool-use loop. Each call requires a valid Bearer token passed as an `Authorization` header — no shared session, no bypass.
+Claude can then call `search` and `ingest` directly in its tool-use loop — both are fully implemented. `list_collections` and `eval_run` are advertised in `tools/list` but not yet implemented: `list_collections` always returns an empty array, and dispatching `eval_run` returns a JSON-RPC "Unknown tool" error. Each call requires a valid Bearer token passed as an `Authorization` header — no shared session, no bypass.
 
 ---
 

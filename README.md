@@ -16,8 +16,8 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Hexagonal architecture enforced at the type level** — every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer** — every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
 - **Compiled, not interpreted** — the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
-- **Native MCP server** — Claude and other AI assistants can call `search`, `ingest`, `list_collections`, and `eval_run` over JSON-RPC 2.0 directly, without a separate integration layer.
-- **Three runtime tiers** — the same binary runs in `Development` (SQLite, in-memory stores), `Production` (Postgres + LanceDB/Neo4j), or `Enterprise` (full RBAC + audit retention + secret rotation) mode, enforced at startup.
+- **MCP handler included** — Claude and other AI assistants can call `search` and `ingest` over JSON-RPC 2.0 directly; `list_collections`/`eval_run` are advertised but not yet implemented (see [MCP Integration](#mcp-integration)).
+- **Three runtime modes** — `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
 
 ---
 
@@ -435,7 +435,7 @@ Admin operations are gated by a three-tier role hierarchy:
 
 ### Audit Logging
 
-Every authenticated operation is recorded with `user_id`, `collection_id`, operation type, result status, and timestamp. The audit trail is queryable via the admin API and retained for a configurable number of days (default 90).
+Every authenticated operation is recorded with `user_id`, `collection_id`, operation type, result status, and timestamp. The audit trail is queryable via the admin API. `audit_retention_days` (default 90) exists in config but isn't enforced yet — `AuditLogger` is an unbounded in-memory `Vec` with no eviction.
 
 ### Circuit Breakers
 
@@ -478,26 +478,28 @@ WebSocket endpoint at `/ws/events`. Clients subscribe to topics (`ingestion:<col
 runtime_mode = "enterprise"   # development | production | enterprise
 ```
 
-| Mode | Metadata backend | Enforcement |
+| Mode | Metadata backend | Startup enforcement |
 |---|---|---|
 | `development` | SQLite permitted | None — suitable for local iteration |
 | `production` | Postgres required | SQLite rejected at startup |
-| `enterprise` | Postgres required | Postgres + audit retention + IP allowlist + admin JWT |
+| `enterprise` | Postgres required | SQLite rejected at startup — identical to `production`; no additional checks yet |
 
 Mode is also readable from the `ARCANUM_RUNTIME_MODE` environment variable. Config is layered: defaults → file (`config.toml` or `config.yaml`) → environment variables, with later layers taking precedence.
+
+`production` and `enterprise` are functionally identical today beyond the SQLite rejection above. RBAC (see [Role-Based Access Control](#role-based-access-control-rbac)) and admin-JWT validation work the same in every mode; they are not gated by `runtime_mode`. The `ip_allowlist` config field is likewise present but not yet enforced by any request path.
 
 ---
 
 ## MCP Integration
 
-Arcanum ships a JSON-RPC 2.0 MCP server (`arcanum-mcp`). Claude and other AI assistants can call the following tools directly:
+Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`). The crate is implemented and tested, but this repo doesn't build a standalone MCP binary — mount it behind your own `main.rs` alongside your HTTP server (see [DEVELOPMENT.md](DEVELOPMENT.md#15-mcp-integration)):
 
-| Tool | Parameters | Returns |
+| Tool | Parameters | Status |
 |---|---|---|
-| `search` | `query`, `collection_id`, `top_k` | Array of scored chunks |
-| `ingest` | `source_uri`, `collection_id`, `pipeline` | `operation_id` for tracking |
-| `list_collections` | — | Collection metadata array |
-| `eval_run` | `collection_id` | Evaluation metrics (MRR, NDCG@k, hit rate) |
+| `search` | `query`, `collection_id`, `top_k` | Implemented — returns an array of scored chunks |
+| `ingest` | `source_uri`, `collection_id`, `pipeline` | Implemented — returns an `operation_id` for tracking |
+| `list_collections` | — | Advertised in `tools/list`, but the handler always returns an empty array — not yet wired to `CollectionService` |
+| `eval_run` | `collection_id` | Advertised in `tools/list`, but dispatching it returns a JSON-RPC "Unknown tool" error — not yet implemented |
 
 Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request — no shared session, no bypass.
 
