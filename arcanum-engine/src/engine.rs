@@ -3,7 +3,7 @@ use arcanum_core::{
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
              SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
-             Preprocessor},
+             Preprocessor, Reranker},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -16,7 +16,7 @@ use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
-                        ColBertRetriever};
+                        ColBertRetriever, QueryTransformer};
 use arcanum_vector::Bm25Index;
 use arcanum_evidence::DefaultEvidenceResolver;
 use std::{sync::Arc, time::Duration};
@@ -124,6 +124,9 @@ pub struct ArcanumEngineBuilder {
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
     preprocessor_overrides: Vec<(String, Arc<dyn Preprocessor>)>,
+    query_transformer: Option<Arc<dyn QueryTransformer>>,
+    reranker: Option<Arc<dyn Reranker>>,
+    dedup_threshold: Option<f32>,
 }
 
 
@@ -145,6 +148,9 @@ impl Default for ArcanumEngineBuilder {
             evidence: None,
             gc_worker: None,
             preprocessor_overrides: Vec::new(),
+            query_transformer: None,
+            reranker: None,
+            dedup_threshold: None,
         }
     }
 }
@@ -233,6 +239,27 @@ impl ArcanumEngineBuilder {
 
     pub fn register_preprocessor(mut self, name: impl Into<String>, p: Arc<dyn Preprocessor>) -> Self {
         self.preprocessor_overrides.push((name.into(), p));
+        self
+    }
+
+    /// Fans queries out (e.g. HyDE, multi-query) before retrieval. Not set by
+    /// default — retrieval runs against the caller's original query only.
+    pub fn query_transformer(mut self, t: Arc<dyn QueryTransformer>) -> Self {
+        self.query_transformer = Some(t);
+        self
+    }
+
+    /// Reorders/rescoring pass applied to fused results. Not set by default —
+    /// results keep RRF fusion order.
+    pub fn reranker(mut self, r: Arc<dyn Reranker>) -> Self {
+        self.reranker = Some(r);
+        self
+    }
+
+    /// Enables cross-document near-duplicate removal on the final result set,
+    /// at the given cosine similarity threshold. Not set by default.
+    pub fn dedup_threshold(mut self, threshold: f32) -> Self {
+        self.dedup_threshold = Some(threshold);
         self
     }
 
@@ -404,6 +431,16 @@ impl ArcanumEngineBuilder {
             retriever_count += 1;
         }
         metrics::gauge!("arcanum_active_retrievers").set(retriever_count as f64);
+
+        if let Some(t) = &self.query_transformer {
+            orchestrator = orchestrator.with_query_transformer(t.clone());
+        }
+        if let Some(r) = &self.reranker {
+            orchestrator = orchestrator.with_reranker(r.clone());
+        }
+        if let Some(threshold) = self.dedup_threshold {
+            orchestrator = orchestrator.with_dedup_threshold(threshold);
+        }
 
         let retrieval = Arc::new(RetrievalService::new(
             Arc::new(orchestrator),

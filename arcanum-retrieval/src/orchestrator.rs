@@ -1,5 +1,8 @@
 use arcanum_core::{traits::*, types::*, Result};
 use crate::fusion::RrfFusion;
+use crate::processor::{CitationGenerator, Deduplicator};
+use crate::reranker::NullReranker;
+use crate::transformer::QueryTransformer;
 use std::{sync::Arc, time::Duration};
 use tracing::{instrument, Instrument};
 use metrics;
@@ -14,11 +17,21 @@ pub struct RetrievalOrchestrator {
     mode: OrchestratorMode,
     retrievers: Vec<Arc<dyn Retriever>>,
     strategy_timeout: Duration,
+    query_transformer: Option<Arc<dyn QueryTransformer>>,
+    reranker: Arc<dyn Reranker>,
+    dedup_threshold: Option<f32>,
 }
 
 impl RetrievalOrchestrator {
     pub fn new(mode: OrchestratorMode) -> Self {
-        Self { mode, retrievers: vec![], strategy_timeout: Duration::from_secs(5) }
+        Self {
+            mode,
+            retrievers: vec![],
+            strategy_timeout: Duration::from_secs(5),
+            query_transformer: None,
+            reranker: Arc::new(NullReranker),
+            dedup_threshold: None,
+        }
     }
 
     pub fn add_retriever(mut self, r: Arc<dyn Retriever>) -> Self {
@@ -26,8 +39,99 @@ impl RetrievalOrchestrator {
         self
     }
 
+    /// Fans a query out to N queries before retrieval (e.g. HyDE, multi-query
+    /// rephrasing). Each resulting query is retrieved and fused independently,
+    /// then the per-query results are merged via another RRF pass. Unset by
+    /// default: `retrieve()` runs against the original query only.
+    pub fn with_query_transformer(mut self, t: Arc<dyn QueryTransformer>) -> Self {
+        self.query_transformer = Some(t);
+        self
+    }
+
+    /// Reorders/rescoring pass applied after fusion. Defaults to `NullReranker`
+    /// (passthrough), so unconfigured behavior is unchanged.
+    pub fn with_reranker(mut self, r: Arc<dyn Reranker>) -> Self {
+        self.reranker = r;
+        self
+    }
+
+    /// Enables `Deduplicator` on the reranked result set, at the given cosine
+    /// similarity threshold. Unset by default — dedup is skipped, matching
+    /// prior behavior — since RRF fusion only dedupes by document_id and
+    /// can't catch near-duplicate content across different documents.
+    pub fn with_dedup_threshold(mut self, threshold: f32) -> Self {
+        self.dedup_threshold = Some(threshold);
+        self
+    }
+
     #[instrument(skip(self), fields(mode = ?self.mode_name(), retriever_count = self.retrievers.len()), err)]
     pub async fn retrieve(&self, query: &Query) -> Result<RetrievalResult> {
+        let queries = match &self.query_transformer {
+            Some(t) => match t.transform(query.clone()).await {
+                Ok(qs) if !qs.is_empty() => qs,
+                Ok(_) => {
+                    tracing::warn!("query transformer returned no queries; falling back to original");
+                    vec![query.clone()]
+                }
+                Err(e) => {
+                    tracing::warn!(err = ?e, "query transformer failed; falling back to original query");
+                    vec![query.clone()]
+                }
+            },
+            None => vec![query.clone()],
+        };
+
+        let mut per_query_fused = Vec::with_capacity(queries.len());
+        for q in &queries {
+            let fused = self.fan_out_and_fuse(q).await;
+            // The strategy tag here is unused by RrfFusion::fuse (it only
+            // groups/scores by document_id) — it's a required tuple slot for
+            // reusing the same fusion pass to merge per-query result sets.
+            per_query_fused.push((RetrievalStrategy::Vector, fused));
+        }
+
+        let fused = if per_query_fused.len() == 1 {
+            per_query_fused.into_iter().next().unwrap().1
+        } else {
+            RrfFusion::fuse(per_query_fused, 60.0)
+        };
+        let strategy_scores: std::collections::HashMap<String, f32> = fused.iter()
+            .map(|c| (format!("{:?}", c.strategy), c.score)).collect();
+
+        let reranked = match self.reranker.rerank(query, fused.clone()).await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(err = ?e, "reranker failed; falling back to fused order");
+                fused
+            }
+        };
+
+        let deduped = match self.dedup_threshold {
+            Some(threshold) => Deduplicator::deduplicate(reranked, threshold),
+            None => reranked,
+        };
+
+        let citations = CitationGenerator::generate(&deduped).into_iter().map(|c| Citation {
+            document_uri: c.source_uri,
+            document_title: c.title,
+            section: c.section,
+            chunk_index: c.chunk_index,
+            version: c.version,
+            snapshot_uri: c.snapshot_uri,
+        }).collect();
+
+        Ok(RetrievalResult {
+            chunks: deduped,
+            citations,
+            strategy_scores,
+            confidence: 0.8,
+        })
+    }
+
+    /// Runs every active retriever for `query` in parallel (with per-strategy
+    /// timeout) and RRF-fuses the results. Individual strategy failures or
+    /// timeouts are logged and dropped, never fail the whole call.
+    async fn fan_out_and_fuse(&self, query: &Query) -> Vec<RetrievedChunk> {
         let active = self.active_retrievers(query);
         let tasks: Vec<_> = active.iter().map(|r| {
             let r = r.clone();
@@ -76,16 +180,7 @@ impl RetrievalOrchestrator {
             if let Ok(Some(r)) = task.await { strategy_results.push(r); }
         }
 
-        let fused = RrfFusion::fuse(strategy_results, 60.0);
-        let strategy_scores: std::collections::HashMap<String, f32> = fused.iter()
-            .map(|c| (format!("{:?}", c.strategy), c.score)).collect();
-
-        Ok(RetrievalResult {
-            chunks: fused,
-            citations: vec![],
-            strategy_scores,
-            confidence: 0.8,
-        })
+        RrfFusion::fuse(strategy_results, 60.0)
     }
 
     fn mode_name(&self) -> &'static str {
