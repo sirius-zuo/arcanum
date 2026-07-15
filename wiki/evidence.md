@@ -257,7 +257,8 @@ Newest first.
 
 - **`DefaultEvidenceResolver` is now auto-wired in `build()` when its
   three optional backing stores are present (gap narrowed, not closed).**
-  `ArcanumEngineBuilder::build` constructs `evidence` as
+  Per PR #50's item 2.4 (commit `b7e81d70`), `ArcanumEngineBuilder::build`
+  constructs `evidence` as
   `self.evidence.clone().or_else(|| match (&self.chunk_metadata_store,
   &self.tree_store, &self.graph_store) { (Some(cms), Some(ts), Some(gs))
   => Some(Arc::new(DefaultEvidenceResolver::new(cms.clone(),
