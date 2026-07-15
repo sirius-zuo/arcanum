@@ -27,6 +27,13 @@ fn lance_eq_filter(val: &str) -> String {
     format!("source_uri = '{}'", val.replace('\'', "''"))
 }
 
+fn lance_in_filter(field: &str, values: &[String]) -> String {
+    let quoted: Vec<String> = values.iter()
+        .map(|v| format!("'{}'", v.replace('\'', "''")))
+        .collect();
+    format!("{field} IN ({})", quoted.join(", "))
+}
+
 impl LanceDbStore {
     pub async fn new(path: &str) -> Result<Self> {
         // Resolve to absolute path so the sidecar location is stable
@@ -170,7 +177,7 @@ impl VectorStore for LanceDbStore {
 
         let query_vec: Vec<f32> = query.vector.0.clone();
 
-        let mut source_uri_filter: Option<String> = None;
+        let mut clauses: Vec<String> = vec![];
         for f in &query.filters {
             if f.field == "source_uri" {
                 if !matches!(f.op, FilterOp::Eq) {
@@ -180,11 +187,31 @@ impl VectorStore for LanceDbStore {
                         "unsupported filter op for source_uri (only Eq is supported) — ignoring"
                     );
                 } else if let Some(s) = f.value.as_str() {
-                    source_uri_filter = Some(lance_eq_filter(s));
+                    clauses.push(lance_eq_filter(s));
                 } else {
                     tracing::warn!(
                         store = "lancedb",
                         "source_uri filter value is not a string — ignoring"
+                    );
+                }
+            } else if f.field == "chunk_id" {
+                if !matches!(f.op, FilterOp::In) {
+                    tracing::warn!(
+                        store = "lancedb",
+                        op = ?f.op,
+                        "unsupported filter op for chunk_id (only In is supported) — ignoring"
+                    );
+                } else if let Some(arr) = f.value.as_array() {
+                    let ids: Vec<String> = arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect();
+                    if !ids.is_empty() {
+                        clauses.push(lance_in_filter("id", &ids));
+                    }
+                } else {
+                    tracing::warn!(
+                        store = "lancedb",
+                        "chunk_id filter value is not an array — ignoring"
                     );
                 }
             } else {
@@ -201,8 +228,8 @@ impl VectorStore for LanceDbStore {
             .nearest_to(query_vec.as_slice())
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
-        if let Some(filter) = source_uri_filter {
-            q = q.only_if(filter);
+        if !clauses.is_empty() {
+            q = q.only_if(clauses.join(" AND "));
         }
 
         let results = q
@@ -767,6 +794,57 @@ mod tests {
             near_score > far_score,
             "the closer vector must score higher: near={near_score} far={far_score}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_lance_search_chunk_id_filter() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let keep_id = arcanum_core::types::ChunkId::new();
+        let drop_id = arcanum_core::types::ChunkId::new();
+        let keep = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: keep_id.clone(),
+                text: "keep".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("chunk_id_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 4, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        let drop = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: drop_id.clone(),
+                text: "drop".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("chunk_id_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 4, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata::default(),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        store.upsert("chunk_id_test", vec![keep, drop]).await.unwrap();
+
+        let results = store.search("chunk_id_test", &VectorQuery {
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![MetadataFilter {
+                field: "chunk_id".into(),
+                op: FilterOp::In,
+                value: serde_json::json!([keep_id.0.to_string()]),
+            }],
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 1, "only the chunk_id-filtered-in chunk should return");
+        assert_eq!(results[0].chunk.chunk.text, "keep");
     }
 
 }
