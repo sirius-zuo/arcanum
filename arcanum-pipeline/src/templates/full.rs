@@ -51,7 +51,7 @@ pub fn builder() -> TemplateBuilder {
         };
 
         dag = dag.add_stage(make_embed_stage_after(embed_dep, state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()));
-        dag = dag.add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone(), deps.chunk_metadata.clone()));
+        dag = dag.add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone(), deps.chunk_metadata.clone(), deps.bm25_index.clone()));
         dag = dag.add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()));
 
         if let (Some(ext), Some(gs)) = (&deps.entity_extractor, &deps.graph_store) {
@@ -62,7 +62,7 @@ pub fn builder() -> TemplateBuilder {
             dag = dag.add_stage(make_tree_embed_stage(
                 state.clone(), deps.embedder.clone(), deps.embedding_cb.clone(),
             ));
-            dag = dag.add_stage(make_raptor_build_stage(state.clone(), ts.clone(), DEFAULT_RAPTOR_DEPTH));
+            dag = dag.add_stage(make_raptor_build_stage(state.clone(), ts.clone(), DEFAULT_RAPTOR_DEPTH, deps.context_enricher.clone()));
         }
 
         dag

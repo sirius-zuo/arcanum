@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use arcanum_core::{traits::TreeStore, types::*, Result};
+use arcanum_core::{traits::{TreeStore, TextEnricher}, types::*, Result};
 use linfa::DatasetBase;
 use linfa::traits::{Fit, Predict};
 use linfa_clustering::KMeans;
@@ -9,11 +9,34 @@ use tracing::instrument;
 pub struct RaptorBuilder<S: TreeStore + ?Sized> {
     store: Arc<S>,
     max_depth: u32,
+    enricher: Option<Arc<dyn TextEnricher>>,
 }
 
 impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     pub fn new(store: Arc<S>, max_depth: u32) -> Self {
-        Self { store, max_depth }
+        Self { store, max_depth, enricher: None }
+    }
+
+    /// Enables real LLM-based cluster summarization via EnrichIntent::Summarize.
+    /// Without this, cluster nodes get a placeholder "{n} chunks clustered at
+    /// level {level}" string instead of a real summary.
+    pub fn with_enricher(mut self, enricher: Arc<dyn TextEnricher>) -> Self {
+        self.enricher = Some(enricher);
+        self
+    }
+
+    async fn summarize(&self, group: &[&(String, Vector, Vec<ChunkId>)], level: u32) -> String {
+        let placeholder = format!("{} chunks clustered at level {}", group.len(), level);
+        let Some(enricher) = &self.enricher else { return placeholder; };
+        let text = group.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>().join("\n\n");
+        let request = EnrichRequest { text, intent: EnrichIntent::Summarize, context: None };
+        match enricher.enrich(request).await {
+            Ok(EnrichedText(summary)) => summary,
+            Err(e) => {
+                tracing::warn!(err = ?e, level, "raptor cluster summarization failed — falling back to placeholder");
+                placeholder
+            }
+        }
     }
 
     #[instrument(skip(self, leaf_chunks), fields(collection, input_chunk_count = leaf_chunks.len(), max_depth = self.max_depth), err)]
@@ -45,7 +68,7 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
             let mut next_level = vec![];
             for group_indices in &clusters_indices {
                 let group: Vec<_> = group_indices.iter().map(|&i| &current_level[i]).collect();
-                let summary = format!("{} chunks clustered at level {}", group.len(), level);
+                let summary = self.summarize(&group, level).await;
                 let centroid = self.centroid(&group.iter().map(|(t, v, _)| (t.clone(), v.clone())).collect::<Vec<_>>());
                 let leaf_chunk_ids: Vec<ChunkId> = group.iter()
                     .flat_map(|(_, _, ids)| ids.iter().cloned())
@@ -135,6 +158,58 @@ mod tests {
     fn test_kmeans_cluster_empty() {
         let clusters = kmeans_cluster(&[], 3);
         assert!(clusters.is_empty());
+    }
+
+    struct FakeEnricher;
+    #[async_trait::async_trait]
+    impl arcanum_core::traits::TextEnricher for FakeEnricher {
+        async fn enrich(&self, req: arcanum_core::types::EnrichRequest) -> Result<arcanum_core::types::EnrichedText> {
+            Ok(arcanum_core::types::EnrichedText(format!("REAL SUMMARY OF: {}", req.text)))
+        }
+    }
+
+    #[tokio::test]
+    async fn cluster_summary_uses_enricher_when_configured() {
+        use crate::InMemoryTreeStore;
+        let store = Arc::new(InMemoryTreeStore::new());
+        let enricher: Arc<dyn arcanum_core::traits::TextEnricher> = Arc::new(FakeEnricher);
+        let builder = RaptorBuilder::new(store.clone(), 2).with_enricher(enricher);
+
+        let leaves: Vec<(ChunkId, String, Vector)> = (0..4).map(|i| (
+            ChunkId::new(),
+            format!("leaf text {i}"),
+            Vector(vec![i as f32, 0.0, 0.0]),
+        )).collect();
+        builder.build("col", "file://doc.txt", leaves).await.unwrap();
+
+        let level1 = store.get_level("col", 1).await.unwrap();
+        assert!(!level1.is_empty(), "expected at least one level-1 node");
+        assert!(
+            level1.iter().any(|n| n.text.starts_with("REAL SUMMARY OF:")),
+            "level-1 node text should come from the enricher, not the placeholder: {:?}",
+            level1.iter().map(|n| &n.text).collect::<Vec<_>>()
+        );
+    }
+
+    #[tokio::test]
+    async fn cluster_summary_falls_back_to_placeholder_without_enricher() {
+        use crate::InMemoryTreeStore;
+        let store = Arc::new(InMemoryTreeStore::new());
+        let builder = RaptorBuilder::new(store.clone(), 2);
+
+        let leaves: Vec<(ChunkId, String, Vector)> = (0..4).map(|i| (
+            ChunkId::new(),
+            format!("leaf text {i}"),
+            Vector(vec![i as f32, 0.0, 0.0]),
+        )).collect();
+        builder.build("col", "file://doc.txt", leaves).await.unwrap();
+
+        let level1 = store.get_level("col", 1).await.unwrap();
+        assert!(!level1.is_empty());
+        assert!(
+            level1.iter().any(|n| n.text.contains("chunks clustered at level")),
+            "without an enricher, should fall back to the placeholder text"
+        );
     }
 
     #[tokio::test]

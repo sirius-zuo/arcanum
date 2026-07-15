@@ -3,7 +3,7 @@ use arcanum_core::{
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
              SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
-             Preprocessor},
+             Preprocessor, Reranker},
     types::RetrievalStrategy,
     Result, ArcanumError,
 };
@@ -15,8 +15,10 @@ use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
-                        VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever};
+                        VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
+                        ColBertRetriever, QueryTransformer};
 use arcanum_vector::Bm25Index;
+use arcanum_evidence::DefaultEvidenceResolver;
 use std::{sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
@@ -122,6 +124,9 @@ pub struct ArcanumEngineBuilder {
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
     preprocessor_overrides: Vec<(String, Arc<dyn Preprocessor>)>,
+    query_transformer: Option<Arc<dyn QueryTransformer>>,
+    reranker: Option<Arc<dyn Reranker>>,
+    dedup_threshold: Option<f32>,
 }
 
 
@@ -143,6 +148,9 @@ impl Default for ArcanumEngineBuilder {
             evidence: None,
             gc_worker: None,
             preprocessor_overrides: Vec::new(),
+            query_transformer: None,
+            reranker: None,
+            dedup_threshold: None,
         }
     }
 }
@@ -231,6 +239,27 @@ impl ArcanumEngineBuilder {
 
     pub fn register_preprocessor(mut self, name: impl Into<String>, p: Arc<dyn Preprocessor>) -> Self {
         self.preprocessor_overrides.push((name.into(), p));
+        self
+    }
+
+    /// Fans queries out (e.g. HyDE, multi-query) before retrieval. Not set by
+    /// default — retrieval runs against the caller's original query only.
+    pub fn query_transformer(mut self, t: Arc<dyn QueryTransformer>) -> Self {
+        self.query_transformer = Some(t);
+        self
+    }
+
+    /// Reorders/rescoring pass applied to fused results. Not set by default —
+    /// results keep RRF fusion order.
+    pub fn reranker(mut self, r: Arc<dyn Reranker>) -> Self {
+        self.reranker = Some(r);
+        self
+    }
+
+    /// Enables cross-document near-duplicate removal on the final result set,
+    /// at the given cosine similarity threshold. Not set by default.
+    pub fn dedup_threshold(mut self, threshold: f32) -> Self {
+        self.dedup_threshold = Some(threshold);
         self
     }
 
@@ -326,6 +355,7 @@ impl ArcanumEngineBuilder {
                 version_store:     version_store.clone(),
                 snapshot_store:    snapshot_store.clone(),
                 chunk_metadata:    self.chunk_metadata_store.clone(),
+                bm25_index:        self.bm25_index.clone(),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
@@ -374,7 +404,9 @@ impl ArcanumEngineBuilder {
         if let (Some(vs), Some(emb)) = (&self.vector_store, &self.embedder) {
             orchestrator = orchestrator
                 .add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
-            retriever_count += 1;
+            orchestrator = orchestrator
+                .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
+            retriever_count += 2;
         }
         if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
             &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
@@ -399,6 +431,16 @@ impl ArcanumEngineBuilder {
             retriever_count += 1;
         }
         metrics::gauge!("arcanum_active_retrievers").set(retriever_count as f64);
+
+        if let Some(t) = &self.query_transformer {
+            orchestrator = orchestrator.with_query_transformer(t.clone());
+        }
+        if let Some(r) = &self.reranker {
+            orchestrator = orchestrator.with_reranker(r.clone());
+        }
+        if let Some(threshold) = self.dedup_threshold {
+            orchestrator = orchestrator.with_dedup_threshold(threshold);
+        }
 
         let retrieval = Arc::new(RetrievalService::new(
             Arc::new(orchestrator),
@@ -475,10 +517,17 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
-            version_store,
+            version_store: version_store.clone(),
             snapshot_store,
             chunk_metadata_store: self.chunk_metadata_store.clone(),
-            evidence: self.evidence.clone(),
+            evidence: self.evidence.clone().or_else(|| {
+                match (&self.chunk_metadata_store, &self.tree_store, &self.graph_store) {
+                    (Some(cms), Some(ts), Some(gs)) => Some(Arc::new(DefaultEvidenceResolver::new(
+                        cms.clone(), version_store.clone(), ts.clone(), gs.clone(),
+                    )) as Arc<dyn EvidenceResolver>),
+                    _ => None,
+                }
+            }),
             gc_worker: self.gc_worker.clone(),
         }))
     }
@@ -522,6 +571,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn evidence_resolver_auto_wired_when_all_stores_present() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
+            .build().await
+            .expect("build should succeed");
+
+        assert!(
+            engine.evidence.is_some(),
+            "evidence resolver should be auto-wired once chunk_metadata_store, \
+             tree_store, and graph_store are all configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_resolver_stays_none_when_a_store_is_missing() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            // graph_store deliberately omitted
+            .build().await
+            .expect("build should succeed");
+
+        assert!(
+            engine.evidence.is_none(),
+            "evidence resolver must not be auto-wired when graph_store is missing"
+        );
+    }
+
+    #[tokio::test]
     async fn test_engine_builder_with_dependencies() {
         let engine = ArcanumEngine::builder()
             .config(ArcanumConfig::default())
@@ -532,6 +616,57 @@ mod tests {
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build().await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
+    }
+
+    struct OneChunkVectorStore;
+    #[async_trait]
+    impl VectorStore for OneChunkVectorStore {
+        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> { Ok(()) }
+        async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> {
+            Ok(vec![ScoredChunk {
+                chunk: IndexedChunk {
+                    chunk: Chunk {
+                        id: ChunkId::new(),
+                        text: "hello world".into(),
+                        document_id: DocumentId::new(),
+                        collection_id: CollectionId("col1".into()),
+                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        metadata: ChunkMetadata::default(),
+                        provenance: ChunkProvenance::default(),
+                    },
+                    vector: Vector(vec![0.1, 0.2]),
+                    token_vectors: None,
+                    store_id: String::new(),
+                },
+                score: 0.9,
+            }])
+        }
+        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
+        async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(true) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn parallel_fusion_search_includes_colbert_strategy() {
+        let engine = ArcanumEngine::builder()
+            .config(ArcanumConfig::default())
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(OneChunkVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed");
+
+        let token = engine.auth.generate_admin_key("tester");
+        let claims = engine.auth.validate_api_key(&token).unwrap();
+        let query = Query::new("hello").with_collection(CollectionId("col1".into()));
+        let result = engine.retrieval.search(query, &claims).await.unwrap();
+
+        assert!(
+            result.strategy_scores.keys().any(|k| k == "ColBert"),
+            "ParallelFusion should include a ColBert-strategy result once vector_store+embedder \
+             are configured; strategy_scores keys: {:?}", result.strategy_scores.keys().collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]

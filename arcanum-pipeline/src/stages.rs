@@ -8,6 +8,7 @@ use arcanum_ingestion::{
 };
 use arcanum_middleware::CircuitBreaker;
 use arcanum_tree::RaptorBuilder;
+use arcanum_vector::Bm25Index;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -661,6 +662,7 @@ pub fn make_vector_write_stage(
     vector_store: Arc<dyn VectorStore>,
     vector_store_cb: Arc<arcanum_middleware::CircuitBreaker>,
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    bm25_index: Option<Arc<Bm25Index>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_write",
@@ -675,6 +677,7 @@ pub fn make_vector_write_stage(
             let vs = vector_store.clone();
             let cb = vector_store_cb.clone();
             let cms = chunk_metadata_store.clone();
+            let bm25 = bm25_index.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_write", "executing vector_write stage");
                 if skip(&ctx) { return Ok(ctx); }
@@ -738,6 +741,14 @@ pub fn make_vector_write_stage(
                     None
                 };
 
+                // BM25 wants (chunk_id, text) pairs — capture before `indexed` moves into
+                // vs.upsert below.
+                let bm25_docs: Option<Vec<(String, String)>> = bm25.as_ref().map(|_| {
+                    indexed.iter()
+                        .map(|c| (c.chunk.id.0.to_string(), c.chunk.text.clone()))
+                        .collect()
+                });
+
                 match vs.upsert(&collection_id.0, indexed).await {
                     Ok(()) => {
                         cb.record_success();
@@ -746,6 +757,13 @@ pub fn make_vector_write_stage(
                                 if let Err(e) = cms.put(meta).await {
                                     tracing::warn!(err = ?e, "chunk metadata write failed — continuing");
                                 }
+                            }
+                        }
+                        // Best-effort: BM25 is a supplementary lexical index, not the
+                        // source of truth — a write failure here must not fail ingestion.
+                        if let (Some(bm25), Some(docs)) = (&bm25, bm25_docs) {
+                            if let Err(e) = bm25.index_chunks(docs) {
+                                tracing::warn!(err = ?e, "bm25 index write failed — continuing");
                             }
                         }
                         ctx.insert("vector_write_ok".to_string(), serde_json::json!(true));
@@ -871,6 +889,7 @@ pub fn make_raptor_build_stage(
     state: Arc<Mutex<IngestionState>>,
     tree_store: Arc<dyn TreeStore>,
     max_depth: u32,
+    enricher: Option<Arc<dyn TextEnricher>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "raptor_build",
@@ -878,6 +897,7 @@ pub fn make_raptor_build_stage(
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let tree_store = tree_store.clone();
+            let enricher = enricher.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
                 if skip(&ctx) { return Ok(ctx); }
@@ -914,7 +934,10 @@ pub fn make_raptor_build_stage(
                         });
                     (leaves, g.collection_id.clone(), source_uri)
                 };
-                let builder = RaptorBuilder::new(tree_store, max_depth);
+                let mut builder = RaptorBuilder::new(tree_store, max_depth);
+                if let Some(enricher) = enricher {
+                    builder = builder.with_enricher(enricher);
+                }
                 builder.build(&collection_id.0, &source_uri, leaves).await?;
                 Ok(ctx)
             })
