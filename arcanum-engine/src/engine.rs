@@ -18,6 +18,7 @@ use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
                         ColBertRetriever};
 use arcanum_vector::Bm25Index;
+use arcanum_evidence::DefaultEvidenceResolver;
 use std::{sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
@@ -479,10 +480,17 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
-            version_store,
+            version_store: version_store.clone(),
             snapshot_store,
             chunk_metadata_store: self.chunk_metadata_store.clone(),
-            evidence: self.evidence.clone(),
+            evidence: self.evidence.clone().or_else(|| {
+                match (&self.chunk_metadata_store, &self.tree_store, &self.graph_store) {
+                    (Some(cms), Some(ts), Some(gs)) => Some(Arc::new(DefaultEvidenceResolver::new(
+                        cms.clone(), version_store.clone(), ts.clone(), gs.clone(),
+                    )) as Arc<dyn EvidenceResolver>),
+                    _ => None,
+                }
+            }),
             gc_worker: self.gc_worker.clone(),
         }))
     }
@@ -523,6 +531,41 @@ mod tests {
         async fn enrich(&self, req: EnrichRequest) -> AResult<EnrichedText> {
             Ok(EnrichedText(req.text))
         }
+    }
+
+    #[tokio::test]
+    async fn evidence_resolver_auto_wired_when_all_stores_present() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
+            .build().await
+            .expect("build should succeed");
+
+        assert!(
+            engine.evidence.is_some(),
+            "evidence resolver should be auto-wired once chunk_metadata_store, \
+             tree_store, and graph_store are all configured"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_resolver_stays_none_when_a_store_is_missing() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            // graph_store deliberately omitted
+            .build().await
+            .expect("build should succeed");
+
+        assert!(
+            engine.evidence.is_none(),
+            "evidence resolver must not be auto-wired when graph_store is missing"
+        );
     }
 
     #[tokio::test]
