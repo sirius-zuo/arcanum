@@ -312,9 +312,11 @@ wiring status.
   `vantage-contract-intel`) only inside a `// Production:
   EnrichmentDispatcher::new(...)` comment — each example actually
   constructs a bare `OllamaProvider` for both embedding and enrichment.
-- **Dead config fields (debt).** `EmbeddingConfig.cache_enabled` and
-  `RetrievalConfig.query_cache_enabled` are read nowhere in the workspace;
-  setting either in a config file currently has no effect.
+- **Dead config fields removed.** `EmbeddingConfig.cache_enabled`,
+  `RetrievalConfig.fusion_strategy`/`.query_cache_enabled`, and the
+  `FusionStrategy` enum they were the only user of were parsed and
+  defaulted but never read anywhere in the workspace; PR #49 removed all
+  of them rather than leaving them as misleading dead config surface.
 - `relation_identity_key`, `relation_touches_removed_entity`, and
   `merge_relation` in `traits::store` are free functions, not trait
   methods, called by `InMemoryGraphStore` (`arcanum-graph/src/lib.rs`) and
@@ -325,17 +327,20 @@ wiring status.
   and never calls these functions — a fix to `merge_relation` changes the
   in-memory and Sled backends' behavior but has no effect on the Neo4j
   backend.
-- **Superseded dedup mechanism (drift).** `DocumentRegistry` and its
+- **Superseded dedup mechanism removed.** `DocumentRegistry` and its
   `try_set_replacing`/`deregister()` transition (Key Decisions, PR #29/#30)
   no longer exist in source — `arcanum-ingestion/src/document_registry.rs`
-  is now a two-line stub. The current `make_dedup_stage`/
+  was deleted entirely by PR #49 (it had already been reduced to an
+  orphaned, never-declared stub). The current `make_dedup_stage`/
   `make_cleanup_stage` (`arcanum-pipeline/src/stages.rs`) take `Arc<dyn
   DocumentVersionStore>`, calling `get_latest()` to decide skip/replace;
   the `supersede_active(document_id)` call (an `Active` → `Superseded`
   `VersionStatus` transition) that replaces the old registry's CAS state
-  actually fires from `make_snapshot_stage` under
-  `VersioningPolicy::Replace` — `make_cleanup_stage`'s own supersede guard
-  is unreachable (see [Pipeline](pipeline.md)).
+  fires from `make_snapshot_stage` under `VersioningPolicy::Replace` —
+  `make_cleanup_stage`'s own supersede call was unreachable (its guard
+  read a field only ever set by `make_snapshot_stage`, which runs after
+  cleanup) and PR #49 removed it, along with a regression test asserting
+  cleanup never calls `supersede_active` (see [Pipeline](pipeline.md)).
 - `IngestionDepsOverrideResolver` inverts the usual direction: the trait is
   defined in `arcanum-core` but implemented by `arcanum-engine` and called
   by each `arcanum-pipeline` worker — the consumer (pipeline) sits below
