@@ -75,6 +75,10 @@ classDiagram
     class LearnedFusion
     RetrievalOrchestrator --> Retriever : Vec~Arc~dyn~~
     RetrievalOrchestrator --> RrfFusion : fuse()
+    RetrievalOrchestrator --> QueryTransformer : transform()
+    RetrievalOrchestrator --> Reranker : rerank()
+    RetrievalOrchestrator --> Deduplicator : deduplicate()
+    RetrievalOrchestrator --> CitationGenerator : generate()
     LearnedFusion ..> WeightedFusion : delegates
 
     class Reranker { <<trait>> rerank() }
@@ -362,7 +366,8 @@ Newest first.
   deterministic UUID v5 from `TreeNode.source_uri`, so its hits fuse
   correctly by `DocumentId`. `Bm25Retriever` still calls
   `DocumentId::new()` per chunk: PR #49's commit message deferred this
-  half to "land alongside the BM25 write-path wiring, Stage 2.1," but
+  half to "land alongside the BM25 write-path wiring (Stage 2.1 of the
+  remediation plan), since fixing the schema gap once covers both," but
   Stage 2.1 (PR #50) only wired the ingestion *write* path — this
   *read*-path fabrication is unchanged, the deferred fix did not
   materialize. (The Fusion-key Key Decision's Consequences field, below,
