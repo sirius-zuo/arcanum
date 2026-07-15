@@ -45,14 +45,10 @@ impl Drop for TelemetryGuard {
 pub fn init(config: TelemetryConfig) -> TelemetryGuard {
     use tracing_subscriber::layer::SubscriberExt;
 
-    // ── C9: warn about config fields that are parsed but not yet wired ────────
-    if config.metrics_token.is_some() {
-        eprintln!(
-            "arcanum-telemetry: ARCANUM_METRICS_TOKEN is set but bearer-token \
-             enforcement is not implemented until Stage 6. The /metrics \
-             endpoint is currently unprotected."
-        );
-    }
+    // config.metrics_token is parsed here but not read by anything in this
+    // crate — /metrics bearer-token enforcement is implemented independently
+    // in arcanum-server (routes/metrics.rs), which reads ARCANUM_METRICS_TOKEN
+    // directly via std::env::var rather than through this TelemetryConfig.
 
     // ── C3: build OTel provider before subscriber install (layer must be
     // attached in the same try_init call), degrading gracefully on failure ─────

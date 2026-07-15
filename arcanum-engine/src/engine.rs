@@ -10,9 +10,8 @@ use arcanum_core::{
 use arcanum_ingestion::LocalSnapshotStore;
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
-                        RawLoader, FileLoader, HttpLoader, default_registry,
+                        RawLoader, FileLoader, HttpLoader,
                         DoclingPreprocessor, DoclingBackend};
-use arcanum_core::types::{PerBackendChunkConfig, PerBackendChunkers};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
@@ -23,6 +22,7 @@ use crate::{
     audit::AuditLogger,
     auth::AuthMiddleware,
     event_bus::EventBus,
+    ingestion_deps_resolver::resolve_chunkers,
     rate_limit::RateLimiter,
     services::{
         admin::AdminService,
@@ -124,28 +124,6 @@ pub struct ArcanumEngineBuilder {
     preprocessor_overrides: Vec<(String, Arc<dyn Preprocessor>)>,
 }
 
-fn resolve_chunkers(
-    collection_config: Option<&PerBackendChunkConfig>,
-    global_config: &PerBackendChunkConfig,
-) -> Result<PerBackendChunkers> {
-    let registry = default_registry();
-    let vector_cfg = collection_config
-        .map(|c| &c.vector)
-        .unwrap_or(&global_config.vector);
-    let graph_cfg = collection_config
-        .and_then(|c| c.graph.as_ref())
-        .or(global_config.graph.as_ref())
-        .unwrap_or(&global_config.vector);
-    let tree_cfg = collection_config
-        .and_then(|c| c.tree.as_ref())
-        .or(global_config.tree.as_ref())
-        .unwrap_or(&global_config.vector);
-    Ok(PerBackendChunkers {
-        vector: registry.build(vector_cfg)?,
-        graph:  registry.build(graph_cfg)?,
-        tree:   registry.build(tree_cfg)?,
-    })
-}
 
 impl Default for ArcanumEngineBuilder {
     fn default() -> Self {
@@ -317,6 +295,16 @@ impl ArcanumEngineBuilder {
             preprocessor_catalog: preprocessor_catalog.clone(),
         }) as Arc<dyn IngestionDepsOverrideResolver>;
 
+        let version_store: Arc<dyn DocumentVersionStore> = self.version_store.clone().ok_or_else(|| ArcanumError::Config(
+            "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
+             for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
+        ))?;
+        let snapshot_store: Arc<dyn SnapshotStore> = self.snapshot_store
+            .clone()
+            .unwrap_or_else(|| {
+                Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
+            });
+
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
             let deps = Arc::new(PipelineDeps {
@@ -335,15 +323,8 @@ impl ArcanumEngineBuilder {
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
                 tree_store:        self.tree_store.clone(),
-                version_store:     self.version_store.clone().ok_or_else(|| ArcanumError::Config(
-                    "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
-                     for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
-                ))?,
-                snapshot_store:    self.snapshot_store
-                    .clone()
-                    .unwrap_or_else(|| {
-                        Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
-                    }),
+                version_store:     version_store.clone(),
+                snapshot_store:    snapshot_store.clone(),
                 chunk_metadata:    self.chunk_metadata_store.clone(),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
@@ -494,15 +475,8 @@ impl ArcanumEngineBuilder {
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
             tree_store: self.tree_store.clone(),
-            version_store: self.version_store.clone().ok_or_else(|| ArcanumError::Config(
-                "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
-                 for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
-            ))?,
-            snapshot_store: self.snapshot_store
-                .clone()
-                .unwrap_or_else(|| {
-                    Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
-                }),
+            version_store,
+            snapshot_store,
             chunk_metadata_store: self.chunk_metadata_store.clone(),
             evidence: self.evidence.clone(),
             gc_worker: self.gc_worker.clone(),

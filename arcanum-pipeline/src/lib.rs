@@ -15,12 +15,3 @@ pub use executor::DagExecutor;
 pub use ingestion_state::IngestionState;
 pub use deps::PipelineDeps;
 pub use stage_failure::{StageFailure, is_core_stage};
-
-pub enum PipelineTemplate {
-    Standard,
-    Contextual,
-    Graph,
-    Raptor,
-    Full,
-    Custom(PipelineDAG),
-}

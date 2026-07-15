@@ -65,7 +65,7 @@ impl IngestionDepsOverrideResolver for EngineIngestionDepsResolver {
     }
 }
 
-fn resolve_chunkers(
+pub(crate) fn resolve_chunkers(
     collection_config: Option<&PerBackendChunkConfig>,
     global_config: &PerBackendChunkConfig,
 ) -> Result<PerBackendChunkers> {

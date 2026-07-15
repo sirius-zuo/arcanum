@@ -79,8 +79,10 @@ fn topic_allowed(topic: &str, claims: &ApiKeyClaims) -> bool {
 }
 
 async fn handle_socket(mut socket: WebSocket, claims: ApiKeyClaims, engine: Arc<ArcanumEngine>) {
-    // Subscribe to all EventBus events via a wildcard topic subscription.
-    // We use a single broadcast receiver per connection.
+    // Subscribed to the single "ingestion:progress" topic — there is no
+    // wildcard subscription. The client's "subscribe" message below only
+    // filters which topics are echoed back in the "subscribed" ack; it does
+    // not gate which events get forwarded over this one receiver.
     let mut event_rx = engine.events.subscribe("ingestion:progress").await;
 
     loop {
