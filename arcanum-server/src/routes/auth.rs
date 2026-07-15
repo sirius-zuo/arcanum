@@ -17,7 +17,12 @@ pub fn validate_bearer(
             Json(serde_json::json!({ "error": "missing Authorization header" }))))?;
     let raw = header_val.to_str().unwrap_or("");
     let token = raw.strip_prefix("Bearer ").unwrap_or(raw);
-    engine.auth.validate_api_key(token)
+    let claims = engine.auth.validate_api_key(token)
         .map_err(|_| (StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "invalid or expired token" }))))
+            Json(serde_json::json!({ "error": "invalid or expired token" }))))?;
+    if !engine.rate_limiter.check_and_record(&claims.user_id) {
+        return Err((StatusCode::TOO_MANY_REQUESTS,
+            Json(serde_json::json!({ "error": "rate limit exceeded" }))));
+    }
+    Ok(claims)
 }

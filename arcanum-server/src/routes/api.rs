@@ -175,11 +175,16 @@ pub async fn upload(
 /// POST /api/v1/chunk/inspect — compare multiple chunking strategies on a text blob.
 #[tracing::instrument(skip_all)]
 pub async fn chunk_inspect(
-    _headers: HeaderMap,
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
     Json(req): Json<InspectRequest>,
 ) -> impl IntoResponse {
     let start = std::time::Instant::now();
     let response: Response = {
+        let _claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
         match inspect(&req.text, &req.strategies).await {
             Ok(results) => (StatusCode::OK, axum::Json(serde_json::json!({ "results": results }))).into_response(),
             Err(e) => (StatusCode::BAD_REQUEST,
@@ -262,5 +267,65 @@ mod upload_tests {
                 .unwrap()
         ).await.unwrap();
         assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    }
+}
+
+#[cfg(test)]
+mod chunk_route_tests {
+    use crate::build_app;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, Method};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn chunk_inspect_requires_auth() {
+        let app = build_app(None);
+        let resp = app.oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/chunk/inspect")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"hello world","strategies":[]}"#))
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use crate::build_app;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode, Method};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn requests_beyond_the_window_return_429() {
+        use arcanum_core::traits::NoOpDocumentVersionStore;
+        use arcanum_engine::ArcanumEngine;
+        use std::sync::Arc;
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(NoOpDocumentVersionStore))
+            .build()
+            .await
+            .unwrap();
+        let token = engine.auth.generate_admin_key("tester");
+        let claims = engine.auth.validate_api_key(&token).unwrap();
+
+        // Drain this caller's window directly, without N real HTTP round trips.
+        while engine.rate_limiter.check_and_record(&claims.user_id) {}
+
+        let app = build_app(Some(engine));
+        let resp = app.oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/v1/chunk/inspect")
+                .header("Authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"hello","strategies":[]}"#))
+                .unwrap()
+        ).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }

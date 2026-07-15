@@ -66,7 +66,7 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/api/v1/vector/collections/:name",        post(collections::vector_create).delete(collections::vector_delete))
         .route("/api/v1/vector/collections/:name/stats",  get(collections::vector_stats_one))
         .route("/api/v1/vector/collections/:name/documents", get(collections::vector_list_documents).delete(collections::vector_delete_document))
-        // Graph collections (stubs)
+        // Graph collections
         .route("/api/v1/graph/collections",               get(collections::graph_list))
         .route("/api/v1/graph/collections/stats",         get(collections::graph_stats_all))
         .route("/api/v1/graph/collections/:name",         post(collections::graph_create).delete(collections::graph_delete))

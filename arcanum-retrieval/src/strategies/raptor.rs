@@ -2,6 +2,7 @@ use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::instrument;
+use uuid::Uuid;
 
 /// RAPTOR retriever: queries hierarchical tree levels (coarse→fine), scoring
 /// each node with cosine similarity to the query vector, weighted by level
@@ -11,6 +12,15 @@ pub struct RaptorRetriever {
     embedder: Arc<dyn Embedder>,
     max_depth: usize,
 }
+
+/// Fixed namespace for deriving a stable DocumentId from a TreeNode's
+/// source_uri, so multiple nodes from the same source document collapse
+/// onto one DocumentId instead of each getting a fresh random one — see
+/// the doc_id derivation in `retrieve` below.
+const SOURCE_URI_NAMESPACE: Uuid = Uuid::from_bytes([
+    0xa1, 0x1c, 0xa4, 0x4e, 0x6d, 0x0e, 0x4c, 0x0b,
+    0x9c, 0x1e, 0x52, 0x2e, 0xf3, 0x0a, 0x9b, 0x7d,
+]);
 
 impl RaptorRetriever {
     pub fn new(
@@ -61,7 +71,16 @@ impl Retriever for RaptorRetriever {
         candidates.truncate(query.top_k);
 
         Ok(candidates.into_iter().map(|(score, node)| {
-            let doc_id = DocumentId::new();
+            // Deterministic per source_uri so multiple chunks/nodes from the
+            // same document share a DocumentId (needed for reduce_to_best_per_doc
+            // and cross-strategy fusion to recognize them as one document);
+            // falls back to the node's own id when source_uri is unset so we
+            // don't collapse every untitled node onto the same DocumentId.
+            let doc_id = if node.source_uri.is_empty() {
+                DocumentId(node.id.0)
+            } else {
+                DocumentId(Uuid::new_v5(&SOURCE_URI_NAMESPACE, node.source_uri.as_bytes()))
+            };
             RetrievedChunk {
                 indexed_chunk: IndexedChunk {
                     chunk: Chunk {
@@ -134,5 +153,41 @@ mod tests {
         let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
         let retriever = RaptorRetriever::new(store, embedder, 2);
         assert_eq!(retriever.strategy(), RetrievalStrategy::Raptor);
+    }
+
+    #[tokio::test]
+    async fn nodes_from_the_same_source_share_a_document_id() {
+        let mock = MockTreeStore(Mutex::new(HashMap::new()));
+        let same_source = TreeNode {
+            id: TreeNodeId::new(), level: 0, text: "a".into(), vector: Vector(vec![0.1, 0.2, 0.3]),
+            parent: None, children: vec![], cluster_centroid: None,
+            source_uri: "file:///doc.pdf".into(), leaf_chunk_ids: vec![],
+        };
+        let other_node_same_source = TreeNode {
+            id: TreeNodeId::new(), level: 0, text: "b".into(), vector: Vector(vec![0.1, 0.2, 0.3]),
+            parent: None, children: vec![], cluster_centroid: None,
+            source_uri: "file:///doc.pdf".into(), leaf_chunk_ids: vec![],
+        };
+        let different_source = TreeNode {
+            id: TreeNodeId::new(), level: 0, text: "c".into(), vector: Vector(vec![0.1, 0.2, 0.3]),
+            parent: None, children: vec![], cluster_centroid: None,
+            source_uri: "file:///other.pdf".into(), leaf_chunk_ids: vec![],
+        };
+        mock.insert_node("col", same_source).await.unwrap();
+        mock.insert_node("col", other_node_same_source).await.unwrap();
+        mock.insert_node("col", different_source).await.unwrap();
+
+        let store: Arc<dyn TreeStore> = Arc::new(mock);
+        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
+        let retriever = RaptorRetriever::new(store, embedder, 0);
+        let query = Query::new("q").with_collection(CollectionId("col".into())).with_top_k(3);
+        let results = retriever.retrieve(&query).await.unwrap();
+
+        assert_eq!(results.len(), 3);
+        let doc_id = |text: &str| results.iter()
+            .find(|r| r.indexed_chunk.chunk.text == text)
+            .unwrap().indexed_chunk.chunk.document_id.clone();
+        assert_eq!(doc_id("a"), doc_id("b"), "same source_uri must yield the same document_id");
+        assert_ne!(doc_id("a"), doc_id("c"), "different source_uri must yield different document_ids");
     }
 }
