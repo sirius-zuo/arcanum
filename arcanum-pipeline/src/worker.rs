@@ -112,12 +112,6 @@ pub async fn run_task(
     let pipeline_template  = task.pipeline_template.clone();
     let force              = task.force;
 
-    if force {
-        deps.cache_invalidator
-            .invalidate_document(&source_uri, &collection_id)
-            .await;
-    }
-
     let source = match &task.content {
         Some(bytes) => Source::Raw {
             content: bytes.clone(),
@@ -143,6 +137,13 @@ pub async fn run_task(
                     "reason": "content_unchanged",
                 })).await;
             } else {
+                // Covers force (dedup always sets __replace, never __skip,
+                // for a forced task), a genuine content change (dedup's
+                // hash mismatch), and a brand-new document (harmless no-op
+                // — nothing was cached under this source_uri yet).
+                deps.cache_invalidator
+                    .invalidate_document(&source_uri, &collection_id)
+                    .await;
                 let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
                     stage: "worker".into(),
                     message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
