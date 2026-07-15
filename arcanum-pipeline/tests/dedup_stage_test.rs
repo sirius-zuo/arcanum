@@ -7,7 +7,7 @@ use arcanum_pipeline::{
 };
 use arcanum_core::{
     traits::{DocumentVersionStore, NoOpDocumentVersionStore, Source},
-    types::{CollectionId, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy, RawDocument},
+    types::{CollectionId, DocumentEntry, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy, RawDocument},
     Result,
 };
 use arcanum_ingestion::{LoaderRegistry, RawLoader};
@@ -58,6 +58,8 @@ impl DocumentVersionStore for MatchingHashStore {
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
     async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
 }
 
 struct DifferentHashStore;
@@ -88,6 +90,8 @@ impl DocumentVersionStore for DifferentHashStore {
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
     async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
 }
 
 struct NoVersionStore;
@@ -106,6 +110,8 @@ impl DocumentVersionStore for NoVersionStore {
     async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
     async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
+    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
 }
 
 #[tokio::test]
