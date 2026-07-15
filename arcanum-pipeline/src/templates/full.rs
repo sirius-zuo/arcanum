@@ -62,7 +62,7 @@ pub fn builder() -> TemplateBuilder {
             dag = dag.add_stage(make_tree_embed_stage(
                 state.clone(), deps.embedder.clone(), deps.embedding_cb.clone(),
             ));
-            dag = dag.add_stage(make_raptor_build_stage(state.clone(), ts.clone(), DEFAULT_RAPTOR_DEPTH));
+            dag = dag.add_stage(make_raptor_build_stage(state.clone(), ts.clone(), DEFAULT_RAPTOR_DEPTH, deps.context_enricher.clone()));
         }
 
         dag

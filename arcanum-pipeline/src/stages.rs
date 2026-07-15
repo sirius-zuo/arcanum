@@ -889,6 +889,7 @@ pub fn make_raptor_build_stage(
     state: Arc<Mutex<IngestionState>>,
     tree_store: Arc<dyn TreeStore>,
     max_depth: u32,
+    enricher: Option<Arc<dyn TextEnricher>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "raptor_build",
@@ -896,6 +897,7 @@ pub fn make_raptor_build_stage(
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let tree_store = tree_store.clone();
+            let enricher = enricher.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
                 if skip(&ctx) { return Ok(ctx); }
@@ -932,7 +934,10 @@ pub fn make_raptor_build_stage(
                         });
                     (leaves, g.collection_id.clone(), source_uri)
                 };
-                let builder = RaptorBuilder::new(tree_store, max_depth);
+                let mut builder = RaptorBuilder::new(tree_store, max_depth);
+                if let Some(enricher) = enricher {
+                    builder = builder.with_enricher(enricher);
+                }
                 builder.build(&collection_id.0, &source_uri, leaves).await?;
                 Ok(ctx)
             })

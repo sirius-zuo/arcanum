@@ -347,7 +347,7 @@ async fn raptor_build_uses_tree_vectors_not_vector_embeddings() {
     (embed_stage.run)(std::collections::HashMap::new()).await.unwrap();
 
     // Then run raptor_build_stage
-    let raptor_stage = make_raptor_build_stage(state.clone(), tree_store, 1);
+    let raptor_stage = make_raptor_build_stage(state.clone(), tree_store, 1, None);
     (raptor_stage.run)(std::collections::HashMap::new()).await.unwrap();
 
     let got = received_texts.lock().unwrap().clone();
