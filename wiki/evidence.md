@@ -255,20 +255,25 @@ Newest first.
 
 ## Implementation Notes
 
-- **Nothing in the shipped engine wires `DefaultEvidenceResolver` in
-  (gap).** `ArcanumEngineBuilder::evidence` defaults to `None`
-  (`arcanum-engine/src/engine.rs`), and no path other than the
-  `folio-library-search` example crate calls
-  `ArcanumEngineBuilder::evidence(...)` with a constructed
-  `DefaultEvidenceResolver`. `arcanum-server/src/routes/evidence.rs`'s
-  own test suite names this directly: a test titled around "no
-  `EvidenceResolver` configured" is commented as "the common deployment
-  state today (nothing wires `DefaultEvidenceResolver` in), and was
-  previously untested" — every `/evidence/*` route returns `503` in that
-  state. PR #45's own fix table separately records that
-  `DefaultEvidenceResolver` and `PostgresGcWorker` "had zero callers
-  anywhere in the codebase" before the fix that wired the resolver into
-  the example app.
+- **`DefaultEvidenceResolver` is now auto-wired in `build()` when its
+  three optional backing stores are present (gap narrowed, not closed).**
+  Per PR #50's item 2.4 (commit `b7e81d70`), `ArcanumEngineBuilder::build`
+  constructs `evidence` as
+  `self.evidence.clone().or_else(|| match (&self.chunk_metadata_store,
+  &self.tree_store, &self.graph_store) { (Some(cms), Some(ts), Some(gs))
+  => Some(Arc::new(DefaultEvidenceResolver::new(cms.clone(),
+  version_store.clone(), ts.clone(), gs.clone()))), _ => None })`
+  (`arcanum-engine/src/engine.rs`) — an explicit `.evidence(...)` call
+  from the caller always wins; absent one, a deployment supplying all
+  three of `chunk_metadata_store`, `tree_store`, and `graph_store`
+  (`version_store` is already unconditionally required) now gets a
+  working resolver instead of a guaranteed `None`. A deployment missing
+  any one of those three optional stores still gets `None`, and every
+  `/evidence/*` route still returns `503` for it —
+  `DefaultEvidenceResolver::new` takes all four stores non-optionally, so
+  extending auto-wiring to a vector-only or graph-only deployment would
+  require the resolver's own constructor to tolerate missing backends, a
+  change out of scope for this fix and left as a follow-up.
 - **`PostgresGcWorker` wiring is documentation-only outside the
   example.** Per PR #45's Task 10 checklist, `PostgresGcWorker`'s
   production wiring is "documented in its BUILD.md," not constructed by

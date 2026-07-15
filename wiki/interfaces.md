@@ -279,21 +279,24 @@ Newest first.
   tests (gap).** No crate in the workspace — not `arcanum-server`, not any
   `examples/*/src/main.rs` — imports `arcanum_mcp`; `arcanum-mcp` has no
   `[[bin]]` target either. The only callers of `McpJsonRpcHandler::new`/
-  `new_test` are `handlers.rs`'s own `#[cfg(test)]` module. `DEVELOPMENT.md`'s
-  MCP Integration section shows `McpServer::new(engine.clone())
-  .bind("0.0.0.0:3000").start()`, but `McpServer::new` actually takes
-  `(handler: Arc<McpJsonRpcHandler>, port: u16)` and has no `.bind()`
-  method — the documented snippet does not compile against the current
-  API, consistent with this path never having been exercised end to end
-  since it was written.
-- **Root README's claimed MCP tool list overstates what's implemented
-  (gap).** `tools/list` advertises `ingest`, `search`, `list_collections`,
-  and `eval_run` — matching the README's claim — but `dispatch_tool` only
-  has arms for `"ingest"` and `"search"` that reach the engine;
-  `"list_collections"` always returns a hardcoded `"[]"` regardless of
-  `engine`/`claims`; `"eval_run"` has no arm at all and returns
-  `-32602`, `"Unknown tool: eval_run"`. Of the four advertised tools, two
-  work.
+  `new_test` are `handlers.rs`'s own `#[cfg(test)]` module.
+  `DEVELOPMENT.md`'s MCP Integration section was rewritten (commit
+  `b953c687`) to show the real constructor —
+  `McpServer::new(handler, 3000).start()`, matching `McpServer::new`'s
+  actual `(handler: Arc<McpJsonRpcHandler>, port: u16)` signature — so
+  the documented snippet now compiles against the current API. The
+  underlying gap remains: no production crate or example ever
+  constructs `McpServer`, consistent with this path never having been
+  exercised end to end.
+- **MCP tool list: two of four advertised tools work (gap).** `tools/list`
+  advertises `ingest`, `search`, `list_collections`, and `eval_run`, but
+  `dispatch_tool` only has arms for `"ingest"` and `"search"` that reach
+  the engine; `"list_collections"` always returns a hardcoded `"[]"`
+  regardless of `engine`/`claims`; `"eval_run"` has no arm at all and
+  returns `-32602`, `"Unknown tool: eval_run"`. The root README and
+  `DEVELOPMENT.md` were both corrected (commit `b953c687`) to mark
+  `list_collections`/`eval_run` as advertised-but-unimplemented rather
+  than claiming all four work.
 - **`CapabilityRegistry` and `SessionManager` are fully implemented,
   unit-tested, and never constructed by production code (gap).**
   `tools/list`'s response in `handlers.rs` is a hand-written `json!{...}`
@@ -302,31 +305,47 @@ Newest first.
   static capabilities object with no session ID, so "session" in
   `McpSession`/`SessionManager` names a concept the JSON-RPC flow doesn't
   track.
-- **WS "wildcard subscription" comment doesn't match `EventBus` (stale
-  comment / dead filtering).** `ws.rs`'s `handle_socket` comment reads
-  "Subscribe to all EventBus events via a wildcard topic subscription,"
-  but `EventBus::subscribe(topic)` has no wildcard concept — it
-  subscribes to exactly the topic string passed in, and `handle_socket`
-  hardcodes `"ingestion:progress"`, the only topic anything in the
-  workspace publishes to (`IngestionService::ingest`, see
-  [Engine](engine.md)). The client-driven `{"subscribe": [...]}` message
-  and its `topic_allowed` check only decide what goes back in the
+- **WS "wildcard subscription" comment corrected (PR #49).** `ws.rs`'s
+  `handle_socket` comment previously claimed "Subscribe to all EventBus
+  events via a wildcard topic subscription"; PR #49 (commit `31c83450`)
+  rewrote it to state the actual behavior. `EventBus::subscribe(topic)`
+  has no wildcard concept — the socket subscribes to exactly one topic,
+  `"ingestion:progress"`, the only topic anything in the workspace
+  publishes to (`IngestionService::ingest`, see [Engine](engine.md)).
+  The client-driven `{"subscribe": [...]}` message and its
+  `topic_allowed` check still only decide what goes back in the
   `"subscribed"` acknowledgment — they never gate the forward loop, so a
   client "subscribed" to nothing still receives every
   `ingestion:progress` event on the connection.
-- **`arcanum-telemetry::init`'s Stage-6 warning is now stale (drift).**
-  The `eprintln!` fired when `config.metrics_token.is_some()` still says
-  "bearer-token enforcement is not implemented until Stage 6. The
-  `/metrics` endpoint is currently unprotected" — text added by PR #20,
-  before Stage 6 existed. PR #26 added exactly that enforcement, but in
-  `routes/metrics.rs::get_metrics`, which reads `ARCANUM_METRICS_TOKEN`
-  itself via `std::env::var` — wholly independent of `arcanum-telemetry`.
-  `TelemetryConfig.metrics_token` is otherwise read nowhere; the warning
-  now fires (falsely) on every `init()` call where the token is set.
-- **`RateLimiter` (per [Engine](engine.md)) has no caller here either.**
-  Neither `arcanum-server` nor `arcanum-mcp` references
-  `arcanum_engine::rate_limit::RateLimiter` outside that crate's own
-  tests; no route or JSON-RPC method is rate-limited.
+- **`arcanum-telemetry::init`'s Stage-6 warning corrected (PR #49).**
+  The `eprintln!` fired when `config.metrics_token.is_some()` used to
+  say "bearer-token enforcement is not implemented until Stage 6" — text
+  added by PR #20, before Stage 6 existed, and left stale after PR #26
+  added the real enforcement elsewhere. PR #49 (commit `31c83450`)
+  replaced it with a comment stating the actual state:
+  `config.metrics_token` is parsed but read by nothing in this crate;
+  `/metrics` bearer-token enforcement is implemented independently in
+  `arcanum-server`'s `routes/metrics.rs::get_metrics`, which reads
+  `ARCANUM_METRICS_TOKEN` itself via `std::env::var`.
+  `TelemetryConfig.metrics_token` remains otherwise unread.
+- **`RateLimiter` is now consulted in `validate_bearer` (closed gap, PR
+  #49).** `routes/auth.rs`'s `validate_bearer` calls
+  `engine.rate_limiter.check_and_record(&claims.user_id)` immediately
+  after `engine.auth.validate_api_key` succeeds, returning `429 TOO_MANY
+  REQUESTS` on failure — covering every route that already calls
+  `validate_bearer` (search, upload, collections, evidence, graph,
+  experiments, chunk/*). Construction happens in `arcanum-engine`'s
+  `ArcanumEngineBuilder::build` (see [Engine](engine.md)'s
+  Implementation Notes for the construction side). `arcanum-mcp`'s
+  JSON-RPC path still does not consult it: `McpJsonRpcHandler`'s
+  `extract_claims` calls `engine.auth.validate_api_key` directly and
+  never calls `validate_bearer` or the rate limiter, so MCP tool calls
+  remain unbounded.
+- **`arcanum_server::metrics::init_metrics` deleted (PR #49).** The Key
+  Decision below ("`GET /metrics` added with bearer auth...") notes the
+  function was left behind, unreferenced, after its call site was
+  removed; PR #49 (commit `31c83450`) deleted the function itself from
+  `metrics.rs`. `metrics.rs` now contains only `get_metrics_text`.
 
 ## Source Anchors
 

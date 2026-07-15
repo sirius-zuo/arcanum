@@ -117,12 +117,17 @@ build a tree against whichever concrete store the engine wired in without
    `LanceDbStore::build_batch`/`LanceDbStore::make_schema` — five columns:
    `id`, `text`, `chunk_json`, `source_uri`, `vector` — then `Table::add`s to
    an existing LanceDB table for `collection` or `create_table`s a new one.
-2. `LanceDbStore::search` opens the same table; any `MetadataFilter` on
-   `source_uri` with `FilterOp::Eq` becomes a LanceDB `only_if` predicate via
-   `lance_eq_filter` (which escapes embedded single quotes); any other
-   operator or field is logged and dropped. It runs `nearest_to(query_vec)`
-   with `.limit(top_k)`, then deserializes each row's `chunk_json` column
-   back into `IndexedChunk` to build the returned `ScoredChunk`s.
+2. `LanceDbStore::search` opens the same table; a `MetadataFilter` on
+   `source_uri` with `FilterOp::Eq` becomes a `lance_eq_filter` clause
+   (which escapes embedded single quotes) and one on `chunk_id` with
+   `FilterOp::In` becomes a `lance_in_filter("id", ids)` clause — any
+   filters present are ANDed together into a single LanceDB `only_if`
+   predicate; any other operator or field is still logged and dropped. It
+   runs `nearest_to(query_vec)` with `.limit(top_k)`, then deserializes each
+   row's `chunk_json` column back into `IndexedChunk` to build the returned
+   `ScoredChunk`s. `PgVectorStore::search` composes the same two filters as
+   independent optional `WHERE` clauses (`source_uri = $n`, `id =
+   ANY($n)`).
 3. `LanceDbStore::delete_by_source_uri` guards an empty `source_uri` as a
    no-op (with a warning), then issues `table.delete(lance_eq_filter(uri))`
    against the first-class column — the mechanism `arcanum-pipeline`'s
@@ -171,10 +176,14 @@ build a tree against whichever concrete store the engine wired in without
    ceil(sqrt(n)).max(2)` — backed by `linfa_clustering::KMeans::fit`/
    `predict` — and turns each resulting cluster into one parent `TreeNode`
    whose `vector` is `RaptorBuilder::centroid` (a plain per-dimension
-   average of the cluster's vectors) and whose `text` is the placeholder
-   string `"{n} chunks clustered at level {level}"` — no embedder or
-   `TextEnricher`/summarizer call happens in this stage (see Implementation
-   Notes). Recursion stops when a level has ≤1 node or `max_depth` is hit.
+   average of the cluster's vectors) and whose `text` comes from
+   `RaptorBuilder::summarize`: by default (no `TextEnricher` passed to
+   `with_enricher`) it's still the placeholder string `"{n} chunks
+   clustered at level {level}"`; if an enricher was configured, `summarize`
+   instead calls it with `EnrichIntent::Summarize` over the group's joined
+   text and uses the result, falling back to the placeholder (with a
+   `tracing::warn!`) if that call fails (see Implementation Notes).
+   Recursion stops when a level has ≤1 node or `max_depth` is hit.
 
 ## Key Decisions
 
@@ -295,14 +304,20 @@ build a tree against whichever concrete store the engine wired in without
 
 ## Implementation Notes
 
-- **Unwired: `HybridIndexManager` (debt).** Nothing in the workspace outside
+- **Unwired: `HybridIndexManager` (debt).** Nothing outside
   `arcanum-vector/src/hybrid.rs` and its own (assertion-only) test
   constructs a `HybridIndexManager` — not `arcanum-pipeline`'s write stages,
-  not `arcanum-engine`'s builder. `Bm25Index` itself *is* wired
-  (`ArcanumEngine::bm25_index`, `arcanum-engine/src/engine.rs`), but nothing
-  in `arcanum-pipeline` ever calls `Bm25Index::index_document`/
-  `index_chunks` — the lexical index has a read path (wired for retrieval)
-  but no write path connected to ingestion.
+  not `arcanum-engine`'s builder; it remains dead code, now odder since the
+  write-path gap it looks designed to solve was closed a different way
+  (below), never routing through it.
+- **Resolved: `Bm25Index` write path wired to ingestion (PR #50, commit
+  `b7e81d70`).** `Bm25Index` reads were already wired
+  (`ArcanumEngine::bm25_index`); `make_vector_write_stage`
+  (`arcanum-pipeline/src/stages.rs`) now also takes an
+  `Option<Arc<Bm25Index>>` and calls `Bm25Index::index_chunks` alongside the
+  vector-store write — best-effort, a failed call is `tracing::warn!`'d, not
+  fatal — closing the write-path gap directly, bypassing `HybridIndexManager`
+  entirely.
 - **Unwired: `CollectionManager` and `SqliteMetadataStore` (debt).**
   `CollectionManager::new` has no call site anywhere in the workspace, not
   even in tests. `SqliteMetadataStore::new`/`new_in_memory` is only
@@ -311,12 +326,16 @@ build a tree against whichever concrete store the engine wired in without
   read path — `arcanum-engine` builds collection state through each store's
   own `list_collections`/`create_collection`/`count_documents` trait methods
   instead.
-- **Inconsistent score semantics (drift).** `LanceDbStore::search` returns a
-  hardcoded `score: 1.0` for every result regardless of vector distance;
-  `PgVectorStore::search` computes a real cosine similarity
-  (`1 - (embedding <=> $1::vector)`). A caller ranking or thresholding on
-  `ScoredChunk.score` gets meaningful values from `PgVectorStore` and a
-  constant from `LanceDbStore`.
+- **Resolved: both stores now compute real scores (PR #49, commit
+  `31c83450`).** `LanceDbStore::search` used to hardcode `score: 1.0`; it now
+  converts LanceDB's `_distance` column to `score = 1.0/(1.0+distance)`.
+  `PgVectorStore::search` already computed `1 - (embedding <=> $1::vector)`
+  (cosine distance). Both are now real, monotonically "closer = higher"
+  scores, but on different scales — LanceDB's bounded to `(0, 1]`, while
+  pgvector's can go negative (as low as `-1`, since cosine distance ranges
+  `[0, 2]`); both cap at `1.0`, so the asymmetry is at the low end, not the
+  high end — worth noting for a caller comparing raw scores across backends
+  rather than ranking within one.
 - **Shared vs. independent semantics (see core.md).** `relation_identity_key`,
   `relation_touches_removed_entity`, and `merge_relation` are free functions
   in `arcanum_core::traits::store` called by `InMemoryGraphStore` and
@@ -324,13 +343,19 @@ build a tree against whichever concrete store the engine wired in without
   behavior in Cypher. `GraphQueryPlanner` similarly sits in `arcanum-graph`
   but is a pure orchestration wrapper around `Arc<dyn TextEnricher>` — it
   makes no graph-store calls itself.
-- **RAPTOR summaries are placeholders, not LLM output.** Despite the name,
-  no level of `RaptorBuilder::build` calls an `Embedder` or `TextEnricher`
-  to summarize a cluster — `text` is the literal string `"{n} chunks
-  clustered at level {level}"`, and the parent node's `vector` is a plain
-  arithmetic mean of its children's vectors (`RaptorBuilder::centroid`), not
-  a re-embedding of any summary text. The leaf-level vectors themselves do
-  come from a real `Embedder` — but that call happens upstream in
+- **Resolved (conditionally): RAPTOR summaries can be real `TextEnricher`
+  output, not just placeholders (PR #50, commit `b7e81d70`).**
+  `RaptorBuilder::summarize` still defaults to the placeholder string `"{n}
+  chunks clustered at level {level}"`; only if a `TextEnricher` was passed
+  to `RaptorBuilder::with_enricher` does it call `enricher.enrich` with
+  `EnrichIntent::Summarize` over the group's joined text instead, falling
+  back to the placeholder on failure. The `raptor`/`full` pipeline templates
+  do call `with_enricher` (via `PipelineDeps::context_enricher`), but that's
+  only `Some` when `ArcanumEngineBuilder::enricher(...)` was called — it
+  defaults to `None`, so placeholder text is what an unconfigured deployment
+  gets. The parent node's `vector` is still a plain arithmetic mean of its
+  children's vectors (`RaptorBuilder::centroid`), not a re-embedding of the
+  summary; leaf-level vectors come from a real `Embedder`, but upstream in
   `arcanum-pipeline`'s `tree_embed` stage, not in `arcanum-tree`.
 - **Empty-`source_uri` guard is duplicated per backend.** `delete_by_source_uri`
   on all six store implementations (`LanceDbStore`, `PgVectorStore`,

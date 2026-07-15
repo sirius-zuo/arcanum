@@ -368,17 +368,24 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
   from `load()` — outside `arcanum-ingestion/tests/loader_test.rs`, which
   exercises them directly, nothing in the workspace constructs or calls
   them, and no production path registers them.
-- **`metadata/` extractors have no callers (debt).** `extract_title`,
-  `extract_keywords`, and `extract_hierarchy` (`metadata/title.rs`,
-  `keyword.rs`, `hierarchy.rs`) are exported from `arcanum-ingestion` but
-  never called anywhere else in the workspace — not by any pipeline stage,
-  not by `DoclingPreprocessor`, not by any example app.
-- **`document_registry.rs` is a two-line stub (drift, tracked further in
-  [Core](core.md)).** It reads `// TODO: replace with
-  PostgresDocumentVersionStore in Task 6 ... kept to avoid breakage until
-  Task 6 removes it` — the `DocumentRegistry`/`SqliteDocumentRegistry`
-  types it once held no longer exist in source; `registry.rs` in the same
-  directory now holds only the unrelated `ChunkRegistry`.
+- **`metadata/` extractors were deleted (resolved debt).** This page
+  previously flagged `extract_title`, `extract_keywords`, and
+  `extract_hierarchy` (`metadata/title.rs`, `keyword.rs`, `hierarchy.rs`)
+  as exported but never called anywhere in the workspace. PR #49 (commit
+  `31c83450`) confirmed the same "zero callers anywhere in the workspace"
+  finding and deleted the module entirely, including its `pub mod`
+  declaration in `lib.rs` — the debt this page documented is now resolved
+  by removal, not by a new caller appearing.
+- **`document_registry.rs` was deleted (drift resolved by removal).**
+  This page previously described it as a two-line stub whose own TODO
+  comment predicted its removal in "Task 6." PR #49 (commit `31c83450`)
+  deleted the file outright, describing it as an "orphaned stub (never
+  declared as a module in `lib.rs` — pure dead file since some prior
+  refactor)." See Key Decisions above ("Persistent `DocumentVersionStore`
+  replaces `DocumentRegistry`-based dedup") for the historical
+  `DocumentRegistry` → `DocumentVersionStore` migration this completes,
+  and [Core](core.md)'s "Superseded dedup mechanism removed" note for the
+  matching update from the crate-placement side.
 - **`PostgresGcWorker` lives in `gc.rs` at the crate root, not under
   `versioning/`,** unlike the `DocumentVersionStore`/`ChunkMetadataStore`
   implementations — see [Core](core.md)'s "Inconsistent crate placement"
@@ -405,8 +412,6 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
 - `arcanum-ingestion/src/gc.rs`
 - `arcanum-ingestion/src/sanitizer.rs`
 - `arcanum-ingestion/src/detection.rs`
-- `arcanum-ingestion/src/metadata/` (module)
-- `arcanum-ingestion/src/document_registry.rs`
 
 ## Related Pages
 

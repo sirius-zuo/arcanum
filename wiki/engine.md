@@ -31,27 +31,32 @@ plus concrete types from every other crate it composes:
 - [Ingestion](ingestion.md) — constructs `LocalSnapshotStore`, a
   `LoaderRegistry` of `RawLoader`/`FileLoader`/`HttpLoader`,
   `PreprocessorCatalog`, `DoclingPreprocessor`/`DoclingBackend`, and
-  calls `default_registry()` (via `resolve_chunkers`, duplicated in this
-  crate and in `EngineIngestionDepsResolver` — see Implementation Notes).
+  calls `default_registry()` via `resolve_chunkers`, now defined once in
+  `ingestion_deps_resolver.rs` and imported here (deduplicated by
+  PR #49).
 - [Pipeline](pipeline.md) — builds `PipelineDeps`, an
   `ArcanumPipelineRegistry`, and a pool of `IngestionWorker`s; also
   constructs `arcanum-middleware`'s `CircuitBreaker`, `BoundedQueue`,
   `RetryPolicy` (see Pipeline's Position section for the shared-queue
   detail).
 - [Retrieval](retrieval.md) — builds `RetrievalOrchestrator` and adds
-  `VectorRetriever`/`GraphRetriever`/`RaptorRetriever`/`Bm25Retriever`
-  conditionally; see Retrieval's Implementation Notes for which strategy
-  is never constructed and why `RetrievalService::with_cache` is never
-  called here.
+  `VectorRetriever`/`ColBertRetriever`/`GraphRetriever`/`RaptorRetriever`/
+  `Bm25Retriever` conditionally — all five retrieval strategies are
+  constructed here (`ColBertRetriever` was wired in PR #50); see
+  Retrieval for what each strategy does and why
+  `RetrievalService::with_cache` is never called here.
 - [Storage](storage.md) — constructs `arcanum-graph`'s
   `GraphQueryPlanner` and `arcanum-vector`'s `Bm25Index` as concrete
   types, then hands both in as `GraphPlanner`/`LexicalIndex` trait
   objects.
 - [Evidence](evidence.md) — accepts `EvidenceResolver`,
   `ChunkMetadataStore`, and `GcWorker` as optional trait objects
-  (`.evidence(...)`, `.chunk_metadata_store(...)`, `.gc_worker(...)`) but
-  never constructs a `DefaultEvidenceResolver` or `PostgresGcWorker`
-  itself — see Evidence's Implementation Notes for who does.
+  (`.evidence(...)`, `.chunk_metadata_store(...)`, `.gc_worker(...)`).
+  `build()` auto-constructs a `DefaultEvidenceResolver` when the caller
+  didn't supply `.evidence(...)` and `chunk_metadata_store`,
+  `tree_store`, and `graph_store` are all present (PR #50);
+  `PostgresGcWorker` is still never constructed here — see Evidence's
+  Implementation Notes for who constructs it.
 - [Interfaces](interfaces.md) — `arcanum-server` and `arcanum-mcp` hold
   an `Option<Arc<ArcanumEngine>>` and call through its public fields
   (`engine.auth`, `engine.retrieval`, `engine.ingestion`, ...); no code
@@ -75,6 +80,7 @@ classDiagram
     class EventBus
     class EngineIngestionDepsResolver
     class CircuitBreaker
+    class RateLimiter
     class BoundedQueue
 
     ArcanumEngineBuilder --> ArcanumEngine : build()
@@ -89,6 +95,7 @@ classDiagram
     ArcanumEngine *-- AuditLogger
     ArcanumEngine *-- EventBus
     ArcanumEngine o-- CircuitBreaker : embedding_cb, vector_store_cb
+    ArcanumEngine o-- RateLimiter : rate_limiter
     RetrievalService --> AuthMiddleware : can_access_collection
     RetrievalService --> AuditLogger : log
     IngestionService --> AuditLogger : log
@@ -154,14 +161,18 @@ spawned `IngestionWorker` via `.with_resolver(...)`.
    `store.reload()`. A second background task always spawns — an hourly
    loop over `experiment.active_experiments()` that only logs a pointer
    at the manual `POST .../eval` route (see Implementation Notes).
-8. `ArcanumEngine` is constructed from the same builder fields, cloning
-   `version_store`/`snapshot_store` through the same required/defaulted
-   logic as step 5 (see Implementation Notes).
+8. `ArcanumEngine` is constructed from the same builder fields, reusing
+   the `version_store`/`snapshot_store` values resolved once near the
+   top of `build()` (required-vs-defaulted; the resolution used to be
+   duplicated between this step and step 5, deduplicated by PR #49).
 
 **2. An authenticated search request through the facade**
 1. `arcanum-server`'s `search` route (`routes/api.rs`) calls
    `validate_bearer`, which calls `engine.auth.validate_api_key` on the
-   bearer token to get `ApiKeyClaims`.
+   bearer token to get `ApiKeyClaims`, then — auth having succeeded —
+   calls `engine.rate_limiter.check_and_record(&claims.user_id)` and
+   returns 429 if the caller's per-`user_id` window is exhausted (wired
+   in PR #49; see Implementation Notes).
 2. The route calls `engine.auth.can_access_collection(&claims,
    collection)` itself before calling the service — a second,
    independent check happens inside the service next.
@@ -173,8 +184,7 @@ spawned `IngestionWorker` via `.with_resolver(...)`.
    `RetrievalOrchestrator::retrieve`.
 4. On success, `vector_store_cb.record_success()` fires,
    `audit.log` records the `"search"` operation, and the result returns
-   to the route. No `RateLimiter` sits anywhere on this path — see
-   Implementation Notes.
+   to the route.
 
 **3. Per-collection ingestion dependency resolution**
 1. Each `IngestionWorker::process_next` calls
@@ -198,6 +208,35 @@ spawned `IngestionWorker` via `.with_resolver(...)`.
 ## Key Decisions
 
 Newest first.
+
+### `DefaultEvidenceResolver` is auto-wired in `build()`; `PostgresGcWorker` deliberately is not
+- **Decision** — `build()` constructs a `DefaultEvidenceResolver` and
+  assigns it to `ArcanumEngine.evidence` whenever the caller didn't call
+  `.evidence(...)` and `chunk_metadata_store`, `tree_store`, and
+  `graph_store` are all present; `PostgresGcWorker` gets no equivalent
+  auto-wiring.
+- **Context** — PR #50's commit message states directly:
+  "`DefaultEvidenceResolver` was fully implemented but
+  `ArcanumEngineBuilder::build` never constructed one by default — only
+  the folio-library-search example wired it manually, so `/evidence/*`
+  routes returned 503 in the common deployment shape, despite the README
+  calling this 'built-in,' not opt-in."
+- **Alternatives rejected** — changing `DefaultEvidenceResolver::new`'s
+  constructor to tolerate missing backends so it could activate for
+  vector-only or graph-only deployments; the commit message calls this
+  "a capability change out of scope here." Auto-wiring `PostgresGcWorker`
+  the same way was rejected too: "its constructor needs a raw
+  `database_url` the builder has no field for, a separate gap (needs new
+  config surface, not just wiring)."
+- **Consequences** — evidence resolution now works out of the box for any
+  deployment supplying all three optional stores, with no explicit
+  `.evidence(...)` call required; an explicit `.evidence(...)` call still
+  always wins over the auto-wired default (`self.evidence.clone()
+  .or_else(...)`). Deployments running fewer than all three optional
+  backends still get `evidence: None`, same as before.
+  `PostgresGcWorker` remains caller-supplied-only, tracked as a follow-up
+  needing new builder config surface for `database_url`.
+- **Ref** — 2026-07-15, PR #50 (commit `b7e81d70`).
 
 ### `PreprocessorCatalog` has no silent fallback; `build()` succeeds regardless, ingest fails later
 - **Decision** — `ArcanumEngineBuilder::build` never registers a no-op
@@ -281,14 +320,11 @@ Newest first.
 
 ## Implementation Notes
 
-- **Root README's runtime-tier "enforced at startup" claim overstates
-  what `config.validate()` checks (gap).** The README states the three
-  runtime tiers are "enforced at startup" and that `enterprise` mode
-  means "full RBAC + audit retention + secret rotation." In source,
-  `ArcanumConfig::validate` enforces exactly one runtime-tier rule (its
-  only other cross-field check is Docling backend validation — see
-  [Core](core.md)): `RuntimeMode::
-  Production` and `RuntimeMode::Enterprise` are both rejected if
+- **`ArcanumConfig::validate` enforces exactly one runtime-tier rule;
+  `audit_retention_days` and `ip_allowlist` remain unenforced (known
+  debt).** Its only other cross-field check is Docling backend
+  validation (see [Core](core.md)): `RuntimeMode::Production` and
+  `RuntimeMode::Enterprise` are both rejected if
   `storage.metadata_backend == MetadataBackend::Sqlite` — the two
   non-`Development` tiers are otherwise handled identically; nothing in
   `validate()` or `build()` reads `RuntimeMode::Enterprise` specifically.
@@ -301,32 +337,20 @@ Newest first.
   code checks a caller's IP against `ip_allowlist`. "Secret rotation"
   (the `secret_store.reload()` polling task) is real and functional, but
   runs whenever a `secret_store` is supplied, independent of
-  `runtime_mode`.
-- **`RateLimiter` is fully implemented, unit-tested, and never wired
-  into anything (gap).** `rate_limit.rs`'s `RateLimiter` was added by
-  commit `2d401fed` ("add time-windowed rate limiter" — part of a
-  security-findings fix), and PR #1's original summary lists it
-  alongside `AuditLogger`/`EventBus`/`AuthMiddleware` as part of "the
-  service layer." Unlike those three, it was never given a field on
-  `ArcanumEngine`, is never constructed in `build()`, and is not
-  referenced anywhere in `arcanum-server` or `arcanum-mcp` — its only
-  non-test-suite reference in the workspace is its own crate's
-  `rate_limit_test.rs`. Runtime Flow 2 has no rate-limiting step because
-  there is none.
-- **`resolve_chunkers` is duplicated verbatim.** The free function in
-  `engine.rs` (used once, to seed `PipelineDeps.chunkers` at `build()`
-  time) and the identically-bodied free function in
-  `ingestion_deps_resolver.rs` (used per-job by
-  `EngineIngestionDepsResolver`) are two separate copies of the same
-  vector/graph/tree fallback logic; a change to the fallback rule in one
-  will not apply to the other unless made in both.
-- **`version_store`/`snapshot_store` resolution logic is duplicated
-  between the pipeline-wiring branch and the final struct
-  construction.** `build()` computes `version_store.ok_or_else(...)`
-  and `snapshot_store.unwrap_or_else(...)` once inside the `if let
-  (Some(embedder), Some(vector_store))` branch (to build `PipelineDeps`)
-  and again, identically, when constructing the returned
-  `ArcanumEngine` — both must be kept in sync by hand.
+  `runtime_mode`. The root README was corrected to match this state
+  (commit `b953c687`).
+- **`RateLimiter` is now wired end-to-end (closed gap).** `rate_limit.rs`'s
+  `RateLimiter` was added by commit `2d401fed` ("add time-windowed rate
+  limiter" — part of a security-findings fix) but sat unconstructed and
+  unconsulted until PR #49. `build()` now constructs it —
+  `Arc::new(RateLimiter::with_window(120, Duration::from_secs(60)))`,
+  matching the `CircuitBreaker` precedent of a hardcoded default rather
+  than new builder config surface — and exposes it as `pub rate_limiter:
+  Arc<RateLimiter>` on `ArcanumEngine`. Consultation happens outside this
+  crate, in `arcanum-server`'s `validate_bearer` (`routes/auth.rs`),
+  keyed by the caller's `user_id`, immediately after
+  `engine.auth.validate_api_key` succeeds — this covers every route that
+  already calls `validate_bearer`, not just search (see Runtime Flow 2).
 - **The background experiment-eval loop is a stub.** The hourly
   `tokio::spawn` loop in `build()` iterates
   `experiment.active_experiments()` and only logs; the loop body's own
