@@ -101,43 +101,44 @@ pub fn make_dedup_stage(
 }
 
 pub fn make_cleanup_stage(
-    state:         Arc<Mutex<IngestionState>>,
-    version_store: Arc<dyn DocumentVersionStore>,
-    vector_store:  Arc<dyn VectorStore>,
-    graph_store:   Option<Arc<dyn GraphStore>>,
-    tree_store:    Option<Arc<dyn TreeStore>>,
+    state:          Arc<Mutex<IngestionState>>,
+    // Kept for call-site/signature stability across all 5 templates even
+    // though unused: the version-supersede that used to happen here was
+    // dead code (state.snapshot_document_id is only ever set by
+    // make_snapshot_stage, which runs after cleanup in every template's
+    // DAG) — real supersede fires from make_snapshot_stage instead.
+    _version_store: Arc<dyn DocumentVersionStore>,
+    vector_store:   Arc<dyn VectorStore>,
+    graph_store:    Option<Arc<dyn GraphStore>>,
+    tree_store:     Option<Arc<dyn TreeStore>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "cleanup",
         deps: vec!["dedup"],
         run: Arc::new(move |ctx| {
-            let state         = state.clone();
-            let version_store = version_store.clone();
-            let vs            = vector_store.clone();
-            let gs            = graph_store.clone();
-            let ts            = tree_store.clone();
+            let state = state.clone();
+            let vs    = vector_store.clone();
+            let gs    = graph_store.clone();
+            let ts    = tree_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "cleanup", "executing cleanup stage");
                 let replace = ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()).unwrap_or(false);
                 if !replace {
                     return Ok(ctx);
                 }
-                let (source_uri, collection_id, doc_id) = {
+                let (source_uri, collection_id) = {
                     let g = state.lock().await;
                     let doc = g.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
                         stage: "cleanup".into(),
                         message: "no doc".into(),
                     })?;
-                    (doc.source_uri.clone(), g.collection_id.0.clone(), g.snapshot_document_id.clone())
+                    (doc.source_uri.clone(), g.collection_id.0.clone())
                 };
                 if source_uri.is_empty() {
                     return Err(ArcanumError::Pipeline {
                         stage: "cleanup".into(),
                         message: "document source_uri is empty — cannot safely delete stale store data".into(),
                     });
-                }
-                if let Some(document_id) = &doc_id {
-                    version_store.supersede_active(document_id).await?;
                 }
                 vs.delete_by_source_uri(&collection_id, &source_uri).await?;
                 if let Some(gs) = &gs {
