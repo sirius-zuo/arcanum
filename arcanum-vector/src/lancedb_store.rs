@@ -4,7 +4,7 @@ use arcanum_core::{
     ArcanumError, Result,
 };
 use arrow_array::{
-    types::Float32Type, Array, FixedSizeListArray, RecordBatch, StringArray,
+    types::Float32Type, Array, FixedSizeListArray, Float32Array, RecordBatch, StringArray,
 };
 use arrow_schema::{DataType, Field, Schema};
 use async_trait::async_trait;
@@ -225,9 +225,20 @@ impl VectorStore for LanceDbStore {
                     .ok_or_else(|| {
                         ArcanumError::Storage("chunk_json is not StringArray".into())
                     })?;
+                // `nearest_to` appends a `_distance` column (L2 distance by
+                // default); convert to a bounded similarity score so callers
+                // that compare scores across hits (e.g. best-per-document
+                // selection during fusion) see real, varying values instead
+                // of a constant.
+                let distances = batch.column_by_name("_distance")
+                    .and_then(|c| c.as_any().downcast_ref::<Float32Array>().cloned());
                 for i in 0..strings.len() {
                     if let Ok(chunk) = serde_json::from_str::<IndexedChunk>(strings.value(i)) {
-                        scored.push(ScoredChunk { chunk, score: 1.0 });
+                        let score = distances.as_ref()
+                            .filter(|d| !d.is_null(i))
+                            .map(|d| 1.0 / (1.0 + d.value(i)))
+                            .unwrap_or(1.0);
+                        scored.push(ScoredChunk { chunk, score });
                     }
                 }
             }
@@ -706,6 +717,56 @@ mod tests {
         }).await;
 
         assert!(results.is_ok(), "unsupported op must not cause an error");
+    }
+
+    #[tokio::test]
+    async fn test_lance_search_scores_reflect_distance_not_hardcoded() {
+        let dir = TempDir::new().unwrap();
+        let store = make_store(&dir).await;
+
+        let near = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "near".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("score_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 4, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(Default::default()),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
+            },
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        let far = IndexedChunk {
+            chunk: arcanum_core::types::Chunk {
+                id: arcanum_core::types::ChunkId::new(),
+                text: "far".into(),
+                document_id: arcanum_core::types::DocumentId::new(),
+                collection_id: arcanum_core::types::CollectionId("score_test".into()),
+                position: arcanum_core::types::ChunkPosition { start: 0, end: 3, index: 0 },
+                metadata: arcanum_core::types::ChunkMetadata(Default::default()),
+                provenance: arcanum_core::types::ChunkProvenance::default(),
+            },
+            vector: arcanum_core::types::Vector(vec![-1.0, 0.0, 0.0]),
+            token_vectors: None,
+            store_id: String::new(),
+        };
+        store.upsert("score_test", vec![near, far]).await.unwrap();
+
+        let results = store.search("score_test", &VectorQuery {
+            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+            top_k: 10,
+            filters: vec![],
+        }).await.unwrap();
+
+        assert_eq!(results.len(), 2);
+        let near_score = results.iter().find(|r| r.chunk.chunk.text == "near").unwrap().score;
+        let far_score = results.iter().find(|r| r.chunk.chunk.text == "far").unwrap().score;
+        assert!(
+            near_score > far_score,
+            "the closer vector must score higher: near={near_score} far={far_score}"
+        );
     }
 
 }
