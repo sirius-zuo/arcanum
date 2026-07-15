@@ -48,3 +48,34 @@ impl RateLimiter {
         self.entries.lock().unwrap().remove(key);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tracks_each_key_independently() {
+        let limiter = RateLimiter::new(1);
+        assert!(limiter.check_and_record("a"));
+        assert!(!limiter.check_and_record("a"));
+        assert!(limiter.check_and_record("b"));
+    }
+
+    #[test]
+    fn resets_once_the_window_expires() {
+        let limiter = RateLimiter::with_window(1, Duration::from_millis(20));
+        assert!(limiter.check_and_record("a"));
+        assert!(!limiter.check_and_record("a"));
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(limiter.check_and_record("a"));
+    }
+
+    #[test]
+    fn reset_for_test_clears_a_key() {
+        let limiter = RateLimiter::new(1);
+        assert!(limiter.check_and_record("a"));
+        assert!(!limiter.check_and_record("a"));
+        limiter.reset_for_test("a");
+        assert!(limiter.check_and_record("a"));
+    }
+}

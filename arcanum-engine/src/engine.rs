@@ -23,6 +23,7 @@ use crate::{
     audit::AuditLogger,
     auth::AuthMiddleware,
     event_bus::EventBus,
+    rate_limit::RateLimiter,
     services::{
         admin::AdminService,
         eval::EvalService,
@@ -48,6 +49,7 @@ pub struct ArcanumEngine {
     pub admin: Arc<AdminService>,
     pub embedding_cb: Arc<CircuitBreaker>,
     pub vector_store_cb: Arc<CircuitBreaker>,
+    pub rate_limiter: Arc<RateLimiter>,
     pub secret_store: Option<Arc<dyn SecretStore>>,
     /// Optional knowledge graph store, exposed for the /api/v1/graph endpoint.
     pub graph_store: Option<Arc<dyn GraphStore>>,
@@ -274,6 +276,7 @@ impl ArcanumEngineBuilder {
 
         let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
         let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
+        let rate_limiter    = Arc::new(RateLimiter::with_window(120, Duration::from_secs(60)));
 
         // Build the preprocessor catalog: docling (if configured) registers as
         // "default"; builder-supplied overrides apply on top and can replace
@@ -486,6 +489,7 @@ impl ArcanumEngineBuilder {
             admin,
             embedding_cb,
             vector_store_cb,
+            rate_limiter,
             secret_store,
             graph_store: self.graph_store.clone(),
             vector_store: self.vector_store.clone(),
