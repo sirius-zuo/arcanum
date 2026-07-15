@@ -331,10 +331,11 @@ build a tree against whichever concrete store the engine wired in without
   converts LanceDB's `_distance` column to `score = 1.0/(1.0+distance)`.
   `PgVectorStore::search` already computed `1 - (embedding <=> $1::vector)`
   (cosine distance). Both are now real, monotonically "closer = higher"
-  scores, but on different scales — LanceDB's bounded to `(0, 1]`, pgvector's
-  able to exceed it since cosine distance ranges `[0, 2]` — worth noting for
-  a caller comparing raw scores across backends rather than ranking within
-  one.
+  scores, but on different scales — LanceDB's bounded to `(0, 1]`, while
+  pgvector's can go negative (as low as `-1`, since cosine distance ranges
+  `[0, 2]`); both cap at `1.0`, so the asymmetry is at the low end, not the
+  high end — worth noting for a caller comparing raw scores across backends
+  rather than ranking within one.
 - **Shared vs. independent semantics (see core.md).** `relation_identity_key`,
   `relation_touches_removed_entity`, and `merge_relation` are free functions
   in `arcanum_core::traits::store` called by `InMemoryGraphStore` and
