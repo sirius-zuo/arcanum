@@ -326,6 +326,7 @@ impl ArcanumEngineBuilder {
                 version_store:     version_store.clone(),
                 snapshot_store:    snapshot_store.clone(),
                 chunk_metadata:    self.chunk_metadata_store.clone(),
+                bm25_index:        self.bm25_index.clone(),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
                     self.config.ingestion.retry_base_delay_ms,
