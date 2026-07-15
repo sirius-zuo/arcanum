@@ -6,7 +6,6 @@ pub mod loaders;
 pub mod preprocessors;
 pub mod enrichment;
 pub mod chunkers;
-pub mod metadata;
 pub mod snapshot;
 pub mod versioning;
 

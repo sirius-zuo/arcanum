@@ -54,8 +54,6 @@ impl Default for StorageConfig {
 pub struct RetrievalConfig {
     pub top_k: usize,
     pub orchestration_mode: OrchestrationMode,
-    pub fusion_strategy: FusionStrategy,
-    pub query_cache_enabled: bool,
 }
 
 impl Default for RetrievalConfig {
@@ -63,8 +61,6 @@ impl Default for RetrievalConfig {
         Self {
             top_k: 5,
             orchestration_mode: OrchestrationMode::ParallelFusion,
-            fusion_strategy: FusionStrategy::Rrf,
-            query_cache_enabled: false,
         }
     }
 }
@@ -74,13 +70,6 @@ pub enum OrchestrationMode {
     Static,
     QueryClassified,
     ParallelFusion,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum FusionStrategy {
-    Rrf,
-    Weighted(Vec<(String, f32)>),
-    Learned,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -157,7 +146,6 @@ pub struct EmbeddingConfig {
     pub model_id: String,
     pub dimension: usize,
     pub batch_size: usize,
-    pub cache_enabled: bool,
     pub parallelism: usize,
 }
 
@@ -168,7 +156,6 @@ impl Default for EmbeddingConfig {
             model_id: "nomic-embed-text".to_string(),
             dimension: 0,
             batch_size: 32,
-            cache_enabled: false,
             parallelism: 4,
         }
     }
