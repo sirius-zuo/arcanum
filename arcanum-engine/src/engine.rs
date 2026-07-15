@@ -15,7 +15,8 @@ use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
-                        VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever};
+                        VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
+                        ColBertRetriever};
 use arcanum_vector::Bm25Index;
 use std::{sync::Arc, time::Duration};
 use crate::{
@@ -375,7 +376,9 @@ impl ArcanumEngineBuilder {
         if let (Some(vs), Some(emb)) = (&self.vector_store, &self.embedder) {
             orchestrator = orchestrator
                 .add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
-            retriever_count += 1;
+            orchestrator = orchestrator
+                .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
+            retriever_count += 2;
         }
         if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
             &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
@@ -533,6 +536,57 @@ mod tests {
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build().await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
+    }
+
+    struct OneChunkVectorStore;
+    #[async_trait]
+    impl VectorStore for OneChunkVectorStore {
+        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> { Ok(()) }
+        async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> {
+            Ok(vec![ScoredChunk {
+                chunk: IndexedChunk {
+                    chunk: Chunk {
+                        id: ChunkId::new(),
+                        text: "hello world".into(),
+                        document_id: DocumentId::new(),
+                        collection_id: CollectionId("col1".into()),
+                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        metadata: ChunkMetadata::default(),
+                        provenance: ChunkProvenance::default(),
+                    },
+                    vector: Vector(vec![0.1, 0.2]),
+                    token_vectors: None,
+                    store_id: String::new(),
+                },
+                score: 0.9,
+            }])
+        }
+        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
+        async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(true) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn parallel_fusion_search_includes_colbert_strategy() {
+        let engine = ArcanumEngine::builder()
+            .config(ArcanumConfig::default())
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(OneChunkVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed");
+
+        let token = engine.auth.generate_admin_key("tester");
+        let claims = engine.auth.validate_api_key(&token).unwrap();
+        let query = Query::new("hello").with_collection(CollectionId("col1".into()));
+        let result = engine.retrieval.search(query, &claims).await.unwrap();
+
+        assert!(
+            result.strategy_scores.keys().any(|k| k == "ColBert"),
+            "ParallelFusion should include a ColBert-strategy result once vector_store+embedder \
+             are configured; strategy_scores keys: {:?}", result.strategy_scores.keys().collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
