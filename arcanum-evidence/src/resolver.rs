@@ -343,6 +343,8 @@ mod tests {
                 extra:         HashMap::new(),
             }))
         }
+        async fn list_collections(&self) -> arcanum_core::Result<Vec<String>> { Ok(vec![]) }
+        async fn list_documents(&self, _: &str) -> arcanum_core::Result<Vec<DocumentEntry>> { Ok(vec![]) }
     }
 
     #[tokio::test]
