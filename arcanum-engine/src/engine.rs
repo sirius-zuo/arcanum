@@ -1199,7 +1199,10 @@ mod tests {
             .build().await
             .err()
             .expect("build must fail on mismatched embedder dimensions");
-        assert!(err.to_string().contains("dimension"), "error should mention 'dimension': {}", err);
+        let msg = err.to_string();
+        assert!(msg.contains("dimension"), "error should mention 'dimension': {}", msg);
+        assert!(msg.contains("primary is 3"), "error should name the primary dimension (3): {}", msg);
+        assert!(msg.contains("reports 4"), "error should name the mismatched dimension (4): {}", msg);
     }
 
     #[tokio::test]
