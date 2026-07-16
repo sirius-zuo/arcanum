@@ -580,12 +580,10 @@ impl ArcanumEngineBuilder {
             snapshot_store,
             chunk_metadata_store: chunk_metadata_store.clone(),
             evidence: self.evidence.clone().or_else(|| {
-                match (&chunk_metadata_store, &self.tree_store, &self.graph_store) {
-                    (Some(cms), Some(ts), Some(gs)) => Some(Arc::new(DefaultEvidenceResolver::new(
-                        cms.clone(), version_store.clone(), ts.clone(), gs.clone(),
-                    )) as Arc<dyn EvidenceResolver>),
-                    _ => None,
-                }
+                chunk_metadata_store.as_ref().map(|cms| Arc::new(DefaultEvidenceResolver::new(
+                    cms.clone(), version_store.clone(),
+                    self.tree_store.clone(), self.graph_store.clone(),
+                )) as Arc<dyn EvidenceResolver>)
             }),
             gc_worker,
         }))
@@ -648,7 +646,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evidence_resolver_stays_none_when_a_store_is_missing() {
+    async fn evidence_resolver_auto_wired_with_partial_backends() {
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
@@ -659,8 +657,26 @@ mod tests {
             .expect("build should succeed");
 
         assert!(
+            engine.evidence.is_some(),
+            "evidence resolver should be auto-wired from chunk_metadata_store alone, \
+             with tree/graph stores now optional"
+        );
+    }
+
+    #[tokio::test]
+    async fn evidence_resolver_stays_none_without_chunk_metadata_store() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            // chunk_metadata_store deliberately omitted
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
+            .build().await
+            .expect("build should succeed");
+
+        assert!(
             engine.evidence.is_none(),
-            "evidence resolver must not be auto-wired when graph_store is missing"
+            "evidence resolver must not be auto-wired without a chunk_metadata_store"
         );
     }
 

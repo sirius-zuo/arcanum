@@ -12,16 +12,16 @@ use tracing::instrument;
 pub struct DefaultEvidenceResolver {
     pub chunk_metadata: Arc<dyn ChunkMetadataStore>,
     pub version_store:  Arc<dyn DocumentVersionStore>,
-    pub tree_store:     Arc<dyn TreeStore>,
-    pub graph_store:    Arc<dyn GraphStore>,
+    pub tree_store:     Option<Arc<dyn TreeStore>>,
+    pub graph_store:    Option<Arc<dyn GraphStore>>,
 }
 
 impl DefaultEvidenceResolver {
     pub fn new(
         chunk_metadata: Arc<dyn ChunkMetadataStore>,
         version_store:  Arc<dyn DocumentVersionStore>,
-        tree_store:     Arc<dyn TreeStore>,
-        graph_store:    Arc<dyn GraphStore>,
+        tree_store:     Option<Arc<dyn TreeStore>>,
+        graph_store:    Option<Arc<dyn GraphStore>>,
     ) -> Self {
         Self { chunk_metadata, version_store, tree_store, graph_store }
     }
@@ -117,7 +117,9 @@ impl arcanum_core::traits::EvidenceResolver for DefaultEvidenceResolver {
 
     #[instrument(skip(self), fields(node_id = %node_id.0), err)]
     async fn resolve_tree_node(&self, node_id: &TreeNodeId) -> Result<ProofChain> {
-        let node = self.tree_store.get_by_id(node_id).await?
+        let tree_store = self.tree_store.as_ref().ok_or_else(|| ArcanumError::Config(
+            "tree backend not configured — resolve_tree_node requires a TreeStore".into()))?;
+        let node = tree_store.get_by_id(node_id).await?
             .ok_or_else(|| ArcanumError::NotFound(format!("tree node not found: {}", node_id.0)))?;
 
         let mut chunk_nodes = Vec::new();
@@ -145,7 +147,9 @@ impl arcanum_core::traits::EvidenceResolver for DefaultEvidenceResolver {
 
     #[instrument(skip(self), fields(entity_id = %entity_id.0), err)]
     async fn resolve_entity(&self, entity_id: &EntityId) -> Result<ProofChain> {
-        let entity = self.graph_store.get_entity_by_id(entity_id).await?
+        let graph_store = self.graph_store.as_ref().ok_or_else(|| ArcanumError::Config(
+            "graph backend not configured — entity/relation evidence requires a GraphStore".into()))?;
+        let entity = graph_store.get_entity_by_id(entity_id).await?
             .ok_or_else(|| ArcanumError::NotFound(format!("entity not found: {}", entity_id.0)))?;
 
         let mut chunk_nodes = Vec::new();
@@ -180,7 +184,9 @@ impl arcanum_core::traits::EvidenceResolver for DefaultEvidenceResolver {
         relation_type: &str,
         target_id:     &EntityId,
     ) -> Result<ProofChain> {
-        let relation = self.graph_store.get_relation(source_id, relation_type, target_id).await?
+        let graph_store = self.graph_store.as_ref().ok_or_else(|| ArcanumError::Config(
+            "graph backend not configured — entity/relation evidence requires a GraphStore".into()))?;
+        let relation = graph_store.get_relation(source_id, relation_type, target_id).await?
             .ok_or_else(|| ArcanumError::NotFound(
                 format!("relation {}/{}/{} not found", source_id.0, relation_type, target_id.0)
             ))?;
@@ -259,7 +265,7 @@ mod tests {
         let vs   = Arc::new(NoOpDocumentVersionStore);
         let ts   = Arc::new(arcanum_tree::InMemoryTreeStore::new());
         let gs   = Arc::new(arcanum_graph::InMemoryGraphStore::new());
-        (DefaultEvidenceResolver::new(meta.clone(), vs, ts, gs), meta)
+        (DefaultEvidenceResolver::new(meta.clone(), vs, Some(ts), Some(gs)), meta)
     }
 
     #[tokio::test]
@@ -279,6 +285,28 @@ mod tests {
         let (resolver, _) = make_resolver();
         let err = resolver.resolve_chunk(&ChunkId::new()).await.unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn resolve_chunk_works_without_tree_or_graph_store() {
+        let meta = Arc::new(FakeMetaStore::default());
+        let vs   = Arc::new(NoOpDocumentVersionStore);
+        let resolver = DefaultEvidenceResolver::new(meta.clone(), vs, None, None);
+
+        let chunk_id = ChunkId::new();
+        meta.put(&sample_record(chunk_id.clone(), DocumentId::new())).await.unwrap();
+
+        assert!(resolver.resolve_chunk(&chunk_id).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn resolve_tree_node_without_tree_store_is_clean_error() {
+        let meta = Arc::new(FakeMetaStore::default());
+        let vs   = Arc::new(NoOpDocumentVersionStore);
+        let resolver = DefaultEvidenceResolver::new(meta, vs, None, None);
+
+        let err = resolver.resolve_tree_node(&TreeNodeId::new()).await.err().expect("must error");
+        assert!(err.to_string().contains("tree backend not configured"));
     }
 
     #[tokio::test]
@@ -307,7 +335,7 @@ mod tests {
             leaf_chunk_ids:   vec![cid1, cid2],
         }).await.unwrap();
 
-        let resolver = DefaultEvidenceResolver::new(meta, vs, ts, gs);
+        let resolver = DefaultEvidenceResolver::new(meta, vs, Some(ts), Some(gs));
         let chain = resolver.resolve_tree_node(&nid).await.unwrap();
         assert_eq!(chain.root.kind, EvidenceKind::TreeNode);
         assert_eq!(chain.root.children.len(), 2);
@@ -353,7 +381,7 @@ mod tests {
         let vs   = Arc::new(FakeVersionStore(VersionStatus::Active));
         let ts   = Arc::new(arcanum_tree::InMemoryTreeStore::new());
         let gs   = Arc::new(arcanum_graph::InMemoryGraphStore::new());
-        let resolver = DefaultEvidenceResolver::new(meta.clone(), vs, ts, gs);
+        let resolver = DefaultEvidenceResolver::new(meta.clone(), vs, Some(ts), Some(gs));
 
         let chunk_id = ChunkId::new();
         meta.put(&sample_record(chunk_id.clone(), DocumentId::new())).await.unwrap();
@@ -368,7 +396,7 @@ mod tests {
         let vs   = Arc::new(FakeVersionStore(VersionStatus::Superseded));
         let ts   = Arc::new(arcanum_tree::InMemoryTreeStore::new());
         let gs   = Arc::new(arcanum_graph::InMemoryGraphStore::new());
-        let resolver = DefaultEvidenceResolver::new(meta.clone(), vs, ts, gs);
+        let resolver = DefaultEvidenceResolver::new(meta.clone(), vs, Some(ts), Some(gs));
 
         let chunk_id = ChunkId::new();
         meta.put(&sample_record(chunk_id.clone(), DocumentId::new())).await.unwrap();

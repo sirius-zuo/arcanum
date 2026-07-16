@@ -75,8 +75,8 @@ async fn main() -> Result<()> {
     let evidence_resolver = Arc::new(DefaultEvidenceResolver::new(
         chunk_metadata_store.clone(),
         version_store.clone(),
-        tree_store.clone(),
-        graph_store.clone(),
+        Some(tree_store.clone()),
+        Some(graph_store.clone()),
     ));
 
     let engine = ArcanumEngineBuilder::new(config)
