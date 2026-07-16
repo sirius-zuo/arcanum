@@ -1,6 +1,6 @@
 use arcanum_engine::services::{
     collection::CollectionService,
-    experiment::{ExperimentService, ExperimentStatus},
+    experiment::{ExperimentService, ExperimentStatus, InMemoryExperimentStore},
 };
 use arcanum_core::{
     config::ArcanumConfig,
@@ -34,7 +34,7 @@ fn mock_collection_service() -> Arc<CollectionService> {
 #[tokio::test]
 async fn start_sets_experiment_to_active() {
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col".into());
     // Pre-create the collection
     let claims = arcanum_engine::auth::ApiKeyClaims {
@@ -49,7 +49,7 @@ async fn start_sets_experiment_to_active() {
 #[tokio::test]
 async fn starting_second_experiment_while_active_returns_conflict() {
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-2".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -68,7 +68,7 @@ async fn starting_second_experiment_while_active_returns_conflict() {
 async fn promote_updates_collection_chunker_config() {
     use arcanum_engine::services::experiment::ExperimentMetrics;
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-3".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -95,7 +95,7 @@ async fn promote_updates_collection_chunker_config() {
 async fn promote_closes_experiment() {
     use arcanum_engine::services::experiment::ExperimentMetrics;
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-4".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -117,7 +117,7 @@ async fn promote_closes_experiment() {
 #[tokio::test]
 async fn abandon_closes_experiment_without_changing_config() {
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-5".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -138,7 +138,7 @@ async fn abandon_closes_experiment_without_changing_config() {
 async fn update_metrics_on_closed_experiment_returns_error() {
     use arcanum_engine::services::experiment::ExperimentMetrics;
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-closed".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -161,7 +161,7 @@ async fn update_metrics_on_closed_experiment_returns_error() {
 #[tokio::test]
 async fn promote_active_experiment_returns_error() {
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-premature".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -182,7 +182,7 @@ async fn promote_active_experiment_returns_error() {
 #[tokio::test]
 async fn promote_clears_collection_experiment_field() {
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-clear".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -211,7 +211,7 @@ async fn promote_clears_collection_experiment_field() {
 #[tokio::test]
 async fn abandon_clears_collection_experiment_field() {
     let collections = mock_collection_service();
-    let svc = ExperimentService::new(collections.clone());
+    let svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let col_id = CollectionId("test-col-abandon-clear".into());
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
@@ -233,7 +233,7 @@ async fn collection_chunker_override_is_applied_to_ingestion_jobs() {
     use arcanum_ingestion::PreprocessorCatalog;
 
     let collections = mock_collection_service();
-    let experiment_svc = ExperimentService::new(collections.clone());
+    let experiment_svc = ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new()));
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
     };
@@ -274,7 +274,7 @@ async fn active_experiment_produces_shadow_context_with_correct_namespace() {
     use arcanum_ingestion::PreprocessorCatalog;
 
     let collections = mock_collection_service();
-    let experiment_svc = Arc::new(ExperimentService::new(collections.clone()));
+    let experiment_svc = Arc::new(ExperimentService::new(collections.clone(), Arc::new(InMemoryExperimentStore::new())));
     let claims = arcanum_engine::auth::ApiKeyClaims {
         user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
     };

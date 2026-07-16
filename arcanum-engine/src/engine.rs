@@ -29,7 +29,7 @@ use crate::{
     services::{
         admin::AdminService,
         eval::EvalService,
-        experiment::ExperimentService,
+        experiment::{ExperimentService, ExperimentStore, InMemoryExperimentStore},
         ingestion::IngestionService,
         retrieval::RetrievalService,
         collection::CollectionService,
@@ -123,6 +123,7 @@ pub struct ArcanumEngineBuilder {
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
+    experiment_store: Option<Arc<dyn ExperimentStore>>,
     preprocessor_overrides: Vec<(String, Arc<dyn Preprocessor>)>,
     query_transformer: Option<Arc<dyn QueryTransformer>>,
     reranker: Option<Arc<dyn Reranker>>,
@@ -147,6 +148,7 @@ impl Default for ArcanumEngineBuilder {
             chunk_metadata_store: None,
             evidence: None,
             gc_worker: None,
+            experiment_store: None,
             preprocessor_overrides: Vec::new(),
             query_transformer: None,
             reranker: None,
@@ -237,6 +239,11 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn experiment_store(mut self, store: Arc<dyn ExperimentStore>) -> Self {
+        self.experiment_store = Some(store);
+        self
+    }
+
     pub fn register_preprocessor(mut self, name: impl Into<String>, p: Arc<dyn Preprocessor>) -> Self {
         self.preprocessor_overrides.push((name.into(), p));
         self
@@ -303,7 +310,10 @@ impl ArcanumEngineBuilder {
 
         // Collection and experiment services — needed early for per-job resolver.
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone(), preprocessor_catalog.clone()));
-        let experiment = Arc::new(ExperimentService::new(collection.clone()));
+        let experiment = Arc::new(ExperimentService::new(
+            collection.clone(),
+            self.experiment_store.clone().unwrap_or_else(|| Arc::new(InMemoryExperimentStore::new())),
+        ));
 
         // Shared queue — passed to both IngestionService (push) and workers (pop).
         let queue = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
