@@ -15,7 +15,7 @@ pub mod spacy;
 pub use dispatcher::EnrichmentDispatcher;
 pub use ollama::OllamaProvider;
 pub use router::EmbeddingParallelismRouter;
-pub use cache::EmbeddingCache;
+pub use cache::{EmbeddingCache, CachingEmbedder};
 pub use health::{ProviderHealthMonitor, ProviderStats};
 pub use openai::OpenAiProvider;
 pub use anthropic::AnthropicProvider;

@@ -1,4 +1,4 @@
-use arcanum_core::{traits::CacheInvalidator, types::*, Result, ArcanumError};
+use arcanum_core::{traits::{CacheInvalidator, Embedder}, types::*, Result, ArcanumError};
 use async_trait::async_trait;
 use redis::AsyncCommands;
 use sha2::{Sha256, Digest};
@@ -97,6 +97,51 @@ impl CacheInvalidator for EmbeddingCache {
     }
 }
 
+/// Decorator: per-text Redis cache in front of any Embedder.
+/// Misses are embedded in one inner batch, preserving input order in the output.
+/// Consistency is TTL-based (EmbeddingCache::set uses a 1h expiry); per-source
+/// invalidation via record_source_association is a follow-up — see the
+/// invalidate_document impl on EmbeddingCache.
+pub struct CachingEmbedder {
+    inner: Arc<dyn Embedder>,
+    cache: Arc<EmbeddingCache>,
+}
+
+impl CachingEmbedder {
+    pub fn new(inner: Arc<dyn Embedder>, cache: Arc<EmbeddingCache>) -> Self {
+        Self { inner, cache }
+    }
+}
+
+#[async_trait]
+impl Embedder for CachingEmbedder {
+    #[instrument(skip(self, texts), fields(text_count = texts.len()), err)]
+    async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+        let mut out: Vec<Option<Vector>> = Vec::with_capacity(texts.len());
+        let mut miss_idx: Vec<usize> = vec![];
+        for (i, text) in texts.iter().enumerate() {
+            match self.cache.get(text).await {
+                Ok(Some(v)) => out.push(Some(v)),
+                _ => { out.push(None); miss_idx.push(i); } // cache errors degrade to miss
+            }
+        }
+        if !miss_idx.is_empty() {
+            let miss_texts: Vec<String> = miss_idx.iter().map(|&i| texts[i].clone()).collect();
+            let vectors = self.inner.embed(miss_texts).await?;
+            for (&i, v) in miss_idx.iter().zip(vectors) {
+                // Best-effort set: a cache write failure must not fail the embed.
+                if let Err(e) = self.cache.set(&texts[i], v.clone()).await {
+                    tracing::warn!(err = %e, "embedding cache set failed");
+                }
+                out[i] = Some(v);
+            }
+        }
+        Ok(out.into_iter().map(|v| v.expect("all slots filled")).collect())
+    }
+
+    fn dimension(&self) -> usize { self.inner.dimension() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,5 +173,35 @@ mod tests {
         assert!(got.is_some());
         let floats = got.unwrap().0;
         assert!((floats[0] - 0.1f32).abs() < 1e-5);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn caching_embedder_skips_inner_on_hit() {
+        use arcanum_core::traits::Embedder;
+
+        struct CountingEmbedder(std::sync::atomic::AtomicUsize);
+        #[async_trait]
+        impl Embedder for CountingEmbedder {
+            async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+                self.0.fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
+                Ok(texts.iter().map(|_| Vector(vec![0.5, 0.5, 0.5])).collect())
+            }
+            fn dimension(&self) -> usize { 3 }
+        }
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        // Use unique model_id per test run to ensure cache isolation (avoid cross-run pollution)
+        let model_id = format!("caching-embedder-test-{}", std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let cache = Arc::new(EmbeddingCache::new(&url, &model_id, 3).await.unwrap());
+        let inner = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0)));
+        let counter = inner.clone();
+        let embedder = CachingEmbedder::new(inner, cache);
+        embedder.embed(vec!["alpha".into(), "beta".into()]).await.unwrap();
+        // Second call: alpha+beta cached, only gamma reaches the inner embedder.
+        let out = embedder.embed(vec!["alpha".into(), "gamma".into(), "beta".into()]).await.unwrap();
+        assert_eq!(out.len(), 3);
+        assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 3,
+            "2 misses on first call + 1 miss on second");
     }
 }
