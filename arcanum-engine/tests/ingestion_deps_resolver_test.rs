@@ -1,5 +1,5 @@
 use arcanum_engine::ingestion_deps_resolver::EngineIngestionDepsResolver;
-use arcanum_engine::services::{collection::CollectionService, experiment::ExperimentService};
+use arcanum_engine::services::{collection::CollectionService, experiment::{ExperimentService, InMemoryExperimentStore}};
 use arcanum_core::{
     config::ArcanumConfig,
     traits::{IngestionDepsOverrideResolver, Preprocessor},
@@ -36,7 +36,7 @@ fn make_resolver(catalog: PreprocessorCatalog) -> (Arc<CollectionService>, Engin
         Arc::new(AuthMiddleware::new("a-32-char-secret-for-testing-ok!")),
         catalog.clone(),
     ));
-    let experiment = Arc::new(ExperimentService::new(collection.clone()));
+    let experiment = Arc::new(ExperimentService::new(collection.clone(), Arc::new(InMemoryExperimentStore::new())));
     let resolver = EngineIngestionDepsResolver {
         collection_service: collection.clone(),
         experiment_service: experiment,

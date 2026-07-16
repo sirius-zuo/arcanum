@@ -1,7 +1,7 @@
 -- migrations/0001_chunk_experiments.sql
 -- Shadow experiment tracking table.
--- NOTE: The current in-memory runtime does not yet persist experiments.
--- This migration is provided for future persistent storage.
+-- NOTE: This table is live as of migrations/0002_chunk_experiments_active_unique.sql,
+-- which adds the partial unique index backing PostgresExperimentStore::try_start.
 
 CREATE TABLE IF NOT EXISTS chunk_experiments (
     id                UUID        NOT NULL PRIMARY KEY,
