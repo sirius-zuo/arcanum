@@ -699,10 +699,10 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore] // needs DATABASE_URL pointing at a reachable Postgres
+    #[ignore] // needs TEST_DATABASE_URL pointing at a reachable Postgres
     async fn database_url_auto_wires_chunk_metadata_and_gc() {
         let mut config = ArcanumConfig::default();
-        config.storage.database_url = std::env::var("DATABASE_URL").ok();
+        config.storage.database_url = Some(std::env::var("TEST_DATABASE_URL").expect("set TEST_DATABASE_URL to run this test"));
 
         let engine = ArcanumEngine::builder()
             .config(config)
@@ -717,6 +717,28 @@ mod tests {
 
         assert!(engine.chunk_metadata_store.is_some(), "chunk_metadata_store should be auto-wired from storage.database_url");
         assert!(engine.gc_worker.is_some(), "gc_worker should be auto-wired once database_url plus vector/tree/graph/chunk-metadata stores are present");
+    }
+
+    #[tokio::test]
+    async fn gc_worker_not_auto_wired_when_stores_partial() {
+        // Verify the warn+None arm: database_url is set, but chunk-metadata store is
+        // supplied via builder (no Postgres connection) and vector/tree/graph stores are
+        // missing, so gc_worker must not be auto-wired.
+        let mut config = ArcanumConfig::default();
+        config.storage.database_url = Some("postgres://unused@localhost/unused".into());
+
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed even with partial stores");
+
+        assert!(
+            engine.gc_worker.is_none(),
+            "gc_worker must not be auto-wired when required stores are missing (vector/tree/graph)"
+        );
     }
 
     #[tokio::test]
