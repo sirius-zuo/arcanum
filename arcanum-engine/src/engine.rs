@@ -108,6 +108,30 @@ impl ArcanumEngine {
     }
 }
 
+/// Composes the primary embedder with any additional embedders into a single
+/// `Arc<dyn Embedder>`. With no additional embedders, returns `primary`
+/// unchanged. Otherwise all embedders must share one `dimension()` — a
+/// mismatch is a Config error — and the composed result round-robins `embed`
+/// calls across `[primary, ...additional]` via `EmbeddingParallelismRouter`.
+/// Never constructs the router with an empty vec (it panics).
+fn compose_embedder(
+    primary: Arc<dyn Embedder>,
+    additional: Vec<Arc<dyn Embedder>>,
+) -> Result<Arc<dyn Embedder>> {
+    if additional.is_empty() {
+        return Ok(primary);
+    }
+    let mut all: Vec<Arc<dyn Embedder>> = vec![primary];
+    all.extend(additional);
+    let dim = all[0].dimension();
+    if let Some(bad) = all.iter().find(|e| e.dimension() != dim) {
+        return Err(ArcanumError::Config(format!(
+            "all embedders must share one dimension; primary is {} but another reports {}",
+            dim, bad.dimension())));
+    }
+    Ok(Arc::new(arcanum_models::EmbeddingParallelismRouter::new(all)))
+}
+
 pub struct ArcanumEngineBuilder {
     config: ArcanumConfig,
     auth_secret: Option<String>,
@@ -129,6 +153,7 @@ pub struct ArcanumEngineBuilder {
     query_transformer: Option<Arc<dyn QueryTransformer>>,
     reranker: Option<Arc<dyn Reranker>>,
     dedup_threshold: Option<f32>,
+    additional_embedders: Vec<Arc<dyn Embedder>>,
 }
 
 
@@ -155,6 +180,7 @@ impl Default for ArcanumEngineBuilder {
             query_transformer: None,
             reranker: None,
             dedup_threshold: None,
+            additional_embedders: Vec::new(),
         }
     }
 }
@@ -188,6 +214,16 @@ impl ArcanumEngineBuilder {
 
     pub fn embedder(mut self, embedder: Arc<dyn Embedder>) -> Self {
         self.embedder = Some(embedder);
+        self
+    }
+
+    /// Registers an additional embedding provider. When one or more are present,
+    /// build() wraps the primary embedder plus all additional embedders in an
+    /// `EmbeddingParallelismRouter` that round-robins `embed` calls across them.
+    /// All embedders (primary + additional) must share one `dimension()` —
+    /// otherwise build() fails with a Config error. Not set by default.
+    pub fn additional_embedder(mut self, e: Arc<dyn Embedder>) -> Self {
+        self.additional_embedders.push(e);
         self
     }
 
@@ -432,6 +468,7 @@ impl ArcanumEngineBuilder {
 
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
+            let embedder: Arc<dyn Embedder> = compose_embedder(embedder.clone(), self.additional_embedders.clone())?;
             let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
                 Some(url) => {
                     let cache = Arc::new(arcanum_models::EmbeddingCache::new(
@@ -1121,6 +1158,48 @@ mod tests {
         let retrieved = engine.experiment.get(&col_id.0, &exp.id).await
             .expect("get should find the experiment in in-memory store");
         assert_eq!(retrieved.id, exp.id, "retrieved experiment should match the started one");
+    }
+
+    struct CountingEmbedder(std::sync::atomic::AtomicUsize, usize);
+    #[async_trait]
+    impl Embedder for CountingEmbedder {
+        async fn embed(&self, texts: Vec<String>) -> AResult<Vec<Vector>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(texts.iter().map(|_| Vector(vec![0.0; self.1])).collect())
+        }
+        fn dimension(&self) -> usize { self.1 }
+    }
+
+    #[tokio::test]
+    async fn additional_embedders_round_robin() {
+        let primary = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 2));
+        let additional = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 2));
+
+        let embedder = compose_embedder(primary.clone(), vec![additional.clone() as Arc<dyn Embedder>])
+            .expect("composing same-dimension embedders should succeed");
+
+        embedder.embed(vec!["a".into()]).await.unwrap();
+        embedder.embed(vec!["b".into()]).await.unwrap();
+
+        assert_eq!(primary.0.load(std::sync::atomic::Ordering::SeqCst), 1, "primary should be hit exactly once");
+        assert_eq!(additional.0.load(std::sync::atomic::Ordering::SeqCst), 1, "additional should be hit exactly once");
+    }
+
+    #[tokio::test]
+    async fn mismatched_embedder_dimensions_fail_build() {
+        let mut config = ArcanumConfig::default();
+        config.storage.database_url = None;
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 3)))
+            .additional_embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 4)))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .err()
+            .expect("build must fail on mismatched embedder dimensions");
+        assert!(err.to_string().contains("dimension"), "error should mention 'dimension': {}", err);
     }
 
     #[tokio::test]
