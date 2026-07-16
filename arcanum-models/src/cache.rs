@@ -128,6 +128,12 @@ impl Embedder for CachingEmbedder {
         if !miss_idx.is_empty() {
             let miss_texts: Vec<String> = miss_idx.iter().map(|&i| texts[i].clone()).collect();
             let vectors = self.inner.embed(miss_texts).await?;
+            if vectors.len() != miss_idx.len() {
+                return Err(ArcanumError::Embedding(format!(
+                    "inner embedder returned {} vectors for {} texts",
+                    vectors.len(), miss_idx.len()
+                )));
+            }
             for (&i, v) in miss_idx.iter().zip(vectors) {
                 // Best-effort set: a cache write failure must not fail the embed.
                 if let Err(e) = self.cache.set(&texts[i], v.clone()).await {
@@ -136,7 +142,9 @@ impl Embedder for CachingEmbedder {
                 out[i] = Some(v);
             }
         }
-        Ok(out.into_iter().map(|v| v.expect("all slots filled")).collect())
+        out.into_iter()
+            .map(|v| v.ok_or_else(|| ArcanumError::Embedding("embedding output slot unfilled".into())))
+            .collect()
     }
 
     fn dimension(&self) -> usize { self.inner.dimension() }
@@ -185,7 +193,8 @@ mod tests {
         impl Embedder for CountingEmbedder {
             async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
                 self.0.fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
-                Ok(texts.iter().map(|_| Vector(vec![0.5, 0.5, 0.5])).collect())
+                // Per-text distinguishable vector so misassigned output slots fail the test.
+                Ok(texts.iter().map(|t| Vector(vec![t.as_bytes()[0] as f32, 0.0, 0.0])).collect())
             }
             fn dimension(&self) -> usize { 3 }
         }
@@ -199,8 +208,14 @@ mod tests {
         let embedder = CachingEmbedder::new(inner, cache);
         embedder.embed(vec!["alpha".into(), "beta".into()]).await.unwrap();
         // Second call: alpha+beta cached, only gamma reaches the inner embedder.
-        let out = embedder.embed(vec!["alpha".into(), "gamma".into(), "beta".into()]).await.unwrap();
+        let texts = vec!["alpha".to_string(), "gamma".to_string(), "beta".to_string()];
+        let out = embedder.embed(texts.clone()).await.unwrap();
         assert_eq!(out.len(), 3);
+        // Output order must match input order, mixing cache hits (alpha, beta) and a miss (gamma).
+        for (i, text) in texts.iter().enumerate() {
+            assert_eq!(out[i].0[0], text.as_bytes()[0] as f32,
+                "out[{}] should be the vector for {:?}", i, text);
+        }
         assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 3,
             "2 misses on first call + 1 miss on second");
     }
