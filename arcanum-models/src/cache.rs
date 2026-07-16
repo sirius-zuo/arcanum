@@ -122,7 +122,12 @@ impl Embedder for CachingEmbedder {
         for (i, text) in texts.iter().enumerate() {
             match self.cache.get(text).await {
                 Ok(Some(v)) => out.push(Some(v)),
-                _ => { out.push(None); miss_idx.push(i); } // cache errors degrade to miss
+                Ok(None) => { out.push(None); miss_idx.push(i); }
+                Err(e) => {
+                    tracing::warn!(err = %e, "embedding cache get failed; treating as miss");
+                    out.push(None);
+                    miss_idx.push(i);
+                }
             }
         }
         if !miss_idx.is_empty() {

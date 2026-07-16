@@ -348,7 +348,7 @@ impl ArcanumEngineBuilder {
             let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
                 Some(url) => {
                     let cache = Arc::new(arcanum_models::EmbeddingCache::new(
-                        url, &self.config.embedding.model_id, self.config.embedding.dimension,
+                        url, &self.config.embedding.model_id, embedder.dimension(),
                     ).await?);
                     invalidators.push(cache.clone());
                     Arc::new(arcanum_models::CachingEmbedder::new(embedder.clone(), cache))
@@ -659,7 +659,7 @@ mod tests {
     #[tokio::test]
     #[ignore] // requires a live Redis server
     async fn embedding_cache_redis_url_wires_caching_embedder() {
-        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6390".to_string());
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
         let mut config = ArcanumConfig::default();
         config.embedding.cache_redis_url = Some(url);
         let engine = ArcanumEngine::builder()
