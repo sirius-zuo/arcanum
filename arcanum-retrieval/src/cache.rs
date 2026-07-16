@@ -50,9 +50,10 @@ impl QueryCache {
     }
 
     pub fn cache_key(query: &Query) -> String {
-        format!("{}:{}:{}", query.text,
+        let filters = serde_json::to_string(&query.filters).unwrap_or_default();
+        format!("{}:{}:{}:{}", query.text,
             query.collection_id.as_ref().map(|c| c.0.as_str()).unwrap_or(""),
-            query.top_k)
+            query.top_k, filters)
     }
 }
 
@@ -60,7 +61,7 @@ impl QueryCache {
 impl CacheInvalidator for QueryCache {
     /// Remove all cached entries whose key contains the collection_id.
     ///
-    /// Cache keys are formatted as `"{query_text}:{collection_id}:{top_k}"`,
+    /// Cache keys are formatted as `"{query_text}:{collection_id}:{top_k}:{filters_json}"`,
     /// so filtering on `collection_id.0` reliably scopes eviction to one collection.
     async fn invalidate_document(&self, _source_uri: &str, collection_id: &CollectionId) {
         let mut store = self.store.write().unwrap();
@@ -87,6 +88,30 @@ mod tests {
         cache.insert("key1".into(), dummy_result());
         assert!(cache.get("key1").is_some());
         assert!(cache.get("key2").is_none());
+    }
+
+    #[test]
+    fn test_cache_key_differs_by_filters() {
+        let base = Query::new("hello").with_collection(CollectionId("col1".into())).with_top_k(5);
+        let mut with_filter = base.clone();
+        with_filter.filters = vec![MetadataFilter {
+            field: "lang".into(),
+            op: FilterOp::Eq,
+            value: serde_json::json!("en"),
+        }];
+
+        assert_ne!(
+            QueryCache::cache_key(&base),
+            QueryCache::cache_key(&with_filter),
+            "queries differing only by filters must not share a cache key"
+        );
+
+        let same_filter = with_filter.clone();
+        assert_eq!(
+            QueryCache::cache_key(&with_filter),
+            QueryCache::cache_key(&same_filter),
+            "queries with identical filters must produce equal cache keys"
+        );
     }
 
     #[tokio::test]

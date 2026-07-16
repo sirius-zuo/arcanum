@@ -51,9 +51,17 @@ impl Default for StorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryCacheConfig {
+    pub max_entries: usize,
+    pub ttl_secs:    u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
-    pub top_k: usize,
+    pub top_k:           usize,
     pub orchestration_mode: OrchestrationMode,
+    #[serde(default)]
+    pub query_cache:     Option<QueryCacheConfig>,
 }
 
 impl Default for RetrievalConfig {
@@ -61,6 +69,7 @@ impl Default for RetrievalConfig {
         Self {
             top_k: 5,
             orchestration_mode: OrchestrationMode::ParallelFusion,
+            query_cache: None,
         }
     }
 }
@@ -147,6 +156,8 @@ pub struct EmbeddingConfig {
     pub dimension: usize,
     pub batch_size: usize,
     pub parallelism: usize,
+    #[serde(default)]
+    pub cache_redis_url: Option<String>,
 }
 
 impl Default for EmbeddingConfig {
@@ -157,6 +168,7 @@ impl Default for EmbeddingConfig {
             dimension: 0,
             batch_size: 32,
             parallelism: 4,
+            cache_redis_url: None,
         }
     }
 }
@@ -664,5 +676,40 @@ base_url = "http://localhost:5001"
             },
         });
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn query_cache_config_parses_and_defaults_off() {
+        // Default: absent.
+        let d = RetrievalConfig::default();
+        assert!(d.query_cache.is_none(), "query cache must default to disabled");
+        // Parses when present (via ArcanumConfig which contains RetrievalConfig).
+        let toml = r#"
+[retrieval]
+top_k = 10
+orchestration_mode = "ParallelFusion"
+query_cache = { max_entries = 500, ttl_secs = 120 }
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.retrieval.query_cache.as_ref().unwrap().max_entries, 500);
+    }
+
+    #[test]
+    fn embedding_cache_redis_url_parses_and_defaults_off() {
+        // Default: absent.
+        let d = EmbeddingConfig::default();
+        assert!(d.cache_redis_url.is_none(), "embedding cache must default to disabled");
+        // Parses when present (via ArcanumConfig which contains EmbeddingConfig).
+        let toml = r#"
+[embedding]
+provider = "ollama"
+model_id = "nomic-embed-text"
+dimension = 768
+batch_size = 32
+parallelism = 4
+cache_redis_url = "redis://localhost:6390"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.embedding.cache_redis_url.as_deref(), Some("redis://localhost:6390"));
     }
 }

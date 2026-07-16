@@ -16,7 +16,7 @@ use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
-                        ColBertRetriever, QueryTransformer};
+                        ColBertRetriever, QueryTransformer, QueryCache};
 use arcanum_vector::Bm25Index;
 use arcanum_evidence::DefaultEvidenceResolver;
 use std::{sync::Arc, time::Duration};
@@ -334,8 +334,27 @@ impl ArcanumEngineBuilder {
                 Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
             });
 
+        let query_cache: Option<Arc<QueryCache>> =
+            self.config.retrieval.query_cache.as_ref().map(|qc| {
+                Arc::new(QueryCache::new(
+                    qc.max_entries, Duration::from_secs(qc.ttl_secs),
+                ))
+            });
+        let mut invalidators: Vec<Arc<dyn arcanum_core::traits::CacheInvalidator>> = vec![];
+        if let Some(c) = &query_cache { invalidators.push(c.clone()); }
+
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
+            let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
+                Some(url) => {
+                    let cache = Arc::new(arcanum_models::EmbeddingCache::new(
+                        url, &self.config.embedding.model_id, embedder.dimension(),
+                    ).await?);
+                    invalidators.push(cache.clone());
+                    Arc::new(arcanum_models::CachingEmbedder::new(embedder.clone(), cache))
+                }
+                None => embedder.clone(),
+            };
             let deps = Arc::new(PipelineDeps {
                 loaders: Arc::new(
                     LoaderRegistry::new()
@@ -361,7 +380,7 @@ impl ArcanumEngineBuilder {
                     self.config.ingestion.retry_base_delay_ms,
                     5_000,
                 ),
-                cache_invalidator: Arc::new(CacheInvalidationBroadcaster::new(vec![])),
+                cache_invalidator: Arc::new(CacheInvalidationBroadcaster::new(invalidators.clone())),
                 embedding_cb:      embedding_cb.clone(),
                 vector_store_cb:   vector_store_cb.clone(),
             });
@@ -442,12 +461,14 @@ impl ArcanumEngineBuilder {
             orchestrator = orchestrator.with_dedup_threshold(threshold);
         }
 
-        let retrieval = Arc::new(RetrievalService::new(
+        let mut retrieval_svc = RetrievalService::new(
             Arc::new(orchestrator),
             auth.clone(),
             audit.clone(),
             vector_store_cb.clone(),
-        ));
+        );
+        if let Some(c) = &query_cache { retrieval_svc = retrieval_svc.with_cache(c.clone()); }
+        let retrieval = Arc::new(retrieval_svc);
         let eval       = Arc::new(EvalService::new());
         let source     = Arc::new(IngestionSourceService::new());
         let admin      = Arc::new(AdminService::new(audit.clone()));
@@ -618,6 +639,40 @@ mod tests {
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
     }
 
+    #[tokio::test]
+    async fn embedding_cache_redis_url_none_leaves_build_unchanged() {
+        // Default-off: cache_redis_url is None, so build must take the old,
+        // Redis-free path — this is just the existing suite passing unchanged.
+        let mut config = ArcanumConfig::default();
+        config.embedding.cache_redis_url = None;
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .enricher(Arc::new(FakeEnricher))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await;
+        assert!(engine.is_ok(), "builder should succeed with cache_redis_url unset: {:?}", engine.err());
+    }
+
+    #[tokio::test]
+    #[ignore] // requires a live Redis server
+    async fn embedding_cache_redis_url_wires_caching_embedder() {
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let mut config = ArcanumConfig::default();
+        config.embedding.cache_redis_url = Some(url);
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .enricher(Arc::new(FakeEnricher))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await;
+        assert!(engine.is_ok(), "builder should succeed when cache_redis_url points at a live Redis: {:?}", engine.err());
+    }
+
     struct OneChunkVectorStore;
     #[async_trait]
     impl VectorStore for OneChunkVectorStore {
@@ -666,6 +721,67 @@ mod tests {
             result.strategy_scores.keys().any(|k| k == "ColBert"),
             "ParallelFusion should include a ColBert-strategy result once vector_store+embedder \
              are configured; strategy_scores keys: {:?}", result.strategy_scores.keys().collect::<Vec<_>>()
+        );
+    }
+
+    struct CountingVectorStore(Arc<std::sync::atomic::AtomicUsize>);
+    #[async_trait]
+    impl VectorStore for CountingVectorStore {
+        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> { Ok(()) }
+        async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![ScoredChunk {
+                chunk: IndexedChunk {
+                    chunk: Chunk {
+                        id: ChunkId::new(),
+                        text: "hello world".into(),
+                        document_id: DocumentId::new(),
+                        collection_id: CollectionId("col1".into()),
+                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        metadata: ChunkMetadata::default(),
+                        provenance: ChunkProvenance::default(),
+                    },
+                    vector: Vector(vec![0.1, 0.2]),
+                    token_vectors: None,
+                    store_id: String::new(),
+                },
+                score: 0.9,
+            }])
+        }
+        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
+        async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(true) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
+    }
+
+    #[tokio::test]
+    async fn query_cache_config_wires_cache_into_retrieval() {
+        let mut config = ArcanumConfig::default();
+        config.retrieval.query_cache = Some(arcanum_core::config::QueryCacheConfig {
+            max_entries: 10, ttl_secs: 60,
+        });
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(CountingVectorStore(calls.clone())))
+            .embedder(Arc::new(FakeEmbedder))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed");
+
+        let token = engine.auth.generate_admin_key("tester");
+        let claims = engine.auth.validate_api_key(&token).unwrap();
+        let query = || Query::new("hello").with_collection(CollectionId("col1".into()));
+
+        engine.retrieval.search(query(), &claims).await.unwrap();
+        let calls_after_first = calls.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(calls_after_first > 0, "first search should reach the vector store");
+
+        engine.retrieval.search(query(), &claims).await.unwrap();
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst), calls_after_first,
+            "second identical search should be served from the query cache, not the vector store"
         );
     }
 
