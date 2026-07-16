@@ -8,6 +8,7 @@ arcanum-core = { path = "../arcanum-core" }
 async-trait  = { workspace = true }
 chrono       = { workspace = true }
 serde_json   = { workspace = true }
+sqlx         = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "postgres", "sqlite", "uuid", "chrono", "json"] }
 tracing      = { workspace = true }
 uuid         = { workspace = true }
 
