@@ -4,7 +4,7 @@ use arcanum_core::{
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
              SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
              Preprocessor, Reranker},
-    types::RetrievalStrategy,
+    types::{RetrievalStrategy, EnrichIntent},
     Result, ArcanumError,
 };
 use arcanum_ingestion::LocalSnapshotStore;
@@ -19,7 +19,7 @@ use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         ColBertRetriever, QueryTransformer, QueryCache};
 use arcanum_vector::Bm25Index;
 use arcanum_evidence::{DefaultEvidenceResolver, PostgresGcWorker};
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
     auth::AuthMiddleware,
@@ -114,6 +114,7 @@ pub struct ArcanumEngineBuilder {
     vector_store: Option<Arc<dyn VectorStore>>,
     embedder: Option<Arc<dyn Embedder>>,
     enricher: Option<Arc<dyn TextEnricher>>,
+    named_enrichers: HashMap<String, Arc<dyn TextEnricher>>,
     graph_store: Option<Arc<dyn GraphStore>>,
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
@@ -139,6 +140,7 @@ impl Default for ArcanumEngineBuilder {
             vector_store: None,
             embedder: None,
             enricher: None,
+            named_enrichers: HashMap::new(),
             graph_store: None,
             tree_store: None,
             secret_store: None,
@@ -191,6 +193,13 @@ impl ArcanumEngineBuilder {
 
     pub fn enricher(mut self, enricher: Arc<dyn TextEnricher>) -> Self {
         self.enricher = Some(enricher);
+        self
+    }
+
+    /// Registers an enricher under `name` so `EnrichmentConfig`'s per-intent
+    /// provider names (e.g. `entity_extraction_provider`) can route to it.
+    pub fn named_enricher(mut self, name: impl Into<String>, provider: Arc<dyn TextEnricher>) -> Self {
+        self.named_enrichers.insert(name.into(), provider);
         self
     }
 
@@ -270,8 +279,49 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    /// Resolves the enricher used for ingestion's context prefix / entity
+    /// extraction steps. With no per-intent provider names set in
+    /// `config.enrichment`, this is exactly `self.enricher` (today's
+    /// behavior, untouched). Once any provider name is set, a default
+    /// enricher is required and an `EnrichmentDispatcher` is built that
+    /// routes each named intent to its registered `named_enricher`, falling
+    /// back to the default for unnamed intents. An unknown provider name is
+    /// always a hard config error — never a silent fallback.
+    fn resolve_enricher(&self) -> Result<Option<Arc<dyn TextEnricher>>> {
+        let ec = &self.config.enrichment;
+        let intent_names = [
+            (EnrichIntent::ContextPrefix,   &ec.context_prefix_provider),
+            (EnrichIntent::ExtractEntities, &ec.entity_extraction_provider),
+            (EnrichIntent::Summarize,       &ec.summarize_provider),
+            (EnrichIntent::Caption,         &ec.caption_provider),
+        ];
+        let any_named = intent_names.iter().any(|(_, n)| n.is_some());
+        if !any_named {
+            return Ok(self.enricher.clone());
+        }
+        let default = self.enricher.clone().ok_or_else(|| ArcanumError::Config(
+            "enrichment providers are named in config but no default enricher is set — \
+             call .enricher(...) with the fallback provider".into()))?;
+        let mut dispatcher = arcanum_models::EnrichmentDispatcher::new(default);
+        for (intent, name) in intent_names {
+            if let Some(name) = name {
+                let provider = self.named_enrichers.get(name).cloned().ok_or_else(|| {
+                    ArcanumError::Config(format!(
+                        "enrichment config names provider '{}' but no enricher was registered \
+                         under that name — call .named_enricher(\"{}\", ...)", name, name))
+                })?;
+                dispatcher = dispatcher.with_override(intent, provider);
+            }
+        }
+        Ok(Some(Arc::new(dispatcher)))
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
+
+        // Resolved unconditionally (not just when pipeline workers are wired) so an
+        // unknown provider name in enrichment config always fails build().
+        let enricher = self.resolve_enricher()?;
 
         let secret = self.auth_secret
             .or_else(|| std::env::var("ARCANUM_AUTH_SECRET").ok())
@@ -402,8 +452,8 @@ impl ArcanumEngineBuilder {
                 preprocessors:     preprocessor_catalog.get("default"),
                 chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
                 shadow:            None,
-                context_enricher:  self.enricher.clone(),
-                entity_extractor:  self.enricher.clone(),
+                context_enricher:  enricher.clone(),
+                entity_extractor:  enricher.clone(),
                 embedder:          embedder.clone(),
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
@@ -649,6 +699,82 @@ mod tests {
         async fn enrich(&self, req: EnrichRequest) -> AResult<EnrichedText> {
             Ok(EnrichedText(req.text))
         }
+    }
+
+    /// Echoes its tag into the returned text so which provider handled a
+    /// request is observable from the result.
+    struct TaggingEnricher(&'static str);
+    #[async_trait]
+    impl TextEnricher for TaggingEnricher {
+        async fn enrich(&self, _req: EnrichRequest) -> AResult<EnrichedText> {
+            Ok(EnrichedText(self.0.into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn enrichment_config_routes_intents_to_named_providers() {
+        let mut config = ArcanumConfig::default();
+        config.enrichment.entity_extraction_provider = Some("gliner".into());
+        let builder = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")))
+            .named_enricher("gliner", Arc::new(TaggingEnricher("gliner")));
+
+        let enricher = builder.resolve_enricher()
+            .expect("resolve_enricher should succeed")
+            .expect("an enricher should be resolved once a provider name is set");
+
+        let entities = enricher.enrich(EnrichRequest {
+            text: "irrelevant".into(),
+            intent: EnrichIntent::ExtractEntities,
+            context: None,
+        }).await.expect("enrich should succeed");
+        assert_eq!(entities.0, "gliner", "ExtractEntities should route to the named 'gliner' provider");
+
+        let summary = enricher.enrich(EnrichRequest {
+            text: "irrelevant".into(),
+            intent: EnrichIntent::Summarize,
+            context: None,
+        }).await.expect("enrich should succeed");
+        assert_eq!(summary.0, "default", "Summarize has no named provider and should fall back to the default");
+    }
+
+    #[tokio::test]
+    async fn unknown_enrichment_provider_name_fails_build() {
+        let mut config = ArcanumConfig::default();
+        config.enrichment.summarize_provider = Some("no-such-provider".into());
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")))
+            .build().await.err().expect("must fail");
+        assert!(err.to_string().contains("no-such-provider"), "error should name the unknown provider: {}", err);
+    }
+
+    #[tokio::test]
+    async fn no_named_enrichment_providers_leaves_resolve_unchanged() {
+        // Default-inert: no provider names set anywhere in config, so
+        // resolve_enricher must return exactly self.enricher untouched.
+        let config = ArcanumConfig::default();
+        let builder = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")));
+
+        let enricher = builder.resolve_enricher()
+            .expect("resolve_enricher should succeed")
+            .expect("default enricher should be passed through");
+
+        let result = enricher.enrich(EnrichRequest {
+            text: "irrelevant".into(),
+            intent: EnrichIntent::Summarize,
+            context: None,
+        }).await.expect("enrich should succeed");
+        assert_eq!(result.0, "default");
     }
 
     #[tokio::test]
