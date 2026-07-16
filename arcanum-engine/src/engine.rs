@@ -479,6 +479,9 @@ impl ArcanumEngineBuilder {
                 }
                 None => embedder.clone(),
             };
+            let embedder: Arc<dyn Embedder> = Arc::new(arcanum_models::MonitoredEmbedder::new(
+                embedder, &self.config.embedding.provider,
+            ));
             let deps = Arc::new(PipelineDeps {
                 loaders: Arc::new(
                     LoaderRegistry::new()

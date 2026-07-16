@@ -16,7 +16,7 @@ pub use dispatcher::EnrichmentDispatcher;
 pub use ollama::OllamaProvider;
 pub use router::EmbeddingParallelismRouter;
 pub use cache::{EmbeddingCache, CachingEmbedder};
-pub use health::{ProviderHealthMonitor, ProviderStats};
+pub use health::{ProviderHealthMonitor, ProviderStats, MonitoredEmbedder};
 pub use openai::OpenAiProvider;
 pub use anthropic::AnthropicProvider;
 pub use huggingface::HuggingFaceTeiProvider;
