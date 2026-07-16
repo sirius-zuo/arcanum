@@ -8,7 +8,7 @@ pub struct ChunkStrategyConfig {
     pub params: serde_json::Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerBackendChunkConfig {
     pub vector: ChunkStrategyConfig,
     pub graph:  Option<ChunkStrategyConfig>,

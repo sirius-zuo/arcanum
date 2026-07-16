@@ -1,40 +1,9 @@
 use arcanum_core::{Result, ArcanumError, types::{PerBackendChunkConfig, ExperimentId}};
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ExperimentStatus {
-    Active,
-    ReadyToPromote,
-    Closed,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ExperimentMetrics {
-    pub champion_recall_at_5:   f32,
-    pub challenger_recall_at_5: f32,
-    pub sample_size:            usize,
-    pub computed_at:            String,  // ISO-8601
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ShadowExperiment {
-    pub id:                ExperimentId,
-    pub challenger_config: PerBackendChunkConfig,
-    pub started_at:        String,  // ISO-8601
-    pub status:            ExperimentStatus,
-    pub metrics:           Option<ExperimentMetrics>,
-}
-
-impl ShadowExperiment {
-    /// Returns the shadow namespace name used in storage backends.
-    pub fn shadow_namespace(&self, collection_id: &str) -> String {
-        format!("{}__shadow_{}", collection_id, self.id.0)
-    }
-}
+pub use arcanum_core::traits::{ExperimentStatus, ExperimentMetrics, ShadowExperiment};
 
 pub struct ExperimentService {
     experiments: Arc<RwLock<HashMap<String, ShadowExperiment>>>,  // key: "{col_id}:{exp_id}"
