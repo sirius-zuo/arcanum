@@ -131,6 +131,62 @@ mod tests {
         (svc, auth)
     }
 
+    struct CountingRetriever(Arc<std::sync::atomic::AtomicUsize>);
+    #[async_trait::async_trait]
+    impl Retriever for CountingRetriever {
+        async fn retrieve(&self, q: &Query) -> arcanum_core::Result<Vec<RetrievedChunk>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let col = q.collection_id.clone().unwrap_or(CollectionId(String::new()));
+            Ok(vec![RetrievedChunk {
+                indexed_chunk: IndexedChunk {
+                    chunk: Chunk {
+                        id: ChunkId::new(),
+                        text: "stub result".into(),
+                        document_id: DocumentId::new(),
+                        collection_id: col,
+                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        metadata: ChunkMetadata::default(),
+                        provenance: Default::default(),
+                    },
+                    vector: Vector(vec![]),
+                    token_vectors: None,
+                    store_id: "s1".into(),
+                },
+                score: 0.9,
+                strategy: RetrievalStrategy::Vector,
+            }])
+        }
+        fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::Vector }
+    }
+
+    fn make_counting_service() -> (RetrievalService, Arc<AuthMiddleware>, Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let orchestrator = Arc::new(
+            RetrievalOrchestrator::new(OrchestratorMode::ParallelFusion)
+                .add_retriever(Arc::new(CountingRetriever(calls.clone())))
+        );
+        let auth = Arc::new(AuthMiddleware::new("a-32-char-secret-for-testing-ok!"));
+        let audit = Arc::new(AuditLogger::new());
+        let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
+        let svc = RetrievalService::new(orchestrator, auth.clone(), audit, cb);
+        (svc, auth, calls)
+    }
+
+    #[tokio::test]
+    async fn identical_query_is_served_from_cache_on_second_call() {
+        let (svc, auth, calls) = make_counting_service();
+        let svc = svc.with_cache(Arc::new(QueryCache::new(10, Duration::from_secs(60))));
+        let token = auth.generate_admin_key("test-user");
+        let claims = auth.validate_api_key(&token).unwrap();
+        let q = || Query::new("hello").with_collection(CollectionId("col1".into())).with_top_k(5);
+
+        svc.search(q(), &claims).await.unwrap();
+        svc.search(q(), &claims).await.unwrap();
+
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1,
+            "second identical search must be a cache hit");
+    }
+
     #[tokio::test]
     async fn test_search_with_wired_retriever_returns_results() {
         let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
