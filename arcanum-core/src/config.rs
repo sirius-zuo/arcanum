@@ -51,9 +51,17 @@ impl Default for StorageConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueryCacheConfig {
+    pub max_entries: usize,
+    pub ttl_secs:    u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
-    pub top_k: usize,
+    pub top_k:           usize,
     pub orchestration_mode: OrchestrationMode,
+    #[serde(default)]
+    pub query_cache:     Option<QueryCacheConfig>,
 }
 
 impl Default for RetrievalConfig {
@@ -61,6 +69,7 @@ impl Default for RetrievalConfig {
         Self {
             top_k: 5,
             orchestration_mode: OrchestrationMode::ParallelFusion,
+            query_cache: None,
         }
     }
 }
@@ -664,5 +673,21 @@ base_url = "http://localhost:5001"
             },
         });
         assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn query_cache_config_parses_and_defaults_off() {
+        // Default: absent.
+        let d = RetrievalConfig::default();
+        assert!(d.query_cache.is_none(), "query cache must default to disabled");
+        // Parses when present (via ArcanumConfig which contains RetrievalConfig).
+        let toml = r#"
+[retrieval]
+top_k = 10
+orchestration_mode = "ParallelFusion"
+query_cache = { max_entries = 500, ttl_secs = 120 }
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.retrieval.query_cache.as_ref().unwrap().max_entries, 500);
     }
 }
