@@ -308,6 +308,11 @@ impl ArcanumEngineBuilder {
         }
         let preprocessor_catalog = Arc::new(preprocessor_catalog);
 
+        let version_store: Arc<dyn DocumentVersionStore> = self.version_store.clone().ok_or_else(|| ArcanumError::Config(
+            "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
+             for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
+        ))?;
+
         // Collection and experiment services — needed early for per-job resolver.
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone(), preprocessor_catalog.clone()));
 
@@ -315,7 +320,11 @@ impl ArcanumEngineBuilder {
         // supply one directly. Builder-supplied stores always win.
         let experiment_store: Arc<dyn ExperimentStore> = match (&self.experiment_store, &self.config.storage.database_url) {
             (Some(s), _) => s.clone(),
-            (None, Some(url)) => Arc::new(PostgresExperimentStore::new(url).await?),
+            (None, Some(url)) => Arc::new(
+                PostgresExperimentStore::new(url).await
+                    .map_err(|e| ArcanumError::Config(format!(
+                        "storage.database_url is set but PostgresExperimentStore failed: {}", e)))?,
+            ),
             (None, None) => Arc::new(InMemoryExperimentStore::new()),
         };
 
@@ -343,10 +352,6 @@ impl ArcanumEngineBuilder {
             preprocessor_catalog: preprocessor_catalog.clone(),
         }) as Arc<dyn IngestionDepsOverrideResolver>;
 
-        let version_store: Arc<dyn DocumentVersionStore> = self.version_store.clone().ok_or_else(|| ArcanumError::Config(
-            "version_store is required — call .version_store(Arc::new(SqliteDocumentVersionStore::open(path).await?)) \
-             for local/dev or .version_store(Arc::new(PostgresDocumentVersionStore::new(url).await?)) for production".into()
-        ))?;
         let snapshot_store: Arc<dyn SnapshotStore> = self.snapshot_store
             .clone()
             .unwrap_or_else(|| {

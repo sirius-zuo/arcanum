@@ -45,7 +45,9 @@ pub trait ExperimentStore: Send + Sync {
     /// Err(ArcanumError::Storage("...already has an active experiment...")) otherwise.
     async fn try_start(&self, collection_id: &str, exp: &ShadowExperiment) -> Result<()>;
     async fn get(&self, collection_id: &str, exp_id: &ExperimentId) -> Result<Option<ShadowExperiment>>;
-    /// Full-row update by (collection_id, exp.id). Err(NotFound) if absent.
+    /// Full-row update by (collection_id, exp.id). Err(NotFound) if absent or if the
+    /// stored row is already Closed (guards stale writes from resurrecting a closed
+    /// experiment).
     async fn update(&self, collection_id: &str, exp: &ShadowExperiment) -> Result<()>;
     /// All Active experiments across collections, as (collection_id, experiment).
     async fn active_experiments(&self) -> Result<Vec<(String, ShadowExperiment)>>;
@@ -70,6 +72,8 @@ impl Default for InMemoryExperimentStore {
 impl ExperimentStore for InMemoryExperimentStore {
     async fn try_start(&self, collection_id: &str, exp: &ShadowExperiment) -> Result<()> {
         // Single write lock = atomic check-then-insert (preserves TOCTOU fix, finding #7).
+        // Assumes collection ids contain no ':' (key format "{col}:{uuid}"); the Postgres
+        // impl matches collection_id by column, exact-match, and is unaffected.
         let mut map = self.experiments.write().await;
         let has_active = map.iter().any(|(k, e)| {
             k.starts_with(&format!("{}:", collection_id)) && e.status == ExperimentStatus::Active
@@ -90,8 +94,11 @@ impl ExperimentStore for InMemoryExperimentStore {
         let mut map = self.experiments.write().await;
         let key = Self::key(collection_id, &exp.id);
         match map.get_mut(&key) {
+            Some(slot) if slot.status == ExperimentStatus::Closed => Err(ArcanumError::NotFound(format!(
+                "experiment '{}' (missing or already closed)", exp.id.0))),
             Some(slot) => { *slot = exp.clone(); Ok(()) }
-            None => Err(ArcanumError::NotFound(format!("experiment '{}'", exp.id.0))),
+            None => Err(ArcanumError::NotFound(format!(
+                "experiment '{}' (missing or already closed)", exp.id.0))),
         }
     }
 
@@ -133,6 +140,36 @@ mod tests {
         exp.status = ExperimentStatus::Closed;
         store.update("col1", &exp).await.unwrap();
         assert!(store.try_start("col1", &sample_exp()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn update_rejects_a_stale_write_over_an_already_closed_experiment() {
+        // Race guard: a get-then-update on a closed experiment must not resurrect it
+        // (e.g. a stale update_metrics landing after a concurrent promote/abandon
+        // already closed it). Mirrors PostgresExperimentStore's
+        // update_rejects_a_stale_write_over_an_already_closed_experiment.
+        let store = InMemoryExperimentStore::new();
+        let mut exp = sample_exp();
+        store.try_start("col1", &exp).await.unwrap();
+
+        let mut closed = exp.clone();
+        closed.status = ExperimentStatus::Closed;
+        store.update("col1", &closed).await.unwrap();
+
+        // Stale update racing in after the close — must be rejected, not resurrect the row.
+        exp.status = ExperimentStatus::Active;
+        exp.metrics = Some(ExperimentMetrics {
+            champion_recall_at_5: 0.5,
+            challenger_recall_at_5: 0.6,
+            sample_size: 100,
+            computed_at: chrono::Utc::now().to_rfc3339(),
+        });
+        let err = store.update("col1", &exp).await.unwrap_err();
+        assert!(matches!(err, ArcanumError::NotFound(_)));
+
+        // The row must still read back as closed.
+        let fetched = store.get("col1", &exp.id).await.unwrap().unwrap();
+        assert_eq!(fetched.status, ExperimentStatus::Closed);
     }
 
     #[tokio::test]
