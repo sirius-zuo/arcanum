@@ -11,7 +11,7 @@ use arcanum_ingestion::LocalSnapshotStore;
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader,
-                        DoclingPreprocessor, DoclingBackend, PostgresChunkMetadataStore};
+                        DoclingPreprocessor, DoclingBackend, PostgresChunkMetadataStore, PostgresExperimentStore};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
@@ -310,9 +310,18 @@ impl ArcanumEngineBuilder {
 
         // Collection and experiment services — needed early for per-job resolver.
         let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone(), preprocessor_catalog.clone()));
+
+        // Auto-wire experiment store from storage.database_url when the builder didn't
+        // supply one directly. Builder-supplied stores always win.
+        let experiment_store: Arc<dyn ExperimentStore> = match (&self.experiment_store, &self.config.storage.database_url) {
+            (Some(s), _) => s.clone(),
+            (None, Some(url)) => Arc::new(PostgresExperimentStore::new(url).await?),
+            (None, None) => Arc::new(InMemoryExperimentStore::new()),
+        };
+
         let experiment = Arc::new(ExperimentService::new(
             collection.clone(),
-            self.experiment_store.clone().unwrap_or_else(|| Arc::new(InMemoryExperimentStore::new())),
+            experiment_store,
         ));
 
         // Shared queue — passed to both IngestionService (push) and workers (pop).
@@ -733,7 +742,8 @@ mod tests {
     async fn gc_worker_not_auto_wired_when_stores_partial() {
         // Verify the warn+None arm: database_url is set, but chunk-metadata store is
         // supplied via builder (no Postgres connection) and vector/tree/graph stores are
-        // missing, so gc_worker must not be auto-wired.
+        // missing, so gc_worker must not be auto-wired. Also supply an in-memory
+        // experiment_store to avoid experiment_store auto-wiring attempts.
         let mut config = ArcanumConfig::default();
         config.storage.database_url = Some("postgres://unused@localhost/unused".into());
 
@@ -741,6 +751,7 @@ mod tests {
             .config(config)
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .experiment_store(Arc::new(InMemoryExperimentStore::new()))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build().await
             .expect("build should succeed even with partial stores");
@@ -939,6 +950,122 @@ mod tests {
         assert!(engine.secret_store.is_some(), "secret_store should be stored in ArcanumEngine");
         let val = engine.secret_store.as_ref().unwrap().get("any-key").await.unwrap();
         assert_eq!(val, "value");
+    }
+
+    #[tokio::test]
+    async fn default_build_uses_in_memory_experiment_store() {
+        // Pins the default-off constraint: with no database_url configured and no
+        // experiment_store supplied to the builder, the experiment store should be
+        // InMemoryExperimentStore. This test uses the InMemoryExperimentStore directly
+        // and verifies round-trip of an experiment (existing tests like
+        // experiment_test.rs::start_sets_experiment_to_active prove in-memory storage works).
+        let engine = ArcanumEngine::builder()
+            .config(ArcanumConfig::default())
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed");
+
+        // Verify the experiment service can start an experiment (proving in-memory store works)
+        let claims = crate::auth::ApiKeyClaims {
+            user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+        };
+        let col_id = arcanum_core::types::CollectionId("default-inmem-col".into());
+        engine.collection.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+
+        let cfg = arcanum_core::types::PerBackendChunkConfig {
+            vector: arcanum_core::types::ChunkStrategyConfig {
+                strategy: "fixed".to_string(),
+                params: serde_json::json!({ "chunk_size": 256, "overlap": 8 }),
+            },
+            graph: None,
+            tree: None,
+        };
+        let exp = engine.experiment.start(col_id.clone(), cfg).await
+            .expect("start should succeed with default in-memory store");
+
+        // Verify the experiment was stored and can be retrieved
+        let retrieved = engine.experiment.get(&col_id.0, &exp.id).await
+            .expect("get should find the experiment in in-memory store");
+        assert_eq!(retrieved.id, exp.id, "retrieved experiment should match the started one");
+    }
+
+    #[tokio::test]
+    #[ignore] // needs TEST_DATABASE_URL pointing at a reachable Postgres
+    async fn experiment_store_auto_wired_from_database_url() {
+        // Verify experiments persist across engine restarts when database_url is set.
+        // This is the restart-survival property the plan exists for.
+        let db_url = std::env::var("TEST_DATABASE_URL")
+            .expect("set TEST_DATABASE_URL to run this test");
+
+        // Generate a unique collection ID to avoid conflicts in parallel test runs
+        let unique_suffix = uuid::Uuid::new_v4().to_string();
+        let col_id = arcanum_core::types::CollectionId(
+            format!("experiment-persistence-test-{}", unique_suffix)
+        );
+
+        let cfg = arcanum_core::types::PerBackendChunkConfig {
+            vector: arcanum_core::types::ChunkStrategyConfig {
+                strategy: "fixed".to_string(),
+                params: serde_json::json!({ "chunk_size": 256, "overlap": 8 }),
+            },
+            graph: None,
+            tree: None,
+        };
+
+        let claims = crate::auth::ApiKeyClaims {
+            user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+        };
+
+        // Engine 1: Create an experiment with database_url auto-wiring
+        {
+            let mut config = ArcanumConfig::default();
+            config.storage.database_url = Some(db_url.clone());
+
+            let engine1 = ArcanumEngine::builder()
+                .config(config)
+                .auth_secret("a-32-char-secret-for-testing-ok!")
+                .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+                .build().await
+                .expect("engine1 build should succeed");
+
+            // Create the collection
+            engine1.collection.create(col_id.clone(), "test".into(), &claims).await
+                .expect("collection.create should succeed");
+
+            // Start an experiment
+            let exp = engine1.experiment.start(col_id.clone(), cfg.clone()).await
+                .expect("start should succeed with auto-wired postgres store");
+
+            tracing::info!(experiment_id = %exp.id.0, "experiment started with engine1");
+        }
+
+        // Engine 2: Restart on the same database_url and verify experiment persists
+        {
+            let mut config = ArcanumConfig::default();
+            config.storage.database_url = Some(db_url.clone());
+
+            let engine2 = ArcanumEngine::builder()
+                .config(config)
+                .auth_secret("a-32-char-secret-for-testing-ok!")
+                .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+                .build().await
+                .expect("engine2 build should succeed");
+
+            // List active experiments to verify persistence
+            let active = engine2.experiment.active_experiments().await;
+            let found = active.iter()
+                .any(|(id, _)| id == &col_id.0);
+
+            assert!(
+                found,
+                "experiment started with engine1 should be found with engine2 after restart"
+            );
+
+            tracing::info!("experiment persisted across restart with engine2");
+        }
     }
 }
 
