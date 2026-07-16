@@ -345,6 +345,16 @@ impl ArcanumEngineBuilder {
 
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
+            let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
+                Some(url) => {
+                    let cache = Arc::new(arcanum_models::EmbeddingCache::new(
+                        url, &self.config.embedding.model_id, self.config.embedding.dimension,
+                    ).await?);
+                    invalidators.push(cache.clone());
+                    Arc::new(arcanum_models::CachingEmbedder::new(embedder.clone(), cache))
+                }
+                None => embedder.clone(),
+            };
             let deps = Arc::new(PipelineDeps {
                 loaders: Arc::new(
                     LoaderRegistry::new()
@@ -627,6 +637,40 @@ mod tests {
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build().await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
+    }
+
+    #[tokio::test]
+    async fn embedding_cache_redis_url_none_leaves_build_unchanged() {
+        // Default-off: cache_redis_url is None, so build must take the old,
+        // Redis-free path — this is just the existing suite passing unchanged.
+        let mut config = ArcanumConfig::default();
+        config.embedding.cache_redis_url = None;
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .enricher(Arc::new(FakeEnricher))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await;
+        assert!(engine.is_ok(), "builder should succeed with cache_redis_url unset: {:?}", engine.err());
+    }
+
+    #[tokio::test]
+    #[ignore] // requires a live Redis server
+    async fn embedding_cache_redis_url_wires_caching_embedder() {
+        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6390".to_string());
+        let mut config = ArcanumConfig::default();
+        config.embedding.cache_redis_url = Some(url);
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .enricher(Arc::new(FakeEnricher))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await;
+        assert!(engine.is_ok(), "builder should succeed when cache_redis_url points at a live Redis: {:?}", engine.err());
     }
 
     struct OneChunkVectorStore;

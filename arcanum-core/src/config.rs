@@ -156,6 +156,8 @@ pub struct EmbeddingConfig {
     pub dimension: usize,
     pub batch_size: usize,
     pub parallelism: usize,
+    #[serde(default)]
+    pub cache_redis_url: Option<String>,
 }
 
 impl Default for EmbeddingConfig {
@@ -166,6 +168,7 @@ impl Default for EmbeddingConfig {
             dimension: 0,
             batch_size: 32,
             parallelism: 4,
+            cache_redis_url: None,
         }
     }
 }
@@ -689,5 +692,24 @@ query_cache = { max_entries = 500, ttl_secs = 120 }
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.retrieval.query_cache.as_ref().unwrap().max_entries, 500);
+    }
+
+    #[test]
+    fn embedding_cache_redis_url_parses_and_defaults_off() {
+        // Default: absent.
+        let d = EmbeddingConfig::default();
+        assert!(d.cache_redis_url.is_none(), "embedding cache must default to disabled");
+        // Parses when present (via ArcanumConfig which contains EmbeddingConfig).
+        let toml = r#"
+[embedding]
+provider = "ollama"
+model_id = "nomic-embed-text"
+dimension = 768
+batch_size = 32
+parallelism = 4
+cache_redis_url = "redis://localhost:6390"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert_eq!(cfg.embedding.cache_redis_url.as_deref(), Some("redis://localhost:6390"));
     }
 }
