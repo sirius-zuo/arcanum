@@ -11,14 +11,14 @@ use arcanum_ingestion::LocalSnapshotStore;
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader,
-                        DoclingPreprocessor, DoclingBackend};
+                        DoclingPreprocessor, DoclingBackend, PostgresChunkMetadataStore};
 use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
                         ColBertRetriever, QueryTransformer, QueryCache};
 use arcanum_vector::Bm25Index;
-use arcanum_evidence::DefaultEvidenceResolver;
+use arcanum_evidence::{DefaultEvidenceResolver, PostgresGcWorker};
 use std::{sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
@@ -334,6 +334,19 @@ impl ArcanumEngineBuilder {
                 Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
             });
 
+        // Auto-wire a Postgres chunk-metadata store from storage.database_url when the
+        // builder didn't supply one directly. Builder-supplied stores always win.
+        let chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>> =
+            match (&self.chunk_metadata_store, &self.config.storage.database_url) {
+                (Some(s), _) => Some(s.clone()),
+                (None, Some(url)) => Some(Arc::new(
+                    PostgresChunkMetadataStore::new(url).await
+                        .map_err(|e| ArcanumError::Config(format!(
+                            "storage.database_url is set but PostgresChunkMetadataStore failed: {}", e)))?,
+                ) as Arc<dyn ChunkMetadataStore>),
+                (None, None) => None,
+            };
+
         let query_cache: Option<Arc<QueryCache>> =
             self.config.retrieval.query_cache.as_ref().map(|qc| {
                 Arc::new(QueryCache::new(
@@ -373,7 +386,7 @@ impl ArcanumEngineBuilder {
                 tree_store:        self.tree_store.clone(),
                 version_store:     version_store.clone(),
                 snapshot_store:    snapshot_store.clone(),
-                chunk_metadata:    self.chunk_metadata_store.clone(),
+                chunk_metadata:    chunk_metadata_store.clone(),
                 bm25_index:        self.bm25_index.clone(),
                 retry_policy:      RetryPolicy::new(
                     self.config.ingestion.retry_max_attempts,
@@ -400,6 +413,31 @@ impl ArcanumEngineBuilder {
                  ingestion workers not started; tasks will queue but not execute"
             );
         }
+
+        // Auto-wire a Postgres GC worker from storage.database_url when the builder
+        // didn't supply one directly, and vector/tree/graph/chunk-metadata stores are
+        // all present. Builder-supplied workers always win.
+        let gc_worker: Option<Arc<dyn GcWorker>> = match (&self.gc_worker, &self.config.storage.database_url) {
+            (Some(w), _) => Some(w.clone()),
+            (None, Some(url)) => {
+                match (&self.vector_store, &self.tree_store, &self.graph_store, &chunk_metadata_store) {
+                    (Some(vs), Some(ts), Some(gs), Some(cms)) => Some(Arc::new(
+                        PostgresGcWorker::new(
+                            url, version_store.clone(), snapshot_store.clone(),
+                            vs.clone(), ts.clone(), gs.clone(), cms.clone(),
+                        ).await?,
+                    ) as Arc<dyn GcWorker>),
+                    _ => {
+                        tracing::warn!(
+                            "storage.database_url set but gc worker not auto-wired: \
+                             requires vector, tree, graph, and chunk-metadata stores"
+                        );
+                        None
+                    }
+                }
+            }
+            (None, None) => None,
+        };
 
         // Build RetrievalOrchestrator with whichever retrievers are available.
         let orch_mode = match self.config.retrieval.orchestration_mode {
@@ -540,16 +578,16 @@ impl ArcanumEngineBuilder {
             tree_store: self.tree_store.clone(),
             version_store: version_store.clone(),
             snapshot_store,
-            chunk_metadata_store: self.chunk_metadata_store.clone(),
+            chunk_metadata_store: chunk_metadata_store.clone(),
             evidence: self.evidence.clone().or_else(|| {
-                match (&self.chunk_metadata_store, &self.tree_store, &self.graph_store) {
+                match (&chunk_metadata_store, &self.tree_store, &self.graph_store) {
                     (Some(cms), Some(ts), Some(gs)) => Some(Arc::new(DefaultEvidenceResolver::new(
                         cms.clone(), version_store.clone(), ts.clone(), gs.clone(),
                     )) as Arc<dyn EvidenceResolver>),
                     _ => None,
                 }
             }),
-            gc_worker: self.gc_worker.clone(),
+            gc_worker,
         }))
     }
 }
@@ -624,6 +662,45 @@ mod tests {
             engine.evidence.is_none(),
             "evidence resolver must not be auto-wired when graph_store is missing"
         );
+    }
+
+    #[tokio::test]
+    async fn no_database_url_means_no_auto_wiring() {
+        // Pins the default-off constraint: with no database_url configured and no
+        // stores supplied to the builder, neither chunk_metadata_store nor gc_worker
+        // should be auto-wired.
+        let engine = ArcanumEngine::builder()
+            .config(ArcanumConfig::default())
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed");
+
+        assert!(engine.chunk_metadata_store.is_none(), "chunk_metadata_store must stay unset when database_url is unset");
+        assert!(engine.gc_worker.is_none(), "gc_worker must stay unset when database_url is unset");
+    }
+
+    #[tokio::test]
+    #[ignore] // needs DATABASE_URL pointing at a reachable Postgres
+    async fn database_url_auto_wires_chunk_metadata_and_gc() {
+        let mut config = ArcanumConfig::default();
+        config.storage.database_url = std::env::var("DATABASE_URL").ok();
+
+        let engine = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(FakeEmbedder))
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .expect("build should succeed");
+
+        assert!(engine.chunk_metadata_store.is_some(), "chunk_metadata_store should be auto-wired from storage.database_url");
+        assert!(engine.gc_worker.is_some(), "gc_worker should be auto-wired once database_url plus vector/tree/graph/chunk-metadata stores are present");
     }
 
     #[tokio::test]

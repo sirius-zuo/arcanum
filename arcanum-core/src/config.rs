@@ -37,6 +37,8 @@ pub struct StorageConfig {
     pub vector_backend: String,
     pub graph_enabled: bool,
     pub tree_enabled: bool,
+    #[serde(default)]
+    pub database_url: Option<String>,
 }
 
 impl Default for StorageConfig {
@@ -46,6 +48,7 @@ impl Default for StorageConfig {
             vector_backend: "lancedb".into(),
             graph_enabled: false,
             tree_enabled: false,
+            database_url: None,
         }
     }
 }
@@ -711,5 +714,25 @@ cache_redis_url = "redis://localhost:6390"
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         assert_eq!(cfg.embedding.cache_redis_url.as_deref(), Some("redis://localhost:6390"));
+    }
+
+    #[test]
+    fn storage_database_url_defaults_none() {
+        // Default: absent.
+        assert!(StorageConfig::default().database_url.is_none());
+        // Parses when present (via ArcanumConfig which contains StorageConfig).
+        let toml = r#"
+[storage]
+metadata_backend = "Postgres"
+vector_backend = "lancedb"
+graph_enabled = false
+tree_enabled = false
+database_url = "postgres://arcanum:arcanum@localhost:5439/arcanum"
+"#;
+        let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.storage.database_url.as_deref(),
+            Some("postgres://arcanum:arcanum@localhost:5439/arcanum")
+        );
     }
 }
