@@ -91,7 +91,7 @@ async fn main() -> Result<()> {
         .evidence(evidence_resolver)
         // GC worker requires Postgres (retention-policy bookkeeping lives in
         // document_versions). Not wired in this in-memory dev example — production:
-        //   .gc_worker(Arc::new(PostgresGcWorker::new(
+        //   .gc_worker(Arc::new(arcanum_evidence::PostgresGcWorker::new(
         //       &db_url, version_store, snapshot_store, vector_store,
         //       tree_store, graph_store, chunk_metadata_store,
         //   ).await?))

@@ -22,9 +22,5 @@ pub use versioning::postgres::PostgresDocumentVersionStore;
 pub use versioning::sqlite::SqliteDocumentVersionStore;
 pub use versioning::chunk_metadata::PostgresChunkMetadataStore;
 
-pub mod gc;
-pub use gc::PostgresGcWorker;
-
-
 pub mod registry;
 pub use registry::{ChunkRegistry, default_registry};
