@@ -15,6 +15,8 @@ pub const CTX_FORCE:   &str = "__force";
 pub const CTX_SKIP:    &str = "__skip";
 /// Context flag set by the dedup stage when content changed or recovery is needed.
 pub const CTX_REPLACE: &str = "__replace";
+/// Set by the executor: JSON array of non-core stage failures/skips for this run.
+pub const CTX_STAGE_FAILURES: &str = "__stage_failures";
 
 
 pub struct PipelineStage {
