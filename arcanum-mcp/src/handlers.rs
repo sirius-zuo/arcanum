@@ -1,20 +1,83 @@
 use axum::http::HeaderMap;
 use serde_json::{json, Value};
-use arcanum_core::{Result, types::{Query, CollectionId}};
+use arcanum_core::{Result, types::{Query, CollectionId, ChunkId}};
 use arcanum_engine::{ArcanumEngine, IngestRequest, auth::ApiKeyClaims};
+use arcanum_eval::{EvalRunner, GoldenSample};
+use crate::capability_registry::{CapabilityRegistry, ToolDefinition};
+use crate::session::SessionManager;
 use std::sync::Arc;
 use tracing::instrument;
 use metrics;
 
 pub struct McpJsonRpcHandler {
     engine: Option<Arc<ArcanumEngine>>,
+    registry: Arc<CapabilityRegistry>,
+    sessions: Arc<SessionManager>,
 }
 
 impl McpJsonRpcHandler {
-    pub fn new_test() -> Self { Self { engine: None } }
+    pub fn new_test() -> Self {
+        Self {
+            engine: None,
+            registry: Self::default_registry(),
+            sessions: Arc::new(SessionManager::new()),
+        }
+    }
 
     pub fn new(engine: Arc<ArcanumEngine>) -> Self {
-        Self { engine: Some(engine) }
+        Self {
+            engine: Some(engine),
+            registry: Self::default_registry(),
+            sessions: Arc::new(SessionManager::new()),
+        }
+    }
+
+    pub fn sessions(&self) -> &Arc<SessionManager> {
+        &self.sessions
+    }
+
+    pub fn registry(&self) -> &Arc<CapabilityRegistry> {
+        &self.registry
+    }
+
+    fn default_registry() -> Arc<CapabilityRegistry> {
+        let registry = CapabilityRegistry::new();
+        registry.register(ToolDefinition::new(
+            "ingest", "Ingest a document into a collection",
+            json!({ "type": "object",
+                "properties": {
+                    "source_uri": { "type": "string" },
+                    "collection_id": { "type": "string" },
+                    "pipeline": { "type": "string" }
+                }, "required": ["source_uri", "collection_id"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "search", "Search a collection",
+            json!({ "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "collection_id": { "type": "string" },
+                    "top_k": { "type": "integer" }
+                }, "required": ["query", "collection_id"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "list_collections", "List collections visible to the caller",
+            json!({ "type": "object", "properties": {} }),
+        ));
+        registry.register(ToolDefinition::new(
+            "eval_run", "Run retrieval quality evaluation against a collection using caller-supplied golden samples",
+            json!({ "type": "object",
+                "properties": {
+                    "collection_id": { "type": "string" },
+                    "samples": { "type": "array", "items": { "type": "object",
+                        "properties": {
+                            "query": { "type": "string" },
+                            "relevant_chunk_ids": { "type": "array", "items": { "type": "string" } }
+                        }, "required": ["query", "relevant_chunk_ids"] } },
+                    "k": { "type": "integer", "default": 5 }
+                }, "required": ["collection_id", "samples"] }),
+        ));
+        Arc::new(registry)
     }
 
     fn extract_claims(&self, headers: &HeaderMap) -> std::result::Result<ApiKeyClaims, Value> {
@@ -43,46 +106,26 @@ impl McpJsonRpcHandler {
         let method = extract_method(&request);
 
         let result = match method {
-            "initialize" => Ok(json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {}, "resources": {} },
-                    "serverInfo": { "name": "arcanum", "version": "2.0.0" }
-                }
-            })),
+            "initialize" => {
+                let client_info = request["params"]["clientInfo"]["name"].as_str().unwrap_or("unknown");
+                let session = self.sessions.create(client_info).await;
+                Ok(json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": { "tools": {}, "resources": {} },
+                        "serverInfo": { "name": "arcanum", "version": "2.0.0" },
+                        "_meta": { "sessionId": session.id }
+                    }
+                }))
+            }
 
-            "tools/list" => Ok(json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {
-                    "tools": [
-                        { "name": "ingest",
-                          "description": "Ingest a document into a collection",
-                          "inputSchema": { "type": "object",
-                            "properties": {
-                              "source_uri": { "type": "string" },
-                              "collection_id": { "type": "string" },
-                              "pipeline": { "type": "string" }
-                            }, "required": ["source_uri", "collection_id"] }},
-                        { "name": "search",
-                          "description": "Search a collection",
-                          "inputSchema": { "type": "object",
-                            "properties": {
-                              "query": { "type": "string" },
-                              "collection_id": { "type": "string" },
-                              "top_k": { "type": "integer" }
-                            }, "required": ["query", "collection_id"] }},
-                        { "name": "list_collections",
-                          "description": "List collections visible to the caller",
-                          "inputSchema": { "type": "object", "properties": {} }},
-                        { "name": "eval_run",
-                          "description": "Run retrieval quality evaluation",
-                          "inputSchema": { "type": "object",
-                            "properties": { "collection_id": { "type": "string" } },
-                            "required": ["collection_id"] }}
-                    ]
-                }
-            })),
+            "tools/list" => {
+                let tools: Vec<Value> = self.registry.list().iter().map(|t| json!({
+                    "name": t.name, "description": t.description, "inputSchema": t.input_schema,
+                })).collect();
+                Ok(json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tools } }))
+            }
 
             "tools/call" => {
                 let claims = match self.extract_claims(&headers) {
@@ -169,10 +212,74 @@ impl McpJsonRpcHandler {
                     }))
                 }
             }
-            "list_collections" => Ok(json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": { "content": [{ "type": "text", "text": "[]" }] }
-            })),
+            "list_collections" => {
+                if let Some(engine) = &self.engine {
+                    let cols = engine.version_store.list_collections().await?;
+                    let visible: Vec<String> = cols.into_iter()
+                        .filter(|c| engine.auth.can_access_collection(claims, c))
+                        .collect();
+                    let text = serde_json::to_string(&visible).unwrap_or_else(|_| "[]".into());
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }] }
+                    }))
+                } else {
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": "[]" }] }
+                    }))
+                }
+            }
+            "eval_run" => {
+                let collection_id = args["collection_id"].as_str().unwrap_or("").to_string();
+                let k = args["k"].as_u64().unwrap_or(5) as usize;
+                let samples: Vec<GoldenSample> = match serde_json::from_value(args["samples"].clone()) {
+                    Ok(s) => s,
+                    Err(e) => return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid samples: {}", e) }
+                    })),
+                };
+                if samples.is_empty() {
+                    return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "samples must be non-empty" }
+                    }));
+                }
+                if samples.len() > 100 {
+                    return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "samples must contain at most 100 entries" }
+                    }));
+                }
+                if k > 100 {
+                    return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "k must be at most 100" }
+                    }));
+                }
+                if let Some(engine) = &self.engine {
+                    let mut results: Vec<Vec<ChunkId>> = Vec::with_capacity(samples.len());
+                    for sample in &samples {
+                        let query = Query::new(sample.query.clone())
+                            .with_collection(CollectionId(collection_id.clone()))
+                            .with_top_k(k);
+                        let r = engine.retrieval.search(query, claims).await?;
+                        results.push(r.chunks.iter().map(|c| c.indexed_chunk.chunk.id.clone()).collect());
+                    }
+                    let report = EvalRunner::new(k).evaluate(&results, &samples);
+                    let text = serde_json::to_string(&report).unwrap_or_default();
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }] }
+                    }))
+                } else {
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32001, "message": "engine not initialised" }
+                    }))
+                }
+            }
             _ => Ok(json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32602, "message": format!("Unknown tool: {}", name) }
@@ -210,6 +317,51 @@ mod tests {
 
     fn no_headers() -> HeaderMap { HeaderMap::new() }
 
+    /// Copied verbatim from `NoOpDocumentVersionStore`'s impl, except
+    /// `list_collections` returns fixtures instead of an empty vec.
+    struct FakeVersionStore;
+
+    #[async_trait::async_trait]
+    impl arcanum_core::traits::DocumentVersionStore for FakeVersionStore {
+        async fn get_latest(&self, _: &str, _: &str) -> Result<Option<arcanum_core::types::DocumentVersion>> {
+            Ok(None)
+        }
+        async fn add_version(&self, _: arcanum_core::types::DocumentVersion) -> Result<()> { Ok(()) }
+        async fn supersede_active(&self, _: &arcanum_core::types::DocumentId) -> Result<()> { Ok(()) }
+        async fn list_versions(&self, _: &arcanum_core::types::DocumentId) -> Result<Vec<arcanum_core::types::DocumentVersion>> { Ok(vec![]) }
+        async fn get_versioning_policy(&self, _: &str) -> Result<arcanum_core::types::VersioningPolicy> {
+            Ok(arcanum_core::types::VersioningPolicy::Replace)
+        }
+        async fn set_versioning_policy(&self, _: &str, _: arcanum_core::types::VersioningPolicy) -> Result<()> { Ok(()) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+        async fn list_collections(&self) -> Result<Vec<String>> {
+            Ok(vec!["col1".into(), "col2".into()])
+        }
+        async fn get_version(&self, _: &arcanum_core::types::DocumentId, _: u32) -> Result<Option<arcanum_core::types::DocumentVersion>> {
+            Ok(None)
+        }
+        async fn list_documents(&self, _: &str) -> Result<Vec<arcanum_core::types::DocumentEntry>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_collections_filters_by_claims() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(FakeVersionStore))
+            .build().await.unwrap();
+        // Token scoped to col1 only.
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_collections", "arguments": {} } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let cols: Vec<String> = serde_json::from_str(text).unwrap();
+        assert_eq!(cols, vec!["col1"], "must include accessible col1 and exclude col2");
+    }
+
     #[tokio::test]
     async fn test_tools_call_without_auth_returns_32001() {
         let engine = test_engine().await;
@@ -235,6 +387,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_initialize_creates_session() {
+        let engine = test_engine().await;
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "clientInfo": { "name": "claude-code", "version": "1.0" } } });
+        let resp = handler.handle(req, no_headers()).await.unwrap();
+        let sid = resp["result"]["_meta"]["sessionId"].as_str().expect("sessionId in _meta");
+        assert!(handler.sessions().get(sid).await.is_some(), "session must be registered");
+    }
+
+    #[tokio::test]
     async fn test_tools_call_with_valid_token_dispatches() {
         let engine = test_engine().await;
         let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
@@ -246,5 +409,124 @@ mod tests {
         });
         let resp = handler.handle(req, make_headers(&token)).await.unwrap();
         assert_ne!(resp["error"]["code"], -32001, "valid token should not get auth error");
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_returns_eval_report() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": [{ "query": "what is arcanum", "relevant_chunk_ids": ["11111111-1111-1111-1111-111111111111"] }]
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        // test_engine has no vector store, so search returns no results — but the
+        // arm must exist: an unknown tool returns -32602; a real arm surfaces a
+        // search error or a report.
+        assert_ne!(resp["error"]["code"], -32602, "eval_run must be a dispatched tool, not Unknown");
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_invalid_samples() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": "not-an-array"
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("invalid samples"));
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_empty_samples() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": []
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("samples must be non-empty"));
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_oversized_samples() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let samples: Vec<Value> = (0..101).map(|i| json!({
+            "query": format!("q{}", i),
+            "relevant_chunk_ids": ["11111111-1111-1111-1111-111111111111"]
+        })).collect();
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": samples
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("samples must contain at most 100 entries"));
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_oversized_k() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": [{ "query": "what is arcanum", "relevant_chunk_ids": ["11111111-1111-1111-1111-111111111111"] }],
+                "k": 101
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("k must be at most 100"));
+    }
+
+    #[tokio::test]
+    async fn test_every_registered_tool_dispatches_without_unknown_tool_error() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        for tool in handler.registry().list() {
+            let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": tool.name, "arguments": {} } });
+            // Some tools surface errors (e.g. missing args) via the outer `Result`
+            // rather than a JSON-RPC error object — either shape is fine here, we
+            // only care that dispatch_tool's `Unknown tool` fallback isn't hit.
+            let resp = match handler.handle(req, make_headers(&token)).await {
+                Ok(resp) => resp,
+                Err(_) => continue,
+            };
+            let is_unknown_tool = resp["error"]["code"] == -32602
+                && resp["error"]["message"].as_str().unwrap_or("").starts_with("Unknown tool");
+            assert!(!is_unknown_tool, "tool '{}' is advertised in the registry but dispatch_tool doesn't handle it", tool.name);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_is_driven_by_registry() {
+        let engine = test_engine().await;
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        let resp = handler.handle(req, no_headers()).await.unwrap();
+        let tools = resp["result"]["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        // CapabilityRegistry::list() sorts by name.
+        assert_eq!(names, vec!["eval_run", "ingest", "list_collections", "search"]);
+        // Every tool must carry a schema — proves we serialized ToolDefinition, not a stub.
+        for t in tools {
+            assert!(t["inputSchema"].is_object(), "tool {} missing inputSchema", t["name"]);
+        }
     }
 }
