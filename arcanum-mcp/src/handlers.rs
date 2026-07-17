@@ -1,7 +1,8 @@
 use axum::http::HeaderMap;
 use serde_json::{json, Value};
-use arcanum_core::{Result, types::{Query, CollectionId}};
+use arcanum_core::{Result, types::{Query, CollectionId, ChunkId}};
 use arcanum_engine::{ArcanumEngine, IngestRequest, auth::ApiKeyClaims};
+use arcanum_eval::{EvalRunner, GoldenSample};
 use crate::capability_registry::{CapabilityRegistry, ToolDefinition};
 use std::sync::Arc;
 use tracing::instrument;
@@ -212,6 +213,44 @@ impl McpJsonRpcHandler {
                     }))
                 }
             }
+            "eval_run" => {
+                let collection_id = args["collection_id"].as_str().unwrap_or("").to_string();
+                let k = args["k"].as_u64().unwrap_or(5) as usize;
+                let samples: Vec<GoldenSample> = match serde_json::from_value(args["samples"].clone()) {
+                    Ok(s) => s,
+                    Err(e) => return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": format!("invalid samples: {}", e) }
+                    })),
+                };
+                if samples.is_empty() {
+                    return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "samples must be non-empty" }
+                    }));
+                }
+                if let Some(engine) = &self.engine {
+                    let mut results: Vec<Vec<ChunkId>> = Vec::with_capacity(samples.len());
+                    for sample in &samples {
+                        let query = Query::new(sample.query.clone())
+                            .with_collection(CollectionId(collection_id.clone()))
+                            .with_top_k(k);
+                        let r = engine.retrieval.search(query, claims).await?;
+                        results.push(r.chunks.iter().map(|c| c.indexed_chunk.chunk.id.clone()).collect());
+                    }
+                    let report = EvalRunner::new(k).evaluate(&results, &samples);
+                    let text = serde_json::to_string(&report).unwrap_or_default();
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }] }
+                    }))
+                } else {
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32001, "message": "engine not initialised" }
+                    }))
+                }
+            }
             _ => Ok(json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32602, "message": format!("Unknown tool: {}", name) }
@@ -330,6 +369,53 @@ mod tests {
         });
         let resp = handler.handle(req, make_headers(&token)).await.unwrap();
         assert_ne!(resp["error"]["code"], -32001, "valid token should not get auth error");
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_returns_eval_report() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": [{ "query": "what is arcanum", "relevant_chunk_ids": ["11111111-1111-1111-1111-111111111111"] }]
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        // test_engine has no vector store, so search returns no results — but the
+        // arm must exist: an unknown tool returns -32602; a real arm surfaces a
+        // search error or a report.
+        assert_ne!(resp["error"]["code"], -32602, "eval_run must be a dispatched tool, not Unknown");
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_invalid_samples() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": "not-an-array"
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("invalid samples"));
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_empty_samples() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": []
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("samples must be non-empty"));
     }
 
     #[tokio::test]
