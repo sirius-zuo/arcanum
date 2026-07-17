@@ -1,7 +1,7 @@
 use crate::dag::{PipelineDAG, StageContext, StageId, CTX_STAGE_FAILURES};
 use crate::stage_failure::is_core_stage;
 use arcanum_core::{Result, ArcanumError};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use tracing::{instrument, Instrument};
 use metrics;
 
@@ -12,6 +12,8 @@ impl DagExecutor {
     pub async fn execute(dag: &PipelineDAG, initial_ctx: StageContext) -> Result<StageContext> {
         let mut completed: HashSet<StageId> = HashSet::new();
         let mut unusable: HashSet<StageId> = HashSet::new();
+        // Root cause per unusable stage: (root failed stage id, its error display).
+        let mut root_failures: HashMap<StageId, (StageId, String)> = HashMap::new();
         let mut failures: Vec<serde_json::Value> = vec![];
         let mut ctx = initial_ctx;
         let mut remaining: Vec<_> = dag.stages.iter().collect();
@@ -35,12 +37,28 @@ impl DagExecutor {
 
                 // Skip stages whose deps failed or were skipped.
                 if let Some(bad_dep) = stage.deps.iter().find(|d| unusable.contains(*d)) {
+                    let (root, root_err) = root_failures.get(bad_dep).cloned()
+                        .unwrap_or((bad_dep, "unknown".to_string()));
+                    // A core stage must never be silently skipped: abort so the
+                    // worker's retry path fires, exactly as a direct core failure.
+                    if is_core_stage(id) {
+                        tracing::error!(stage_id = %id, root_stage = %root,
+                            "core stage blocked by failed dependency; aborting pipeline");
+                        return Err(ArcanumError::Pipeline {
+                            stage: root.into(),
+                            message: format!(
+                                "non-core stage '{}' failed ({}); aborting because core stage '{}' depends on it",
+                                root, root_err, id
+                            ),
+                        });
+                    }
                     tracing::warn!(stage_id = %id, failed_dep = %bad_dep, "skipping stage: dependency failed");
                     failures.push(serde_json::json!({
                         "stage": id, "error": format!("skipped: dependency '{}' failed", bad_dep),
                         "skipped_due_to": bad_dep,
                     }));
                     unusable.insert(id);
+                    root_failures.insert(id, (root, root_err));
                     completed.insert(id);
                     continue;
                 }
@@ -72,6 +90,7 @@ impl DagExecutor {
                             "stage": id, "error": e.to_string(), "skipped_due_to": serde_json::Value::Null,
                         }));
                         unusable.insert(id);
+                        root_failures.insert(id, (id, e.to_string()));
                         completed.insert(id); // unblocks the wave loop; dependents are caught by the skip check
                     }
                 }
