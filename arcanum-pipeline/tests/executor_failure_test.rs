@@ -62,3 +62,39 @@ async fn core_failure_still_aborts() {
     assert!(DagExecutor::execute(&dag, StageContext::default()).await.is_err(),
         "core stage failure must propagate exactly as before");
 }
+
+#[tokio::test]
+async fn independent_stages_in_a_wave_run_concurrently() {
+    // Both stages wait on the same 2-party barrier. If the executor runs them
+    // sequentially, the first blocks forever and the timeout trips.
+    let barrier = Arc::new(tokio::sync::Barrier::new(2));
+    let make = |id: &'static str, b: Arc<tokio::sync::Barrier>| PipelineStage {
+        id, deps: vec![], run: Arc::new(move |ctx| {
+            let b = b.clone();
+            Box::pin(async move { b.wait().await; Ok(ctx) })
+        }),
+    };
+    let dag = PipelineDAG::new()
+        .add_stage(make("alpha", barrier.clone()))
+        .add_stage(make("beta", barrier.clone()));
+    tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        DagExecutor::execute(&dag, StageContext::default()),
+    ).await.expect("stages must run concurrently — sequential execution deadlocks this test")
+     .expect("execute should succeed");
+}
+
+#[tokio::test]
+async fn multi_hop_cascade_names_root_failure() {
+    // "a" is non-core and fails; "b" depends on "a" (non-core, skipped);
+    // core "vector_write" depends on "b" (skipped-of-skipped). The abort
+    // error must name the true root ("a"), not just the immediate dep ("b").
+    let dag = PipelineDAG::new()
+        .add_stage(failing_stage("a", vec![]))
+        .add_stage(ok_stage("b", vec!["a"]))
+        .add_stage(ok_stage("vector_write", vec!["b"]));
+    let err = DagExecutor::execute(&dag, StageContext::default()).await
+        .expect_err("core stage transitively blocked through a multi-hop cascade must abort");
+    let msg = err.to_string();
+    assert!(msg.contains("'a'"), "error must name the root failed stage 'a', not just 'b': {msg}");
+}

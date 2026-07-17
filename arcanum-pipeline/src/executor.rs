@@ -31,7 +31,11 @@ impl DagExecutor {
                 });
             }
 
-            // Run ready stages sequentially (parallel would require ctx cloning strategy)
+            // Stages in a wave run concurrently on cloned ctxs; shared document state
+            // lives behind Arc<Mutex<IngestionState>> inside each stage closure. Returned
+            // ctxs merge into the parent in wave order (deterministic; later stages win
+            // on key conflicts, which today are disjoint per-stage flags).
+            let mut to_run: Vec<&crate::dag::PipelineStage> = vec![];
             for id in &ready {
                 let stage = dag.stages.iter().find(|s| s.id == *id).unwrap();
 
@@ -63,12 +67,25 @@ impl DagExecutor {
                     continue;
                 }
 
-                let span = tracing::info_span!("pipeline.stage", stage_id = %id);
-                let stage_start = std::time::Instant::now();
-                let run_result = (stage.run)(ctx.clone())
-                    .instrument(span)
-                    .await;
-                let elapsed = stage_start.elapsed().as_secs_f64();
+                to_run.push(stage);
+            }
+
+            let wave_results = futures::future::join_all(to_run.iter().map(|stage| {
+                let span = tracing::info_span!("pipeline.stage", stage_id = %stage.id);
+                let fut = (stage.run)(ctx.clone());
+                async move {
+                    let stage_start = std::time::Instant::now();
+                    let run_result = fut.instrument(span).await;
+                    (stage_start.elapsed().as_secs_f64(), run_result)
+                }
+            })).await;
+
+            // Merge results deterministically in wave order, applying the same
+            // per-stage Ok/core-Err/non-core-Err policy as before. All wave
+            // futures have already resolved by this point, so a core failure
+            // orphans no in-flight work; the first core error in wave order wins.
+            for (stage, (elapsed, run_result)) in to_run.iter().zip(wave_results) {
+                let id = stage.id;
                 let status = if run_result.is_ok() { "ok" } else { "error" };
                 metrics::counter!("arcanum_pipeline_stages_total",
                     "stage_id" => id.to_string(), "status" => status).increment(1);
