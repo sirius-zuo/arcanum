@@ -80,18 +80,23 @@ impl DagExecutor {
                 }
             })).await;
 
+            // Every stage in the wave has already executed (join_all resolved),
+            // so record metrics for all of them first — a core failure in the
+            // policy pass below must not suppress metrics for its wave-mates.
+            for (stage, (elapsed, run_result)) in to_run.iter().zip(wave_results.iter()) {
+                let status = if run_result.is_ok() { "ok" } else { "error" };
+                metrics::counter!("arcanum_pipeline_stages_total",
+                    "stage_id" => stage.id.to_string(), "status" => status).increment(1);
+                metrics::histogram!("arcanum_pipeline_stage_duration_seconds",
+                    "stage_id" => stage.id.to_string()).record(*elapsed);
+            }
+
             // Merge results deterministically in wave order, applying the same
             // per-stage Ok/core-Err/non-core-Err policy as before. All wave
             // futures have already resolved by this point, so a core failure
             // orphans no in-flight work; the first core error in wave order wins.
-            for (stage, (elapsed, run_result)) in to_run.iter().zip(wave_results) {
+            for (stage, (_elapsed, run_result)) in to_run.iter().zip(wave_results) {
                 let id = stage.id;
-                let status = if run_result.is_ok() { "ok" } else { "error" };
-                metrics::counter!("arcanum_pipeline_stages_total",
-                    "stage_id" => id.to_string(), "status" => status).increment(1);
-                metrics::histogram!("arcanum_pipeline_stage_duration_seconds",
-                    "stage_id" => id.to_string()).record(elapsed);
-
                 match run_result {
                     Ok(result) => {
                         ctx.extend(result);

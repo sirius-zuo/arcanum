@@ -98,3 +98,18 @@ async fn multi_hop_cascade_names_root_failure() {
     let msg = err.to_string();
     assert!(msg.contains("'a'"), "error must name the root failed stage 'a', not just 'b': {msg}");
 }
+
+#[tokio::test]
+async fn core_failure_with_ok_wave_mate_still_aborts() {
+    // Core "load" fails while dep-free "enrich" succeeds in the SAME wave.
+    // The join must complete both, metrics record for both (verified by code
+    // structure: the metrics pass runs over every joined result before the
+    // policy pass — no test recorder is wired for the metrics crate here),
+    // and the core error must still abort the pipeline.
+    let dag = PipelineDAG::new()
+        .add_stage(failing_stage("load", vec![]))
+        .add_stage(ok_stage("enrich", vec![]));
+    let err = DagExecutor::execute(&dag, StageContext::default()).await
+        .expect_err("core failure must abort even when a wave-mate succeeds");
+    assert!(err.to_string().contains("load"), "error must come from the core stage: {err}");
+}
