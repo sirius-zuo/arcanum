@@ -1,4 +1,5 @@
-use crate::dag::{PipelineDAG, StageContext, StageId};
+use crate::dag::{PipelineDAG, StageContext, StageId, CTX_STAGE_FAILURES};
+use crate::stage_failure::is_core_stage;
 use arcanum_core::{Result, ArcanumError};
 use std::collections::HashSet;
 use tracing::{instrument, Instrument};
@@ -10,6 +11,8 @@ impl DagExecutor {
     #[instrument(skip(dag, initial_ctx), fields(stage_count = dag.stages.len()), err)]
     pub async fn execute(dag: &PipelineDAG, initial_ctx: StageContext) -> Result<StageContext> {
         let mut completed: HashSet<StageId> = HashSet::new();
+        let mut unusable: HashSet<StageId> = HashSet::new();
+        let mut failures: Vec<serde_json::Value> = vec![];
         let mut ctx = initial_ctx;
         let mut remaining: Vec<_> = dag.stages.iter().collect();
 
@@ -29,6 +32,19 @@ impl DagExecutor {
             // Run ready stages sequentially (parallel would require ctx cloning strategy)
             for id in &ready {
                 let stage = dag.stages.iter().find(|s| s.id == *id).unwrap();
+
+                // Skip stages whose deps failed or were skipped.
+                if let Some(bad_dep) = stage.deps.iter().find(|d| unusable.contains(*d)) {
+                    tracing::warn!(stage_id = %id, failed_dep = %bad_dep, "skipping stage: dependency failed");
+                    failures.push(serde_json::json!({
+                        "stage": id, "error": format!("skipped: dependency '{}' failed", bad_dep),
+                        "skipped_due_to": bad_dep,
+                    }));
+                    unusable.insert(id);
+                    completed.insert(id);
+                    continue;
+                }
+
                 let span = tracing::info_span!("pipeline.stage", stage_id = %id);
                 let stage_start = std::time::Instant::now();
                 let run_result = (stage.run)(ctx.clone())
@@ -40,12 +56,31 @@ impl DagExecutor {
                     "stage_id" => id.to_string(), "status" => status).increment(1);
                 metrics::histogram!("arcanum_pipeline_stage_duration_seconds",
                     "stage_id" => id.to_string()).record(elapsed);
-                let result = run_result
-                    .map_err(|e| { tracing::error!(stage_id = %id, err = ?e, "pipeline stage failed"); e })?;
-                ctx.extend(result);
-                completed.insert(id);
+
+                match run_result {
+                    Ok(result) => {
+                        ctx.extend(result);
+                        completed.insert(id);
+                    }
+                    Err(e) if is_core_stage(id) => {
+                        tracing::error!(stage_id = %id, err = ?e, "core pipeline stage failed");
+                        return Err(e);
+                    }
+                    Err(e) => {
+                        tracing::warn!(stage_id = %id, err = ?e, "non-core pipeline stage failed; continuing");
+                        failures.push(serde_json::json!({
+                            "stage": id, "error": e.to_string(), "skipped_due_to": serde_json::Value::Null,
+                        }));
+                        unusable.insert(id);
+                        completed.insert(id); // unblocks the wave loop; dependents are caught by the skip check
+                    }
+                }
             }
             remaining.retain(|s| !completed.contains(s.id));
+        }
+
+        if !failures.is_empty() {
+            ctx.insert(CTX_STAGE_FAILURES.to_string(), serde_json::Value::Array(failures));
         }
         Ok(ctx)
     }

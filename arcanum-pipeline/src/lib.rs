@@ -8,7 +8,7 @@ pub mod stages;
 pub mod registry;
 pub mod worker;
 
-pub use dag::{PipelineDAG, PipelineStage, StageFn, StageContext};
+pub use dag::{PipelineDAG, PipelineStage, StageFn, StageContext, CTX_STAGE_FAILURES};
 pub use worker::IngestionWorker;
 pub use registry::ArcanumPipelineRegistry;
 pub use executor::DagExecutor;
