@@ -416,3 +416,67 @@ async fn test_worker_fails_when_no_preprocessor_configured() {
     let err_str = result.unwrap_err().to_string();
     assert!(err_str.contains("no preprocessor configured"), "unexpected error: {}", err_str);
 }
+
+#[tokio::test]
+async fn test_worker_reports_partial_success_for_non_core_stage_failure() {
+    use arcanum_pipeline::{
+        worker::run_task, ArcanumPipelineRegistry, PipelineStage,
+        templates::standard,
+    };
+    use arcanum_core::traits::ProgressEmitter;
+    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_core::ArcanumError;
+    use arcanum_middleware::BoundedQueue;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Default)]
+    struct CapturingEmitter(StdMutex<Vec<(String, serde_json::Value)>>);
+    #[async_trait::async_trait]
+    impl ProgressEmitter for CapturingEmitter {
+        async fn emit(&self, event: &str, payload: serde_json::Value) {
+            self.0.lock().unwrap().push((event.to_string(), payload));
+        }
+    }
+
+    let deps = stub_deps();
+
+    // "standard" template plus one extra failing non-core stage ("enrich")
+    // wired after the terminal (non-core) register_version stage, so it has
+    // no core descendants — the only shape the executor can degrade on.
+    let mut registry = ArcanumPipelineRegistry::new();
+    registry.register("standard_with_enrich_failure", Arc::new(move |state, deps| {
+        standard::builder()(state, deps).add_stage(PipelineStage {
+            id: "enrich",
+            deps: vec!["register_version"],
+            run: Arc::new(|_ctx| Box::pin(async move {
+                Err(ArcanumError::Pipeline { stage: "enrich".into(), message: "boom".into() })
+            })),
+        })
+    }));
+    let registry = Arc::new(registry);
+
+    let emitter = Arc::new(CapturingEmitter::default());
+    let queue = Arc::new(BoundedQueue::new("test", 10));
+    let task = IngestionTask {
+        operation_id: OperationId::new(),
+        source_uri: "raw://test-partial-success".into(),
+        collection_id: CollectionId("col1".into()),
+        pipeline_template: "standard_with_enrich_failure".into(),
+        attempt: 0,
+        force: false,
+        content: None,
+        mime_hint: None,
+    };
+
+    let result = run_task(task, registry, deps, emitter.clone(), queue).await;
+    assert!(result.is_ok(), "non-core stage failure must not abort the task: {:?}", result.err());
+
+    let events = emitter.0.lock().unwrap();
+    let (_, payload) = events.iter()
+        .find(|(name, payload)| name == "ingestion:progress" && payload["status"] == "completed")
+        .expect("completion event must be emitted");
+    let failed_stages = payload["report"]["status"]["PartialSuccess"]["failed_stages"]
+        .as_array()
+        .expect("report.status must be PartialSuccess");
+    assert_eq!(failed_stages, &vec![serde_json::json!("enrich")]);
+}

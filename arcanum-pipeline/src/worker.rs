@@ -150,6 +150,18 @@ pub async fn run_task(
                     message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
                 })?;
                 let content_hash = doc.content_hash();
+                let failed_stages: Vec<String> = final_ctx
+                    .get(crate::dag::CTX_STAGE_FAILURES)
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter()
+                        .filter_map(|f| f["stage"].as_str().map(String::from))
+                        .collect())
+                    .unwrap_or_default();
+                let status = if failed_stages.is_empty() {
+                    IngestionStatus::Success
+                } else {
+                    IngestionStatus::PartialSuccess { failed_stages }
+                };
                 let report = IngestionReport {
                     operation_id:         operation_id.clone(),
                     source_uri:           source_uri.clone(),
@@ -158,7 +170,7 @@ pub async fn run_task(
                     total_chunks:         state_lock.chunks.len(),
                     total_vectors:        state_lock.vectors.len(),
                     document_fingerprint: content_hash,
-                    status:               IngestionStatus::Success,
+                    status,
                 };
                 emitter.emit("ingestion:progress", serde_json::json!({
                     "operation_id": operation_id.0,
