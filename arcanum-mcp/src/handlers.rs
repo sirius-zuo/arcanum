@@ -4,6 +4,7 @@ use arcanum_core::{Result, types::{Query, CollectionId, ChunkId}};
 use arcanum_engine::{ArcanumEngine, IngestRequest, auth::ApiKeyClaims};
 use arcanum_eval::{EvalRunner, GoldenSample};
 use crate::capability_registry::{CapabilityRegistry, ToolDefinition};
+use crate::session::SessionManager;
 use std::sync::Arc;
 use tracing::instrument;
 use metrics;
@@ -11,6 +12,7 @@ use metrics;
 pub struct McpJsonRpcHandler {
     engine: Option<Arc<ArcanumEngine>>,
     registry: Arc<CapabilityRegistry>,
+    sessions: Arc<SessionManager>,
 }
 
 impl McpJsonRpcHandler {
@@ -18,6 +20,7 @@ impl McpJsonRpcHandler {
         Self {
             engine: None,
             registry: Self::default_registry(),
+            sessions: Arc::new(SessionManager::new()),
         }
     }
 
@@ -25,7 +28,12 @@ impl McpJsonRpcHandler {
         Self {
             engine: Some(engine),
             registry: Self::default_registry(),
+            sessions: Arc::new(SessionManager::new()),
         }
+    }
+
+    pub fn sessions(&self) -> &Arc<SessionManager> {
+        &self.sessions
     }
 
     fn default_registry() -> Arc<CapabilityRegistry> {
@@ -94,14 +102,19 @@ impl McpJsonRpcHandler {
         let method = extract_method(&request);
 
         let result = match method {
-            "initialize" => Ok(json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": { "tools": {}, "resources": {} },
-                    "serverInfo": { "name": "arcanum", "version": "2.0.0" }
-                }
-            })),
+            "initialize" => {
+                let client_info = request["params"]["clientInfo"]["name"].as_str().unwrap_or("unknown");
+                let session = self.sessions.create(client_info).await;
+                Ok(json!({
+                    "jsonrpc": "2.0", "id": id,
+                    "result": {
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": { "tools": {}, "resources": {} },
+                        "serverInfo": { "name": "arcanum", "version": "2.0.0" },
+                        "_meta": { "sessionId": session.id }
+                    }
+                }))
+            }
 
             "tools/list" => {
                 let tools: Vec<Value> = self.registry.list().iter().map(|t| json!({
@@ -355,6 +368,17 @@ mod tests {
         let resp = handler.handle(req, no_headers()).await.unwrap();
         assert!(resp["error"].is_null(), "initialize should not require auth");
         assert_eq!(resp["result"]["serverInfo"]["name"], "arcanum");
+    }
+
+    #[tokio::test]
+    async fn test_initialize_creates_session() {
+        let engine = test_engine().await;
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": { "clientInfo": { "name": "claude-code", "version": "1.0" } } });
+        let resp = handler.handle(req, no_headers()).await.unwrap();
+        let sid = resp["result"]["_meta"]["sessionId"].as_str().expect("sessionId in _meta");
+        assert!(handler.sessions().get(sid).await.is_some(), "session must be registered");
     }
 
     #[tokio::test]
