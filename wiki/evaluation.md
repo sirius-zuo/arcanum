@@ -27,8 +27,12 @@ route bypasses `EvalService` entirely.
 ## Position in the System
 
 - [Core](core.md) — `arcanum_core::traits::{Evaluator, TextEnricher}`,
-  `arcanum_core::traits::retrieval::{EvalMetrics, GroundTruth}`, and
-  `arcanum_core::types::{ChunkId, Query, RetrievedChunk,
+  `arcanum_core::traits::retrieval::{EvalMetrics, GroundTruth}`,
+  `arcanum_core::traits::experiment::{ExperimentStore,
+  InMemoryExperimentStore, ExperimentStatus, ExperimentMetrics,
+  ShadowExperiment}` (moved here from `arcanum-engine` by PR #54;
+  `arcanum-engine` re-exports the types for route compatibility — see Key
+  Decisions), and `arcanum_core::types::{ChunkId, Query, RetrievedChunk,
   ChunkStrategyConfig, PerBackendChunkConfig, ExperimentId,
   ShadowContext, DocumentId, RawDocument}` are the shared vocabulary both
   crates and `ExperimentService` build on; neither crate defines its own
@@ -36,11 +40,19 @@ route bypasses `EvalService` entirely.
 - [Ingestion](ingestion.md) — `inspect` and `run_benchmark` both call
   `arcanum_ingestion::default_registry()` to build a `Chunker` per
   `ChunkStrategyConfig` and drive it directly; they bypass the ingestion
-  pipeline (no `Preprocessor`, no storage writes).
+  pipeline (no `Preprocessor`, no storage writes). Separately,
+  `arcanum-ingestion/src/versioning/experiments.rs`'s
+  `PostgresExperimentStore` (PR #54) implements this page's
+  `ExperimentStore` port against the `chunk_experiments` table — an
+  adapter for [Core](core.md)'s port, unrelated to the chunk-eval flow
+  above.
 - [Engine](engine.md) — `ArcanumEngineBuilder::build` composes
   `EvalService` and `ExperimentService` as engine fields
-  (`engine.eval`, `engine.experiment`); construction and the background
-  eval-loop stub belong to that page, not here.
+  (`engine.eval`, `engine.experiment`); construction, the
+  `experiment_store` auto-wiring precedence (builder-supplied store wins,
+  else `storage.database_url` dials `PostgresExperimentStore`, else
+  `InMemoryExperimentStore` — PR #54), and the background eval-loop stub
+  belong to that page, not here.
 - [Pipeline](pipeline.md) — `EngineIngestionDepsResolver` (in
   `arcanum-engine`) turns an active `ShadowExperiment` into a
   `ShadowContext` that pipeline stages consume to perform shadow writes;
@@ -48,9 +60,13 @@ route bypasses `EvalService` entirely.
 - [Interfaces](interfaces.md) — `arcanum-server`'s `routes/api.rs`
   (`chunk_inspect`, `chunk_benchmark`) and `routes/experiments.rs`
   (`start_experiment`, `get_experiment`, `promote_experiment`,
-  `abandon_experiment`, `eval_experiment`) are the only production
-  callers into this page's code; MCP's advertised-but-unimplemented
-  `eval_run` tool is documented there.
+  `abandon_experiment`, `eval_experiment`) are this page's HTTP
+  callers. `arcanum-mcp`'s `eval_run` tool (`handlers.rs`) is a second
+  production caller of `EvalRunner` — corrected from an earlier revision
+  of this page, which pointed to [Interfaces](interfaces.md) for
+  `eval_run` as advertised-but-unimplemented; PR #57 gave it a real
+  dispatch arm (see Implementation Notes). Full MCP tool documentation
+  stays on that page.
 - Nothing in the workspace depends on `arcanum-eval` or
   `arcanum-chunk-eval` besides `arcanum-server` and `arcanum-engine`, per
   the dependency direction in the workspace `Cargo.toml`.
@@ -79,9 +95,21 @@ classDiagram
     BenchmarkDataset --> BenchmarkSample
 
     class ExperimentService
+    class ExperimentStore {
+        <<trait>>
+        +try_start(collection_id, exp) Result
+        +get(collection_id, exp_id) Result
+        +update(collection_id, exp) Result
+        +active_experiments() Result
+    }
+    class InMemoryExperimentStore
+    class PostgresExperimentStore
     class ShadowExperiment
     class ExperimentStatus
     class ExperimentMetrics
+    ExperimentService --> ExperimentStore
+    ExperimentStore <|.. InMemoryExperimentStore
+    ExperimentStore <|.. PostgresExperimentStore
     ExperimentService --> ShadowExperiment
     ShadowExperiment --> ExperimentStatus
     ShadowExperiment --> ExperimentMetrics
@@ -129,14 +157,25 @@ strategy, then scores `BenchmarkJob.queries` with a private
 embedding call — into `recall_at_5`/`recall_at_10`, plus chunk-size
 `p50`/`p95` via a private `percentile` helper.
 
-`ExperimentService` (`arcanum-engine/src/services/experiment.rs`) holds
-`Arc<RwLock<HashMap<String, ShadowExperiment>>>` keyed by
-`"{collection_id}:{experiment_id}"` — purely in-memory, despite the
-tracked migration `migrations/0001_chunk_experiments.sql` defining a
-`chunk_experiments` table; that table is unused (see Implementation
-Notes). `ShadowExperiment::shadow_namespace` derives the storage
-namespace a challenger's shadow writes land in:
-`"{collection_id}__shadow_{experiment_id}"`.
+`ExperimentService` (`arcanum-engine/src/services/experiment.rs`) no
+longer holds experiment state directly — corrected from an earlier
+revision that described an in-process `HashMap` and an unused
+`chunk_experiments` table (PR #54 resolved both; see Implementation
+Notes). `ExperimentService` now wraps an injected `Arc<dyn ExperimentStore>` —
+the port, its types (`ExperimentStatus`, `ExperimentMetrics`,
+`ShadowExperiment`), and the `InMemoryExperimentStore` default all moved
+to `arcanum-core/src/traits/experiment.rs` (see [Core](core.md)) — and
+keeps only the domain rules: the `ReadyToPromote`/closed guards on
+`promote`/`update_metrics` (PR #42) and the ≥50-sample/+0.05-recall
+promotion rule (introduced by PR #41, commit `cdc7fe25`) — both still
+evaluated in `ExperimentService`, unaffected by the move. `PostgresExperimentStore`
+(`arcanum-ingestion/src/versioning/experiments.rs`) implements the same
+port against `chunk_experiments`, live as of migration
+`0002_chunk_experiments_active_unique.sql`; its unique-violation mapping
+and closed-row write rejection are decision-consequence material — see
+Key Decisions. `ShadowExperiment::shadow_namespace` is unchanged: it
+still derives the storage namespace a challenger's shadow writes land
+in, `"{collection_id}__shadow_{experiment_id}"`.
 
 ## Runtime Flows
 
@@ -156,16 +195,23 @@ namespace a challenger's shadow writes land in:
    returns `Ok(None)`, regardless of argument — `arcanum-server` has no
    route that touches `engine.eval` at all. `EvalRunner` — the other,
    structurally different evaluation path (see Architecture) — is no
-   longer uncalled: PR #50 added a production caller, `eval_experiment`,
-   that constructs it directly and bypasses `EvalService`; see flow 2,
-   step 3.
+   longer uncalled: it now has two production callers that construct it
+   directly and bypass `EvalService` — the `eval_experiment` route (PR
+   #50; see flow 2, step 3) and `arcanum-mcp`'s `eval_run` tool (PR #57;
+   detail on [Interfaces](interfaces.md)).
 
 **2. Shadow experiment lifecycle**
 1. `POST /api/v1/collections/{id}/experiments` → `start_experiment` →
-   `ExperimentService::start` takes a single write lock, checks no other
-   `Active` experiment exists for the collection, inserts the new
-   `ShadowExperiment { status: Active }`, and calls
-   `CollectionService::set_experiment` to link it on `CollectionInfo`.
+   `ExperimentService::start` builds a new `ShadowExperiment { status:
+   Active }` and calls `ExperimentStore::try_start`, which atomically
+   checks no other `Active` experiment exists for the collection before
+   inserting — corrected from an earlier revision that placed this lock
+   directly inside `ExperimentService`; it now lives in
+   `InMemoryExperimentStore::try_start` (PR #54), while
+   `PostgresExperimentStore::try_start` relies on a DB-level unique index
+   (see Key Decisions). `start` then calls
+   `CollectionService::set_experiment` to link the experiment on
+   `CollectionInfo`.
 2. On the next ingestion task for that collection,
    `EngineIngestionDepsResolver::resolve_for_collection` sees
    `col_info.experiment`, calls `ExperimentService::get`, and — only if
@@ -211,6 +257,45 @@ namespace a challenger's shadow writes land in:
 ## Key Decisions
 
 Newest first.
+
+### `ExperimentService` becomes a store-backed domain layer; one-active-per-collection is now DB-enforced across processes
+- **Decision** — PR #54 replaces `ExperimentService`'s private
+  `Arc<RwLock<HashMap<...>>>` with an injected `Arc<dyn ExperimentStore>`
+  (the port and its `InMemoryExperimentStore` default now live in
+  `arcanum-core/src/traits/experiment.rs` — see [Core](core.md) for the
+  extraction itself). `PostgresExperimentStore`
+  (`arcanum-ingestion/src/versioning/experiments.rs`) implements the same
+  port against the previously idle `chunk_experiments` table; migration
+  `0002_chunk_experiments_active_unique.sql` adds a partial unique index
+  (`collection_id WHERE status = 'active'`) so `try_start`'s
+  one-active-per-collection check is enforced by Postgres itself, not
+  just by an in-process lock.
+- **Context** — the PR body: "migration 0002 adds a partial unique index
+  so one-active-per-collection is enforced by the database (plain
+  INSERT, unique-violation mapped — race-free across processes, proven
+  by a concurrent `try_start` test)." Its review-driven-hardening section
+  adds: "both stores' `update` refuses to overwrite a Closed row
+  (identical NotFound text) — blocks a stale `update_metrics` from
+  resurrecting a closed experiment."
+- **Alternatives rejected** — keeping `try_start`'s atomicity as an
+  in-process write-lock only (the PR #41/#42 design below); race-free
+  within one engine process but not across the multiple engine processes
+  a `storage.database_url`-backed deployment can run, which the PR's
+  concurrent-`try_start` test targets directly.
+- **Consequences** — `PostgresExperimentStore::try_start` does a plain
+  `INSERT` and maps a unique-violation on `idx_chunk_experiments_one_active`
+  to the same `"...already has an active experiment"` error
+  `InMemoryExperimentStore` already returned, so
+  `ExperimentService::start`'s error handling is unchanged regardless of
+  which store is wired in. `update` on both impls now rejects a write to
+  an already-`Closed` row with `Err(NotFound)`, so a slow eval run racing
+  a concurrent `promote`/`abandon` can no longer resurrect the experiment
+  that already closed it. `migrations/0001_chunk_experiments.sql`'s table —
+  previously untouched by any code (see Implementation Notes correction
+  below) — is now the persistence backend for every experiment whenever
+  `storage.database_url` is set; without it, `InMemoryExperimentStore`
+  remains the fallback and a restart still drops all experiment state.
+- **Ref** — 2026-07-16, PR #54.
 
 ### Manual `POST .../experiments/{id}/eval` trigger, not an automatic background loop
 - **Decision** — PR #50 (item 2.5) adds `eval_experiment`, a route the
@@ -347,35 +432,41 @@ Newest first.
   `chunk_benchmark`. PR #49 wired the same check into `chunk_inspect`,
   "mirroring `chunk_benchmark`'s pattern exactly" per the fix commit's
   own message; both routes now return 401 without a valid bearer token.
-- **`chunk_experiments` migration exists but nothing reads or writes
-  it (gap, unaffected by PR #50).** `migrations/0001_chunk_experiments.sql`'s
-  own header comment states this directly: "The current in-memory
-  runtime does not yet persist experiments. This migration is provided
-  for future persistent storage." `ExperimentService` stores all state
-  in an in-process `HashMap`; a process restart silently drops every
-  active or closed experiment. The new `eval_experiment` route doesn't
-  touch this table either — it takes labeled queries directly in the
-  request body rather than reading a persisted golden set, so this gap
-  remains fully open.
-- **`EvalService` is a stub with no route or caller — and the new eval
-  route does not close this gap, since it bypasses `EvalService`
-  entirely.** Both of `EvalService`'s methods (`list_datasets`,
-  `get_report`) return hardcoded empty results regardless of input,
-  exercised only by their own `#[cfg(test)]` module — consistent with
-  [Interfaces](interfaces.md)'s documented finding that MCP's advertised
-  `eval_run` tool has no dispatch arm at all. `eval_experiment` calls
-  `EvalRunner`/`ExperimentService` directly and never touches
-  `engine.eval`, so `EvalService` is exactly as unreachable after PR #50
-  as before it.
+- **`chunk_experiments` migration is now live — resolved by PR #54
+  (previously documented here as an unused table).**
+  `migrations/0001_chunk_experiments.sql`'s header used to read "The
+  current in-memory runtime does not yet persist experiments. This
+  migration is provided for future persistent storage"; it now states
+  the table "is live as of migrations/0002_chunk_experiments_active_unique.sql,
+  which adds the partial unique index backing
+  `PostgresExperimentStore::try_start`." `PostgresExperimentStore`
+  (`arcanum-ingestion/src/versioning/experiments.rs`) reads and writes
+  this table whenever `storage.database_url` is configured (see
+  Architecture and Key Decisions); without it, `ExperimentService` still
+  falls back to `InMemoryExperimentStore` and a restart still silently
+  drops every active or closed experiment. The `eval_experiment` route's
+  own gap is unaffected by this change — it still takes labeled
+  `GoldenSample` queries directly in the request body rather than reading
+  a persisted golden set, since no `BenchmarkQueryStore` exists yet (see
+  the Key Decision above).
+- **`EvalService` is a stub with no route or caller, and neither
+  production consumer of `EvalRunner` closes this gap.** Both of
+  `EvalService`'s methods (`list_datasets`, `get_report`) return
+  hardcoded empty results regardless of input, exercised only by their
+  own `#[cfg(test)]` module. `eval_experiment` (`arcanum-server`, PR #50)
+  and `eval_run` (`arcanum-mcp` — gained a real dispatch arm in PR #57;
+  see [Interfaces](interfaces.md)) both construct `EvalRunner` directly
+  and never touch `engine.eval`, so `EvalService` is exactly as
+  unreachable as it was before either PR.
 - **`EvalRunner` and `StandardEvaluator` remain two unconverged
-  "run an eval" abstractions, though `EvalRunner` now has a narrow
-  production use (partial progress, not resolved).** Both wrap the same
-  five `metrics.rs` functions with different input/output shapes (see
-  Architecture). `EvalRunner` is no longer uncalled: `eval_experiment`
-  constructs one directly. `StandardEvaluator` is still exercised only by
+  "run an eval" abstractions, though `EvalRunner` now has two narrow
+  production callers (partial progress, not resolved; callers listed
+  above and in Runtime Flows, flow 1 step 3).** Both wrap the same five
+  `metrics.rs` functions with different input/output shapes (see
+  Architecture). `StandardEvaluator` is still exercised only by
   `arcanum-eval`'s own unit tests. PR #49 (Stage 3, item 3.12) considered
-  and deferred consolidating the two: its PR body states they "turned out
-  to be genuinely different abstractions (sync vs. async, different
+  and deferred consolidating the two: its PR body states they "turned out to be
+  genuinely different abstractions (sync vs. async, different
   input/output shapes), not duplicates; merging them is a real design
   decision, not cleanup" — consistent with `EvalRunner::evaluate` being
   sync against `StandardEvaluator::evaluate`'s `#[async_trait]`.
@@ -384,11 +475,14 @@ Newest first.
 
 - `arcanum-eval/src/`
 - `arcanum-chunk-eval/src/`
+- `arcanum-core/src/traits/experiment.rs`
 - `arcanum-engine/src/services/experiment.rs`
 - `arcanum-engine/src/services/eval.rs`
 - `arcanum-engine/src/ingestion_deps_resolver.rs`
+- `arcanum-ingestion/src/versioning/experiments.rs`
 - `arcanum-server/src/routes/experiments.rs`
 - `migrations/0001_chunk_experiments.sql`
+- `migrations/0002_chunk_experiments_active_unique.sql`
 
 <!-- The drift contract: a PR changing files under these anchors updates this page
      or says why not in the PR body. -->
