@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use arcanum_core::{traits::Embedder, types::Vector, Result};
+use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct ProviderStats {
@@ -59,6 +61,41 @@ impl ProviderHealthMonitor {
     }
 }
 
+/// Observation-only decorator: feeds every embed call's outcome and latency
+/// into a ProviderHealthMonitor. Results and errors pass through unchanged.
+pub struct MonitoredEmbedder {
+    inner:   Arc<dyn Embedder>,
+    monitor: Arc<ProviderHealthMonitor>,
+}
+
+impl MonitoredEmbedder {
+    pub fn new(inner: Arc<dyn Embedder>, provider_id: &str) -> Self {
+        Self { inner, monitor: ProviderHealthMonitor::new(provider_id) }
+    }
+    pub fn monitor(&self) -> &Arc<ProviderHealthMonitor> { &self.monitor }
+}
+
+#[async_trait]
+impl Embedder for MonitoredEmbedder {
+    async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
+        let start = std::time::Instant::now();
+        let provider_id = self.monitor.provider_id.clone();
+        match self.inner.embed(texts).await {
+            Ok(v)  => {
+                self.monitor.record_success(start.elapsed());
+                metrics::counter!("arcanum_model_provider_calls_total", "provider" => provider_id.clone(), "status" => "ok").increment(1);
+                Ok(v)
+            }
+            Err(e) => {
+                self.monitor.record_error();
+                metrics::counter!("arcanum_model_provider_calls_total", "provider" => provider_id.clone(), "status" => "error").increment(1);
+                Err(e)
+            }
+        }
+    }
+    fn dimension(&self) -> usize { self.inner.dimension() }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +121,29 @@ mod tests {
         assert_eq!(stats.error_count, 2);
         assert_eq!(stats.total_calls, 3);
         assert!((stats.error_rate - 2.0 / 3.0).abs() < 0.001);
+    }
+
+    #[tokio::test]
+    async fn monitored_embedder_records_success_and_error() {
+        struct FlakyEmbedder(std::sync::atomic::AtomicUsize);
+        #[async_trait::async_trait]
+        impl arcanum_core::traits::Embedder for FlakyEmbedder {
+            async fn embed(&self, texts: Vec<String>) -> arcanum_core::Result<Vec<arcanum_core::types::Vector>> {
+                if self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    Err(arcanum_core::ArcanumError::Config("provider down".into()))
+                } else {
+                    Ok(texts.iter().map(|_| arcanum_core::types::Vector(vec![0.1])).collect())
+                }
+            }
+            fn dimension(&self) -> usize { 1 }
+        }
+        let inner = std::sync::Arc::new(FlakyEmbedder(Default::default()));
+        let me = MonitoredEmbedder::new(inner, "test-provider");
+        assert!(me.embed(vec!["a".into()]).await.is_err());
+        assert!(me.embed(vec!["a".into()]).await.is_ok());
+        let stats = me.monitor().stats();
+        assert_eq!(stats.total_calls, 2);
+        assert_eq!(stats.error_count, 1);
+        assert!(stats.avg_latency_ms >= 0.0);
     }
 }

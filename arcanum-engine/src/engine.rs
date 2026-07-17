@@ -4,7 +4,7 @@ use arcanum_core::{
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
              SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
              Preprocessor, Reranker},
-    types::RetrievalStrategy,
+    types::{RetrievalStrategy, EnrichIntent},
     Result, ArcanumError,
 };
 use arcanum_ingestion::LocalSnapshotStore;
@@ -19,7 +19,7 @@ use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         ColBertRetriever, QueryTransformer, QueryCache};
 use arcanum_vector::Bm25Index;
 use arcanum_evidence::{DefaultEvidenceResolver, PostgresGcWorker};
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
     auth::AuthMiddleware,
@@ -108,12 +108,37 @@ impl ArcanumEngine {
     }
 }
 
+/// Composes the primary embedder with any additional embedders into a single
+/// `Arc<dyn Embedder>`. With no additional embedders, returns `primary`
+/// unchanged. Otherwise all embedders must share one `dimension()` — a
+/// mismatch is a Config error — and the composed result round-robins `embed`
+/// calls across `[primary, ...additional]` via `EmbeddingParallelismRouter`.
+/// Never constructs the router with an empty vec (it panics).
+fn compose_embedder(
+    primary: Arc<dyn Embedder>,
+    additional: Vec<Arc<dyn Embedder>>,
+) -> Result<Arc<dyn Embedder>> {
+    if additional.is_empty() {
+        return Ok(primary);
+    }
+    let mut all: Vec<Arc<dyn Embedder>> = vec![primary];
+    all.extend(additional);
+    let dim = all[0].dimension();
+    if let Some(bad) = all.iter().find(|e| e.dimension() != dim) {
+        return Err(ArcanumError::Config(format!(
+            "all embedders must share one dimension; primary is {} but another reports {}",
+            dim, bad.dimension())));
+    }
+    Ok(Arc::new(arcanum_models::EmbeddingParallelismRouter::new(all)))
+}
+
 pub struct ArcanumEngineBuilder {
     config: ArcanumConfig,
     auth_secret: Option<String>,
     vector_store: Option<Arc<dyn VectorStore>>,
     embedder: Option<Arc<dyn Embedder>>,
     enricher: Option<Arc<dyn TextEnricher>>,
+    named_enrichers: HashMap<String, Arc<dyn TextEnricher>>,
     graph_store: Option<Arc<dyn GraphStore>>,
     tree_store: Option<Arc<dyn TreeStore>>,
     secret_store: Option<Arc<dyn SecretStore>>,
@@ -128,6 +153,7 @@ pub struct ArcanumEngineBuilder {
     query_transformer: Option<Arc<dyn QueryTransformer>>,
     reranker: Option<Arc<dyn Reranker>>,
     dedup_threshold: Option<f32>,
+    additional_embedders: Vec<Arc<dyn Embedder>>,
 }
 
 
@@ -139,6 +165,7 @@ impl Default for ArcanumEngineBuilder {
             vector_store: None,
             embedder: None,
             enricher: None,
+            named_enrichers: HashMap::new(),
             graph_store: None,
             tree_store: None,
             secret_store: None,
@@ -153,6 +180,7 @@ impl Default for ArcanumEngineBuilder {
             query_transformer: None,
             reranker: None,
             dedup_threshold: None,
+            additional_embedders: Vec::new(),
         }
     }
 }
@@ -189,8 +217,29 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    /// Registers an additional embedding provider. When one or more are present,
+    /// build() wraps the primary embedder plus all additional embedders in an
+    /// `EmbeddingParallelismRouter` that round-robins `embed` calls across them.
+    /// All embedders (primary + additional) must share one `dimension()` —
+    /// otherwise build() fails with a Config error. Not set by default.
+    /// Additional embedders must be replicas or alternate endpoints of the
+    /// SAME model as the primary: the router round-robins requests across
+    /// them interchangeably, and the embedding cache is namespaced by the
+    /// single configured `embedding.model_id`.
+    pub fn additional_embedder(mut self, e: Arc<dyn Embedder>) -> Self {
+        self.additional_embedders.push(e);
+        self
+    }
+
     pub fn enricher(mut self, enricher: Arc<dyn TextEnricher>) -> Self {
         self.enricher = Some(enricher);
+        self
+    }
+
+    /// Registers an enricher under `name` so `EnrichmentConfig`'s per-intent
+    /// provider names (e.g. `entity_extraction_provider`) can route to it.
+    pub fn named_enricher(mut self, name: impl Into<String>, provider: Arc<dyn TextEnricher>) -> Self {
+        self.named_enrichers.insert(name.into(), provider);
         self
     }
 
@@ -270,8 +319,49 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    /// Resolves the enricher used for ingestion's context prefix / entity
+    /// extraction steps. With no per-intent provider names set in
+    /// `config.enrichment`, this is exactly `self.enricher` (today's
+    /// behavior, untouched). Once any provider name is set, a default
+    /// enricher is required and an `EnrichmentDispatcher` is built that
+    /// routes each named intent to its registered `named_enricher`, falling
+    /// back to the default for unnamed intents. An unknown provider name is
+    /// always a hard config error — never a silent fallback.
+    fn resolve_enricher(&self) -> Result<Option<Arc<dyn TextEnricher>>> {
+        let ec = &self.config.enrichment;
+        let intent_names = [
+            (EnrichIntent::ContextPrefix,   &ec.context_prefix_provider),
+            (EnrichIntent::ExtractEntities, &ec.entity_extraction_provider),
+            (EnrichIntent::Summarize,       &ec.summarize_provider),
+            (EnrichIntent::Caption,         &ec.caption_provider),
+        ];
+        let any_named = intent_names.iter().any(|(_, n)| n.is_some());
+        if !any_named {
+            return Ok(self.enricher.clone());
+        }
+        let default = self.enricher.clone().ok_or_else(|| ArcanumError::Config(
+            "enrichment providers are named in config but no default enricher is set — \
+             call .enricher(...) with the fallback provider".into()))?;
+        let mut dispatcher = arcanum_models::EnrichmentDispatcher::new(default);
+        for (intent, name) in intent_names {
+            if let Some(name) = name {
+                let provider = self.named_enrichers.get(name).cloned().ok_or_else(|| {
+                    ArcanumError::Config(format!(
+                        "enrichment config names provider '{}' but no enricher was registered \
+                         under that name — call .named_enricher(\"{}\", ...)", name, name))
+                })?;
+                dispatcher = dispatcher.with_override(intent, provider);
+            }
+        }
+        Ok(Some(Arc::new(dispatcher)))
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
+
+        // Resolved unconditionally (not just when pipeline workers are wired) so an
+        // unknown provider name in enrichment config always fails build().
+        let enricher = self.resolve_enricher()?;
 
         let secret = self.auth_secret
             .or_else(|| std::env::var("ARCANUM_AUTH_SECRET").ok())
@@ -380,8 +470,23 @@ impl ArcanumEngineBuilder {
         let mut invalidators: Vec<Arc<dyn arcanum_core::traits::CacheInvalidator>> = vec![];
         if let Some(c) = &query_cache { invalidators.push(c.clone()); }
 
+        // Compose + validate additional embedders unconditionally — not just when a
+        // vector_store is also configured — so a dimension mismatch is always caught
+        // and additional embedders are never silently ignored.
+        let composed_embedder: Option<Arc<dyn Embedder>> = match &self.embedder {
+            Some(embedder) => Some(compose_embedder(embedder.clone(), self.additional_embedders.clone())?),
+            None if self.additional_embedders.is_empty() => None,
+            None => return Err(ArcanumError::Config(
+                "additional embedders require a primary .embedder(...)".into()
+            )),
+        };
+
         // Wire pipeline workers if embedder + vector_store are available.
-        if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
+        if let (Some(embedder), Some(vector_store)) = (&composed_embedder, &self.vector_store) {
+            // Monitor sits inside the cache so cache hits don't pollute provider health stats.
+            let embedder: Arc<dyn Embedder> = Arc::new(arcanum_models::MonitoredEmbedder::new(
+                embedder.clone(), &self.config.embedding.provider,
+            ));
             let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
                 Some(url) => {
                     let cache = Arc::new(arcanum_models::EmbeddingCache::new(
@@ -402,8 +507,8 @@ impl ArcanumEngineBuilder {
                 preprocessors:     preprocessor_catalog.get("default"),
                 chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
                 shadow:            None,
-                context_enricher:  self.enricher.clone(),
-                entity_extractor:  self.enricher.clone(),
+                context_enricher:  enricher.clone(),
+                entity_extractor:  enricher.clone(),
                 embedder:          embedder.clone(),
                 vector_store:      vector_store.clone(),
                 graph_store:       self.graph_store.clone(),
@@ -489,11 +594,14 @@ impl ArcanumEngineBuilder {
                 .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
             retriever_count += 2;
         }
-        if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
-            &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
+        if let (Some(gs), Some(vs), Some(emb), Some(resolved_enricher)) = (
+            &self.graph_store, &self.vector_store, &self.embedder, &enricher,
         ) {
+            // Use the resolved (possibly per-intent-routing) enricher, not the raw
+            // builder field, so GraphQueryPlanner's ExtractEntities calls honor
+            // entity_extraction_provider routing like ingestion does.
             let planner: Arc<dyn arcanum_core::traits::GraphPlanner> =
-                Arc::new(GraphQueryPlanner::new(enricher.clone(), 2));
+                Arc::new(GraphQueryPlanner::new(resolved_enricher.clone(), 2));
             orchestrator = orchestrator
                 .add_retriever(Arc::new(GraphRetriever::new(
                     gs.clone(), vs.clone(), planner, emb.clone(), 2,
@@ -649,6 +757,82 @@ mod tests {
         async fn enrich(&self, req: EnrichRequest) -> AResult<EnrichedText> {
             Ok(EnrichedText(req.text))
         }
+    }
+
+    /// Echoes its tag into the returned text so which provider handled a
+    /// request is observable from the result.
+    struct TaggingEnricher(&'static str);
+    #[async_trait]
+    impl TextEnricher for TaggingEnricher {
+        async fn enrich(&self, _req: EnrichRequest) -> AResult<EnrichedText> {
+            Ok(EnrichedText(self.0.into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn enrichment_config_routes_intents_to_named_providers() {
+        let mut config = ArcanumConfig::default();
+        config.enrichment.entity_extraction_provider = Some("gliner".into());
+        let builder = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")))
+            .named_enricher("gliner", Arc::new(TaggingEnricher("gliner")));
+
+        let enricher = builder.resolve_enricher()
+            .expect("resolve_enricher should succeed")
+            .expect("an enricher should be resolved once a provider name is set");
+
+        let entities = enricher.enrich(EnrichRequest {
+            text: "irrelevant".into(),
+            intent: EnrichIntent::ExtractEntities,
+            context: None,
+        }).await.expect("enrich should succeed");
+        assert_eq!(entities.0, "gliner", "ExtractEntities should route to the named 'gliner' provider");
+
+        let summary = enricher.enrich(EnrichRequest {
+            text: "irrelevant".into(),
+            intent: EnrichIntent::Summarize,
+            context: None,
+        }).await.expect("enrich should succeed");
+        assert_eq!(summary.0, "default", "Summarize has no named provider and should fall back to the default");
+    }
+
+    #[tokio::test]
+    async fn unknown_enrichment_provider_name_fails_build() {
+        let mut config = ArcanumConfig::default();
+        config.enrichment.summarize_provider = Some("no-such-provider".into());
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")))
+            .build().await.err().expect("must fail");
+        assert!(err.to_string().contains("no-such-provider"), "error should name the unknown provider: {}", err);
+    }
+
+    #[tokio::test]
+    async fn no_named_enrichment_providers_leaves_resolve_unchanged() {
+        // Default-inert: no provider names set anywhere in config, so
+        // resolve_enricher must return exactly self.enricher untouched.
+        let config = ArcanumConfig::default();
+        let builder = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")));
+
+        let enricher = builder.resolve_enricher()
+            .expect("resolve_enricher should succeed")
+            .expect("default enricher should be passed through");
+
+        let result = enricher.enrich(EnrichRequest {
+            text: "irrelevant".into(),
+            intent: EnrichIntent::Summarize,
+            context: None,
+        }).await.expect("enrich should succeed");
+        assert_eq!(result.0, "default");
     }
 
     #[tokio::test]
@@ -995,6 +1179,72 @@ mod tests {
         let retrieved = engine.experiment.get(&col_id.0, &exp.id).await
             .expect("get should find the experiment in in-memory store");
         assert_eq!(retrieved.id, exp.id, "retrieved experiment should match the started one");
+    }
+
+    struct CountingEmbedder(std::sync::atomic::AtomicUsize, usize);
+    #[async_trait]
+    impl Embedder for CountingEmbedder {
+        async fn embed(&self, texts: Vec<String>) -> AResult<Vec<Vector>> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(texts.iter().map(|_| Vector(vec![0.0; self.1])).collect())
+        }
+        fn dimension(&self) -> usize { self.1 }
+    }
+
+    #[tokio::test]
+    async fn additional_embedders_round_robin() {
+        let primary = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 2));
+        let additional = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 2));
+
+        let embedder = compose_embedder(primary.clone(), vec![additional.clone() as Arc<dyn Embedder>])
+            .expect("composing same-dimension embedders should succeed");
+
+        embedder.embed(vec!["a".into()]).await.unwrap();
+        embedder.embed(vec!["b".into()]).await.unwrap();
+
+        assert_eq!(primary.0.load(std::sync::atomic::Ordering::SeqCst), 1, "primary should be hit exactly once");
+        assert_eq!(additional.0.load(std::sync::atomic::Ordering::SeqCst), 1, "additional should be hit exactly once");
+    }
+
+    #[tokio::test]
+    async fn mismatched_embedder_dimensions_fail_build() {
+        let mut config = ArcanumConfig::default();
+        config.storage.database_url = None;
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .vector_store(Arc::new(FakeVectorStore))
+            .embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 3)))
+            .additional_embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 4)))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .err()
+            .expect("build must fail on mismatched embedder dimensions");
+        let msg = err.to_string();
+        assert!(msg.contains("dimension"), "error should mention 'dimension': {}", msg);
+        assert!(msg.contains("primary is 3"), "error should name the primary dimension (3): {}", msg);
+        assert!(msg.contains("reports 4"), "error should name the mismatched dimension (4): {}", msg);
+    }
+
+    #[tokio::test]
+    async fn additional_embedders_without_primary_embedder_fails_build() {
+        // Additional embedder validation now runs unconditionally (before the
+        // embedder+vector_store pipeline block), so this must fail even with no
+        // vector_store and no primary .embedder(...) configured.
+        let mut config = ArcanumConfig::default();
+        config.storage.database_url = None;
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .additional_embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 3)))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .err()
+            .expect("build must fail when additional embedders are set but no primary embedder is");
+        assert!(
+            err.to_string().contains("additional embedders require a primary"),
+            "error should explain the missing primary embedder: {}", err
+        );
     }
 
     #[tokio::test]
