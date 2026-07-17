@@ -194,10 +194,24 @@ impl McpJsonRpcHandler {
                     }))
                 }
             }
-            "list_collections" => Ok(json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": { "content": [{ "type": "text", "text": "[]" }] }
-            })),
+            "list_collections" => {
+                if let Some(engine) = &self.engine {
+                    let cols = engine.version_store.list_collections().await?;
+                    let visible: Vec<String> = cols.into_iter()
+                        .filter(|c| engine.auth.can_access_collection(claims, c))
+                        .collect();
+                    let text = serde_json::to_string(&visible).unwrap_or_else(|_| "[]".into());
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }] }
+                    }))
+                } else {
+                    Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": "[]" }] }
+                    }))
+                }
+            }
             _ => Ok(json!({
                 "jsonrpc": "2.0", "id": id,
                 "error": { "code": -32602, "message": format!("Unknown tool: {}", name) }
@@ -234,6 +248,51 @@ mod tests {
     }
 
     fn no_headers() -> HeaderMap { HeaderMap::new() }
+
+    /// Copied verbatim from `NoOpDocumentVersionStore`'s impl, except
+    /// `list_collections` returns fixtures instead of an empty vec.
+    struct FakeVersionStore;
+
+    #[async_trait::async_trait]
+    impl arcanum_core::traits::DocumentVersionStore for FakeVersionStore {
+        async fn get_latest(&self, _: &str, _: &str) -> Result<Option<arcanum_core::types::DocumentVersion>> {
+            Ok(None)
+        }
+        async fn add_version(&self, _: arcanum_core::types::DocumentVersion) -> Result<()> { Ok(()) }
+        async fn supersede_active(&self, _: &arcanum_core::types::DocumentId) -> Result<()> { Ok(()) }
+        async fn list_versions(&self, _: &arcanum_core::types::DocumentId) -> Result<Vec<arcanum_core::types::DocumentVersion>> { Ok(vec![]) }
+        async fn get_versioning_policy(&self, _: &str) -> Result<arcanum_core::types::VersioningPolicy> {
+            Ok(arcanum_core::types::VersioningPolicy::Replace)
+        }
+        async fn set_versioning_policy(&self, _: &str, _: arcanum_core::types::VersioningPolicy) -> Result<()> { Ok(()) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+        async fn list_collections(&self) -> Result<Vec<String>> {
+            Ok(vec!["col1".into(), "col2".into()])
+        }
+        async fn get_version(&self, _: &arcanum_core::types::DocumentId, _: u32) -> Result<Option<arcanum_core::types::DocumentVersion>> {
+            Ok(None)
+        }
+        async fn list_documents(&self, _: &str) -> Result<Vec<arcanum_core::types::DocumentEntry>> {
+            Ok(vec![])
+        }
+    }
+
+    #[tokio::test]
+    async fn test_list_collections_filters_by_claims() {
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(FakeVersionStore))
+            .build().await.unwrap();
+        // Token scoped to col1 only.
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "list_collections", "arguments": {} } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        let text = resp["result"]["content"][0]["text"].as_str().unwrap();
+        let cols: Vec<String> = serde_json::from_str(text).unwrap();
+        assert_eq!(cols, vec!["col1"], "must include accessible col1 and exclude col2");
+    }
 
     #[tokio::test]
     async fn test_tools_call_without_auth_returns_32001() {
