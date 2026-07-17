@@ -36,6 +36,10 @@ impl McpJsonRpcHandler {
         &self.sessions
     }
 
+    pub fn registry(&self) -> &Arc<CapabilityRegistry> {
+        &self.registry
+    }
+
     fn default_registry() -> Arc<CapabilityRegistry> {
         let registry = CapabilityRegistry::new();
         registry.register(ToolDefinition::new(
@@ -242,6 +246,18 @@ impl McpJsonRpcHandler {
                         "error": { "code": -32602, "message": "samples must be non-empty" }
                     }));
                 }
+                if samples.len() > 100 {
+                    return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "samples must contain at most 100 entries" }
+                    }));
+                }
+                if k > 100 {
+                    return Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": "k must be at most 100" }
+                    }));
+                }
                 if let Some(engine) = &self.engine {
                     let mut results: Vec<Vec<ChunkId>> = Vec::with_capacity(samples.len());
                     for sample in &samples {
@@ -440,6 +456,62 @@ mod tests {
         let resp = handler.handle(req, make_headers(&token)).await.unwrap();
         assert_eq!(resp["error"]["code"], -32602);
         assert!(resp["error"]["message"].as_str().unwrap().contains("samples must be non-empty"));
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_oversized_samples() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let samples: Vec<Value> = (0..101).map(|i| json!({
+            "query": format!("q{}", i),
+            "relevant_chunk_ids": ["11111111-1111-1111-1111-111111111111"]
+        })).collect();
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": samples
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("samples must contain at most 100 entries"));
+    }
+
+    #[tokio::test]
+    async fn test_eval_run_rejects_oversized_k() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "eval_run", "arguments": {
+                "collection_id": "col1",
+                "samples": [{ "query": "what is arcanum", "relevant_chunk_ids": ["11111111-1111-1111-1111-111111111111"] }],
+                "k": 101
+            } } });
+        let resp = handler.handle(req, make_headers(&token)).await.unwrap();
+        assert_eq!(resp["error"]["code"], -32602);
+        assert!(resp["error"]["message"].as_str().unwrap().contains("k must be at most 100"));
+    }
+
+    #[tokio::test]
+    async fn test_every_registered_tool_dispatches_without_unknown_tool_error() {
+        let engine = test_engine().await;
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        for tool in handler.registry().list() {
+            let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": tool.name, "arguments": {} } });
+            // Some tools surface errors (e.g. missing args) via the outer `Result`
+            // rather than a JSON-RPC error object — either shape is fine here, we
+            // only care that dispatch_tool's `Unknown tool` fallback isn't hit.
+            let resp = match handler.handle(req, make_headers(&token)).await {
+                Ok(resp) => resp,
+                Err(_) => continue,
+            };
+            let is_unknown_tool = resp["error"]["code"] == -32602
+                && resp["error"]["message"].as_str().unwrap_or("").starts_with("Unknown tool");
+            assert!(!is_unknown_tool, "tool '{}' is advertised in the registry but dispatch_tool doesn't handle it", tool.name);
+        }
     }
 
     #[tokio::test]

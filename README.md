@@ -16,7 +16,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Hexagonal architecture enforced at the type level** — every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer** — every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
 - **Compiled, not interpreted** — the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
-- **MCP handler included** — Claude and other AI assistants can call `search` and `ingest` over JSON-RPC 2.0 directly; `list_collections`/`eval_run` are advertised but not yet implemented (see [MCP Integration](#mcp-integration)).
+- **MCP handler included** — Claude and other AI assistants can call `search`, `ingest`, `list_collections`, and `eval_run` over JSON-RPC 2.0 directly; all four tools are implemented (see [MCP Integration](#mcp-integration)).
 - **Three runtime modes** — `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
 
 ---
@@ -492,14 +492,14 @@ Mode is also readable from the `ARCANUM_RUNTIME_MODE` environment variable. Conf
 
 ## MCP Integration
 
-Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`). The crate is implemented and tested, but this repo doesn't build a standalone MCP binary — mount it behind your own `main.rs` alongside your HTTP server (see [DEVELOPMENT.md](DEVELOPMENT.md#15-mcp-integration)):
+Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`) plus a minimal standalone `arcanum-mcp` binary. The bin is env-driven — `ARCANUM_AUTH_SECRET` (required), `MCP_PORT` (default `8081`), `ARCANUM_DB_PATH` (SQLite version store) — but wires no embedder or vector store, so `search`/`ingest` need library wiring (see `examples/`) before they return real results. Mounting the handler behind your own `main.rs` alongside your HTTP server remains the full-integration path (see [DEVELOPMENT.md](DEVELOPMENT.md#15-mcp-integration)):
 
 | Tool | Parameters | Status |
 |---|---|---|
 | `search` | `query`, `collection_id`, `top_k` | Implemented — returns an array of scored chunks |
 | `ingest` | `source_uri`, `collection_id`, `pipeline` | Implemented — returns an `operation_id` for tracking |
-| `list_collections` | — | Advertised in `tools/list`, but the handler always returns an empty array — not yet wired to `CollectionService` |
-| `eval_run` | `collection_id` | Advertised in `tools/list`, but dispatching it returns a JSON-RPC "Unknown tool" error — not yet implemented |
+| `list_collections` | — | Implemented — returns collections visible to the caller, ACL-filtered |
+| `eval_run` | `collection_id` | Implemented; params: `collection_id`, `samples[{query, relevant_chunk_ids}]`, `k` (default 5, max 100) |
 
 Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request — no shared session, no bypass.
 
