@@ -33,8 +33,11 @@ impl DagExecutor {
 
             // Stages in a wave run concurrently on cloned ctxs; shared document state
             // lives behind Arc<Mutex<IngestionState>> inside each stage closure. Returned
-            // ctxs merge into the parent in wave order (deterministic; later stages win
-            // on key conflicts, which today are disjoint per-stage flags).
+            // ctxs merge into the parent in wave order (deterministic): each stage's
+            // returned ctx is its full cloned snapshot, so a sibling's unmodified copy
+            // of key K overwrites an earlier wave-mate's write to K — wave-sharing
+            // stages must not write ctx keys (today only dedup and vector_write write
+            // keys, and each runs alone in its wave).
             let mut to_run: Vec<&crate::dag::PipelineStage> = vec![];
             for id in &ready {
                 let stage = dag.stages.iter().find(|s| s.id == *id).unwrap();

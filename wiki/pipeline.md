@@ -92,10 +92,14 @@ classDiagram
 each other through the shared `StageContext`. `executor.rs`'s
 `DagExecutor::execute` runs stages in dependency-satisfying waves: each
 iteration computes the `ready` set (every stage whose `deps` are all in
-`completed`), then awaits `(stage.run)(ctx.clone())` for each id in
-`ready` one at a time — "sequentially," per an inline comment, not
-concurrently — merging each stage's output into `ctx` after every await.
-A wave with no ready stages while stages remain is a cycle
+`completed`), then runs `(stage.run)(ctx.clone())` for every id in
+`ready` concurrently via `futures::future::join_all`, each stage getting
+its own cloned `ctx`; once every future in the wave has resolved, results
+are merged back into the shared `ctx` in deterministic wave order — a
+wave-mate's returned ctx is its full cloned snapshot, so an unmodified
+copy of key K overwrites an earlier wave-mate's write to K, meaning
+wave-sharing stages must not write overlapping `ctx` keys (Implementation
+Notes). A wave with no ready stages while stages remain is a cycle
 (`ArcanumError::Pipeline { stage: "executor", .. }`); each stage runs
 inside an `info_span!("pipeline.stage", stage_id)` and records
 `arcanum_pipeline_stages_total`/`arcanum_pipeline_stage_duration_seconds`.
@@ -168,15 +172,23 @@ circuit unconditionally.
 3. `DagExecutor::execute` runs stage waves in dependency order: `load` →
    `dedup` → `cleanup` → `preprocess`, then `snapshot`, `vector_chunk`,
    `graph_chunk`, and `tree_chunk` all depend only on `preprocess`, so
-   they land in one wave together (see Key Decisions/Implementation Notes
-   for why that wave still runs sequentially). `vector_write` depends on
-   both `embed` and `snapshot`, so `snapshot_document_id`/
+   they land in one wave together and run concurrently via
+   `futures::future::join_all` (see Key Decisions/Implementation Notes
+   for the wave-merge contract this concurrency relies on). `vector_write`
+   depends on both `embed` and `snapshot`, so `snapshot_document_id`/
    `snapshot_version_num` are populated before it builds
    `ChunkMetadataRecord`s; `register_version` runs last.
 4. On success, `run_task` emits `"ingestion:progress"` — `status:
    "skipped"` if `CTX_SKIP` is set on the final `StageContext`, else
    `status: "completed"` with an `IngestionReport` (`total_chunks`,
-   `total_vectors`, `document_fingerprint` from `doc.content_hash()`).
+   `total_vectors`, `document_fingerprint` from `doc.content_hash()`) whose
+   `status` field is `IngestionStatus::PartialSuccess { failed_stages }`
+   when `CTX_STAGE_FAILURES` is non-empty (a non-core stage failed and its
+   dependents were skipped) and `IngestionStatus::Success` otherwise. A
+   skipped dependent that would itself be a core stage is never folded
+   into `PartialSuccess` this way: `DagExecutor::execute` aborts with an
+   `Err` naming the root non-core failure instead, so that case takes the
+   failure/retry path in Flow 2 rather than reaching this step.
 
 **2. Failure, retry, and circuit breaker interaction**
 1. Any stage's `run` returning `Err` short-circuits `DagExecutor::execute`
@@ -296,10 +308,11 @@ Newest first.
 - **Alternatives rejected** — the PR body records this as a direct
   structural replacement, not a choice among live alternatives.
 - **Consequences** — the three chunk stages depend on nothing but
-  `preprocess`, the structural precondition for concurrent execution —
-  but `DagExecutor::execute` still runs every stage in a ready wave one
-  at a time (Implementation Notes), so today's benefit is per-backend
-  isolation, not a wall-clock speedup.
+  `preprocess`, the structural precondition for concurrent execution;
+  `DagExecutor::execute` now runs every stage in a ready wave
+  concurrently (Implementation Notes), so this split delivers both
+  per-backend isolation and a wall-clock speedup for the
+  `vector_chunk`/`graph_chunk`/`tree_chunk` wave.
 - **Ref** — 2026-06-07, PR #38.
 
 ### Circuit breaker checks wired into `make_embed_stage`/`make_vector_write_stage`
@@ -347,12 +360,17 @@ Newest first.
   replaced document's old BM25 entries persist. PR #50 (commit
   `b7e81d70`) recorded this as an intentionally deferred gap when it
   wired `Bm25Index` into `make_vector_write_stage` (see Key Decisions).
-- **Chunk stages run in one dependency wave, not concurrently.**
+- **Chunk stages now run concurrently within their wave (resolved).**
   `vector_chunk`/`graph_chunk`/`tree_chunk` share no dependency on each
-  other, but `DagExecutor::execute`'s own comment — "Run ready stages
-  sequentially (parallel would require ctx cloning strategy)" — confirms
-  they still execute one at a time within that wave (see the chunk-split
-  Key Decision).
+  other; `DagExecutor::execute` runs every stage in a ready wave
+  concurrently via `futures::future::join_all`, each on its own cloned
+  `ctx`, merging results back into the shared `ctx` in deterministic wave
+  order only once the whole wave has resolved (`executor.rs`). The three
+  chunk stages write disjoint `IngestionState` fields (`chunks`,
+  `graph_chunks`, `tree_chunks`) behind the shared
+  `Arc<Mutex<IngestionState>>` and touch no overlapping `ctx` keys, so
+  they satisfy the wave-merge contract concurrent wave-mates must follow
+  (see the chunk-split Key Decision).
 - **Cache invalidation now fires on any genuine content change, not just
   `force` (resolved).** PR #49 (commit `31c83450`) moved the
   `CacheInvalidationBroadcaster::invalidate_document` call from before
