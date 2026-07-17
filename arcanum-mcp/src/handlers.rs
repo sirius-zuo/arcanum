@@ -2,19 +2,69 @@ use axum::http::HeaderMap;
 use serde_json::{json, Value};
 use arcanum_core::{Result, types::{Query, CollectionId}};
 use arcanum_engine::{ArcanumEngine, IngestRequest, auth::ApiKeyClaims};
+use crate::capability_registry::{CapabilityRegistry, ToolDefinition};
 use std::sync::Arc;
 use tracing::instrument;
 use metrics;
 
 pub struct McpJsonRpcHandler {
     engine: Option<Arc<ArcanumEngine>>,
+    registry: Arc<CapabilityRegistry>,
 }
 
 impl McpJsonRpcHandler {
-    pub fn new_test() -> Self { Self { engine: None } }
+    pub fn new_test() -> Self {
+        Self {
+            engine: None,
+            registry: Self::default_registry(),
+        }
+    }
 
     pub fn new(engine: Arc<ArcanumEngine>) -> Self {
-        Self { engine: Some(engine) }
+        Self {
+            engine: Some(engine),
+            registry: Self::default_registry(),
+        }
+    }
+
+    fn default_registry() -> Arc<CapabilityRegistry> {
+        let registry = CapabilityRegistry::new();
+        registry.register(ToolDefinition::new(
+            "ingest", "Ingest a document into a collection",
+            json!({ "type": "object",
+                "properties": {
+                    "source_uri": { "type": "string" },
+                    "collection_id": { "type": "string" },
+                    "pipeline": { "type": "string" }
+                }, "required": ["source_uri", "collection_id"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "search", "Search a collection",
+            json!({ "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "collection_id": { "type": "string" },
+                    "top_k": { "type": "integer" }
+                }, "required": ["query", "collection_id"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "list_collections", "List collections visible to the caller",
+            json!({ "type": "object", "properties": {} }),
+        ));
+        registry.register(ToolDefinition::new(
+            "eval_run", "Run retrieval quality evaluation against a collection using caller-supplied golden samples",
+            json!({ "type": "object",
+                "properties": {
+                    "collection_id": { "type": "string" },
+                    "samples": { "type": "array", "items": { "type": "object",
+                        "properties": {
+                            "query": { "type": "string" },
+                            "relevant_chunk_ids": { "type": "array", "items": { "type": "string" } }
+                        }, "required": ["query", "relevant_chunk_ids"] } },
+                    "k": { "type": "integer", "default": 5 }
+                }, "required": ["collection_id", "samples"] }),
+        ));
+        Arc::new(registry)
     }
 
     fn extract_claims(&self, headers: &HeaderMap) -> std::result::Result<ApiKeyClaims, Value> {
@@ -52,37 +102,12 @@ impl McpJsonRpcHandler {
                 }
             })),
 
-            "tools/list" => Ok(json!({
-                "jsonrpc": "2.0", "id": id,
-                "result": {
-                    "tools": [
-                        { "name": "ingest",
-                          "description": "Ingest a document into a collection",
-                          "inputSchema": { "type": "object",
-                            "properties": {
-                              "source_uri": { "type": "string" },
-                              "collection_id": { "type": "string" },
-                              "pipeline": { "type": "string" }
-                            }, "required": ["source_uri", "collection_id"] }},
-                        { "name": "search",
-                          "description": "Search a collection",
-                          "inputSchema": { "type": "object",
-                            "properties": {
-                              "query": { "type": "string" },
-                              "collection_id": { "type": "string" },
-                              "top_k": { "type": "integer" }
-                            }, "required": ["query", "collection_id"] }},
-                        { "name": "list_collections",
-                          "description": "List collections visible to the caller",
-                          "inputSchema": { "type": "object", "properties": {} }},
-                        { "name": "eval_run",
-                          "description": "Run retrieval quality evaluation",
-                          "inputSchema": { "type": "object",
-                            "properties": { "collection_id": { "type": "string" } },
-                            "required": ["collection_id"] }}
-                    ]
-                }
-            })),
+            "tools/list" => {
+                let tools: Vec<Value> = self.registry.list().iter().map(|t| json!({
+                    "name": t.name, "description": t.description, "inputSchema": t.input_schema,
+                })).collect();
+                Ok(json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tools } }))
+            }
 
             "tools/call" => {
                 let claims = match self.extract_claims(&headers) {
@@ -246,5 +271,21 @@ mod tests {
         });
         let resp = handler.handle(req, make_headers(&token)).await.unwrap();
         assert_ne!(resp["error"]["code"], -32001, "valid token should not get auth error");
+    }
+
+    #[tokio::test]
+    async fn test_tools_list_is_driven_by_registry() {
+        let engine = test_engine().await;
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {} });
+        let resp = handler.handle(req, no_headers()).await.unwrap();
+        let tools = resp["result"]["tools"].as_array().expect("tools array");
+        let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+        // CapabilityRegistry::list() sorts by name.
+        assert_eq!(names, vec!["eval_run", "ingest", "list_collections", "search"]);
+        // Every tool must carry a schema — proves we serialized ToolDefinition, not a stub.
+        for t in tools {
+            assert!(t["inputSchema"].is_object(), "tool {} missing inputSchema", t["name"]);
+        }
     }
 }
