@@ -49,8 +49,8 @@ async fn main() -> Result<()> {
     let embedder = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "nomic-embed-text"));
 
     // ── Enricher: Ollama local (ExtractEntities, ContextPrefix, Summarize) ────
-    // Production: EnrichmentDispatcher::new(claude_haiku)
-    //                 .with_override(EnrichIntent::ExtractEntities, gliner)
+    // Production: .enricher(claude_haiku) as default + .named_enricher("gliner", gliner);
+    //                 config.enrichment.entity_extraction_provider = Some("gliner".into())
     let enricher = Arc::new(OllamaProvider::new(&ollama, "nomic-embed-text", "qwen2.5"));
 
     // ── Graph store: in-memory (dev) ──────────────────────────────────────────

@@ -222,6 +222,10 @@ impl ArcanumEngineBuilder {
     /// `EmbeddingParallelismRouter` that round-robins `embed` calls across them.
     /// All embedders (primary + additional) must share one `dimension()` —
     /// otherwise build() fails with a Config error. Not set by default.
+    /// Additional embedders must be replicas or alternate endpoints of the
+    /// SAME model as the primary: the router round-robins requests across
+    /// them interchangeably, and the embedding cache is namespaced by the
+    /// single configured `embedding.model_id`.
     pub fn additional_embedder(mut self, e: Arc<dyn Embedder>) -> Self {
         self.additional_embedders.push(e);
         self
@@ -466,9 +470,23 @@ impl ArcanumEngineBuilder {
         let mut invalidators: Vec<Arc<dyn arcanum_core::traits::CacheInvalidator>> = vec![];
         if let Some(c) = &query_cache { invalidators.push(c.clone()); }
 
+        // Compose + validate additional embedders unconditionally — not just when a
+        // vector_store is also configured — so a dimension mismatch is always caught
+        // and additional embedders are never silently ignored.
+        let composed_embedder: Option<Arc<dyn Embedder>> = match &self.embedder {
+            Some(embedder) => Some(compose_embedder(embedder.clone(), self.additional_embedders.clone())?),
+            None if self.additional_embedders.is_empty() => None,
+            None => return Err(ArcanumError::Config(
+                "additional embedders require a primary .embedder(...)".into()
+            )),
+        };
+
         // Wire pipeline workers if embedder + vector_store are available.
-        if let (Some(embedder), Some(vector_store)) = (&self.embedder, &self.vector_store) {
-            let embedder: Arc<dyn Embedder> = compose_embedder(embedder.clone(), self.additional_embedders.clone())?;
+        if let (Some(embedder), Some(vector_store)) = (&composed_embedder, &self.vector_store) {
+            // Monitor sits inside the cache so cache hits don't pollute provider health stats.
+            let embedder: Arc<dyn Embedder> = Arc::new(arcanum_models::MonitoredEmbedder::new(
+                embedder.clone(), &self.config.embedding.provider,
+            ));
             let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
                 Some(url) => {
                     let cache = Arc::new(arcanum_models::EmbeddingCache::new(
@@ -479,9 +497,6 @@ impl ArcanumEngineBuilder {
                 }
                 None => embedder.clone(),
             };
-            let embedder: Arc<dyn Embedder> = Arc::new(arcanum_models::MonitoredEmbedder::new(
-                embedder, &self.config.embedding.provider,
-            ));
             let deps = Arc::new(PipelineDeps {
                 loaders: Arc::new(
                     LoaderRegistry::new()
@@ -579,11 +594,14 @@ impl ArcanumEngineBuilder {
                 .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
             retriever_count += 2;
         }
-        if let (Some(gs), Some(vs), Some(emb), Some(enricher)) = (
-            &self.graph_store, &self.vector_store, &self.embedder, &self.enricher,
+        if let (Some(gs), Some(vs), Some(emb), Some(resolved_enricher)) = (
+            &self.graph_store, &self.vector_store, &self.embedder, &enricher,
         ) {
+            // Use the resolved (possibly per-intent-routing) enricher, not the raw
+            // builder field, so GraphQueryPlanner's ExtractEntities calls honor
+            // entity_extraction_provider routing like ingestion does.
             let planner: Arc<dyn arcanum_core::traits::GraphPlanner> =
-                Arc::new(GraphQueryPlanner::new(enricher.clone(), 2));
+                Arc::new(GraphQueryPlanner::new(resolved_enricher.clone(), 2));
             orchestrator = orchestrator
                 .add_retriever(Arc::new(GraphRetriever::new(
                     gs.clone(), vs.clone(), planner, emb.clone(), 2,
@@ -1206,6 +1224,27 @@ mod tests {
         assert!(msg.contains("dimension"), "error should mention 'dimension': {}", msg);
         assert!(msg.contains("primary is 3"), "error should name the primary dimension (3): {}", msg);
         assert!(msg.contains("reports 4"), "error should name the mismatched dimension (4): {}", msg);
+    }
+
+    #[tokio::test]
+    async fn additional_embedders_without_primary_embedder_fails_build() {
+        // Additional embedder validation now runs unconditionally (before the
+        // embedder+vector_store pipeline block), so this must fail even with no
+        // vector_store and no primary .embedder(...) configured.
+        let mut config = ArcanumConfig::default();
+        config.storage.database_url = None;
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .additional_embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 3)))
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .build().await
+            .err()
+            .expect("build must fail when additional embedders are set but no primary embedder is");
+        assert!(
+            err.to_string().contains("additional embedders require a primary"),
+            "error should explain the missing primary embedder: {}", err
+        );
     }
 
     #[tokio::test]
