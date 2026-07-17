@@ -8,9 +8,10 @@ provenance types), the error taxonomy (`ArcanumError`), the layered
 `ArcanumConfig`/`LiveConfig`, and — most importantly — the port traits
 (`VectorStore`, `GraphStore`, `TreeStore`, `LexicalIndex`, `GraphPlanner`,
 `DocumentLoader`, `Chunker`, `Embedder`, `TextEnricher`, `Retriever`,
-`EvidenceResolver`, `DocumentVersionStore`, `SnapshotStore`, and more) that
-every storage backend, model provider, and pipeline stage in the rest of the
-workspace is written against. It has zero path dependencies on other
+`EvidenceResolver`, `DocumentVersionStore`, `SnapshotStore`,
+`ExperimentStore`, and more) that every storage backend, model provider,
+and pipeline stage in the rest of the workspace is written against. It has
+zero path dependencies on other
 workspace crates and makes no network calls — every other crate depends on
 it, it depends on none of them.
 
@@ -65,9 +66,12 @@ classDiagram
     class EvidenceResolver { <<trait>> resolve_chunk() resolve_entity() }
     class DocumentVersionStore { <<trait>> get_latest() add_version() }
     class SnapshotStore { <<trait>> store() fetch_raw() }
+    class ExperimentStore { <<trait>> try_start() get() update() active_experiments() }
 
     class EmbeddingParallelismRouter
     class EnrichmentDispatcher
+    class CachingEmbedder
+    class MonitoredEmbedder
     class OllamaProvider
     class OpenAiProvider
     class MistralProvider
@@ -77,6 +81,8 @@ classDiagram
 
     EmbeddingParallelismRouter ..|> Embedder : wraps N providers, round-robin
     EnrichmentDispatcher ..|> TextEnricher : routes by EnrichIntent
+    CachingEmbedder ..|> Embedder : wraps, per-text Redis cache
+    MonitoredEmbedder ..|> Embedder : wraps, observation-only health/metrics
     OllamaProvider ..|> Embedder
     OllamaProvider ..|> TextEnricher
     OpenAiProvider ..|> Embedder
@@ -97,7 +103,10 @@ than reimplementing), `lexical_index.rs`, `graph_planner.rs`, `ingestion.rs`
 `from_uri`/`display_uri` parsing), `model.rs` (`Embedder`, `TextEnricher`,
 and `IngestionDepsOverrideResolver`), `retrieval.rs` (`Retriever`,
 `Reranker`, `Evaluator`), `evidence.rs`, `versioning.rs`, `snapshot.rs`,
-`cache.rs` (`CacheInvalidator`), and `progress.rs` (`ProgressEmitter`).
+`cache.rs` (`CacheInvalidator`), `progress.rs` (`ProgressEmitter`), and
+`experiment.rs` (`ExperimentStore`, `InMemoryExperimentStore`, and the
+`ExperimentStatus`/`ExperimentMetrics`/`ShadowExperiment` types — moved here
+from `arcanum-engine`, which now re-exports them for route compatibility).
 `arcanum-core/src/types/` holds the domain data these traits move: `Chunk`/
 `IndexedChunk`/`RetrievedChunk` (`document.rs`), `Entity`/`Relation`
 (`graph.rs`), `TreeNode` (`tree.rs`), `Query`/`MetadataFilter` (`query.rs`),
@@ -108,7 +117,12 @@ and `IngestionDepsOverrideResolver`), `retrieval.rs` (`Retriever`,
 (`GlobalConfig`, `IngestionConfig`, `EmbeddingConfig`, `EnrichmentConfig`,
 `StorageConfig`, `RetrievalConfig`, `EvalConfig`, `AdminConfig`,
 `ServerConfig`) and `LiveConfig` wraps it in `Arc<RwLock<_>>` for runtime
-patching.
+patching. Three fields follow a presence-means-enabled convention —
+`RetrievalConfig.query_cache: Option<QueryCacheConfig>`,
+`EmbeddingConfig.cache_redis_url: Option<String>`, and
+`StorageConfig.database_url: Option<String>` — all default `None`, and the
+engine builder constructs the corresponding cache or Postgres-backed
+component only when the field is `Some` (see Key Decisions).
 
 `arcanum-models` implements no core types — every provider struct
 (`OllamaProvider`, `OpenAiProvider`, `AnthropicProvider`,
@@ -119,18 +133,24 @@ patching.
 `Embedder`/`TextEnricher` respectively, so a caller holding `Arc<dyn
 Embedder>` cannot tell whether it's talking to one provider or a composed
 router. `EmbeddingCache` (Redis) and `ProviderHealthMonitor` are standalone
-structs, not trait implementations — see Implementation Notes for their
-wiring status.
+structs, not trait implementations themselves — `CachingEmbedder` and
+`MonitoredEmbedder` are the `Embedder`-implementing decorators that wrap
+them, and both are wired into `ArcanumEngineBuilder::build` (see Runtime
+Flows and Key Decisions).
 
 ## Runtime Flows
 
 **1. Embedding/generation request through arcanum-models**
-1. A caller holds `Arc<dyn Embedder>` (wired by whatever composition root —
-   an example app or `arcanum-engine`'s builder — constructed it).
-2. If that trait object is an `EmbeddingParallelismRouter`,
-   `EmbeddingParallelismRouter::embed` picks the next provider by
-   incrementing an `AtomicUsize` counter modulo `providers.len()` and
-   forwards the call.
+1. `ArcanumEngineBuilder::build` composes the final `Arc<dyn Embedder>`:
+   `compose_embedder` wraps the primary embedder plus any
+   `.additional_embedder(...)` registrations in an
+   `EmbeddingParallelismRouter` (skipped if there are none), then
+   `MonitoredEmbedder` always wraps that, then `CachingEmbedder` wraps the
+   monitor when `EmbeddingConfig.cache_redis_url` is set — monitor inside
+   cache, so cache hits never inflate provider-health stats (Key Decisions).
+2. If the object mid-chain is an `EmbeddingParallelismRouter`, it picks the
+   next provider by incrementing an `AtomicUsize` counter modulo
+   `providers.len()` and forwards the call.
 3. The call lands on a concrete provider's `embed()` —
    `OllamaProvider`, `OpenAiProvider`, `MistralProvider`,
    `Llm2VecProvider`, `BgeProvider`, or `HuggingFaceTeiProvider` (the only
@@ -138,12 +158,15 @@ wiring status.
 4. The provider issues an HTTP request via `reqwest::Client`, records
    `arcanum_model_calls_total`/`arcanum_model_call_duration_seconds`
    metrics, and maps transport/parse failures to `ArcanumError::Embedding`.
-5. Enrichment requests follow the same shape through `Arc<dyn
-   TextEnricher>`: `EnrichmentDispatcher::enrich` computes an `intent_key`
-   from the request's `EnrichIntent`, looks it up in its `overrides` map,
-   and falls back to a `default` provider if there's no override —
-   e.g. `GlinerProvider` for `ExtractEntities`, `AnthropicProvider` for
-   `ContextPrefix`.
+5. Enrichment requests follow a parallel shape through `Arc<dyn
+   TextEnricher>`: the builder resolves `EnrichmentConfig`'s per-intent
+   provider names (`context_prefix_provider`, `entity_extraction_provider`,
+   `summarize_provider`, `caption_provider`) against `.named_enricher(name,
+   provider)` registrations to build an `EnrichmentDispatcher` (unknown name
+   or missing default is a hard `ArcanumError::Config` at build time).
+   `EnrichmentDispatcher::enrich` computes an `intent_key` from the
+   request's `EnrichIntent`, looks it up in its `overrides` map, and falls
+   back to the `default` provider if there's no override.
 
 **2. The hexagonal boundary, via `VectorStore`**
 1. `arcanum-core::traits::store::VectorStore` defines the port: `upsert`,
@@ -172,6 +195,57 @@ wiring status.
 
 ## Key Decisions
 
+### ExperimentStore port extracted to arcanum-core; types moved from arcanum-engine
+- **Decision** — `ExperimentStore` (`try_start`/`get`/`update`/
+  `active_experiments`) and the types `ExperimentStatus`/
+  `ExperimentMetrics`/`ShadowExperiment` moved from
+  `arcanum-engine/src/services/experiment.rs` into
+  `arcanum-core/src/traits/experiment.rs`, with a new
+  `InMemoryExperimentStore` default; `arcanum-engine` re-exports the types
+  for route compatibility, and `ExperimentService` becomes a thin domain
+  layer over `Arc<dyn ExperimentStore>`.
+- **Context** — the experiment-persistence design doc (untracked) states
+  shadow experiments "die with the process, even though the migration and
+  its 'for future persistent storage' comment shipped long ago," and frames
+  the move as "following the repo's ports-in-core/adapters-elsewhere
+  pattern."
+- **Alternatives rejected** — No PR or design doc records a rationale for
+  keeping persistence inside `arcanum-engine`; observed current state: the
+  extraction follows the same port-in-core/adapter-in-its-own-crate split
+  already used for `VectorStore`/`GraphStore`/`TreeStore` and the evidence
+  traits.
+- **Consequences** — `PostgresExperimentStore` (new, in
+  `arcanum-ingestion/src/versioning/`) and `InMemoryExperimentStore` share
+  one contract enforced by shared tests (atomic one-active-per-collection
+  `try_start`, closed-row update guard); any crate needing to read or write
+  experiments depends on `arcanum-core` alone.
+- **Ref** — 2026-07-16, PR #54.
+
+### Presence-means-enabled Option config activates QueryCache and EmbeddingCache
+- **Decision** — `RetrievalConfig.query_cache: Option<QueryCacheConfig>`
+  (`max_entries`, `ttl_secs`) and `EmbeddingConfig.cache_redis_url:
+  Option<String>` are both `None` by default; the builder constructs and
+  wires the corresponding cache — `QueryCache` attached to
+  `RetrievalService`, or Redis-backed `EmbeddingCache` wrapped by the new
+  `CachingEmbedder` decorator — only when the field is `Some`, registering
+  it with the `CacheInvalidationBroadcaster` the pipeline already fires on
+  content changes.
+- **Context** — the caching-activation design doc (untracked) notes that
+  remediation item 3.10 had deleted the dead booleans
+  `RetrievalConfig.query_cache_enabled` and `EmbeddingConfig.cache_enabled`
+  with the rider "if this is ever built, the config comes back too," and
+  states the replacement directly: "presence means enabled, so no boolean
+  can drift from reality again."
+- **Alternatives rejected** — a boolean `enabled` flag alongside the config
+  struct (the deleted fields' pattern) was rejected per that reasoning — a
+  bool can be `true` with no config populated, or `false` with config still
+  populated; an `Option` cannot represent that contradiction.
+- **Consequences** — an unreachable Redis at `cache_redis_url` fails
+  `ArcanumEngineBuilder::build` outright rather than running uncached;
+  per-source embedding-cache invalidation and query-side embedder wrapping
+  are deferred follow-ups (Implementation Notes).
+- **Ref** — 2026-07-16, PR #52.
+
 ### Evidence/provenance types and traits placed in arcanum-core, not arcanum-evidence
 - **Decision** — `ChunkProvenance`, `DocumentVersion`, `VersioningPolicy`,
   `SnapshotLocation`, `EvidenceKind`, `ProofNode`, `RawSourceRef`,
@@ -198,7 +272,10 @@ wiring status.
   Notes).
 - **Consequences** — any crate that only constructs or reads evidence
   types (e.g. `arcanum-pipeline`'s snapshot/chunk-metadata write stages)
-  depends on `arcanum-core` alone, not on `arcanum-evidence`.
+  depends on `arcanum-core` alone, not on `arcanum-evidence`. **Update** —
+  PR #53 (2026-07-16) subsequently moved `PostgresGcWorker` into
+  `arcanum-evidence`, closing the gap noted above (see Implementation
+  Notes).
 - **Ref** — 2026-06-16, PR #44 and PR #45.
 
 ### Per-backend chunking via PerBackendChunkConfig/PerBackendChunkers
@@ -300,18 +377,20 @@ wiring status.
 
 ## Implementation Notes
 
-- **Unwired infra (debt).** `EmbeddingCache` (Redis) and
-  `ProviderHealthMonitor` are fully implemented and unit-tested in
-  `arcanum-models` but have no callers anywhere else in the workspace —
-  neither is constructed by any provider, by `arcanum-engine`, or by any
-  example app.
-- **Unwired composition (debt).** `EmbeddingParallelismRouter` is not
-  referenced outside `arcanum-models` at all. `EnrichmentDispatcher`
-  appears in the three example apps
-  (`folio-library-search`, `helix-research-copilot`,
-  `vantage-contract-intel`) only inside a `// Production:
-  EnrichmentDispatcher::new(...)` comment — each example actually
-  constructs a bare `OllamaProvider` for both embedding and enrichment.
+- **Previously-unwired arcanum-models infra is now wired (corrected from an
+  earlier revision of this page).** `EmbeddingCache`, `ProviderHealthMonitor`,
+  `EmbeddingParallelismRouter`, and `EnrichmentDispatcher` all have callers
+  now via `ArcanumEngineBuilder::build` — see Runtime Flows for the
+  composition order (PR #52, PR #55). The order is
+  `CachingEmbedder(MonitoredEmbedder(EmbeddingParallelismRouter(...)))`:
+  PR #55's body records the monitor placed inside the cache wrap, rather
+  than the "monitor outermost" order the models-infra-wiring design doc
+  (untracked) originally specified, "so cache hits don't pollute provider
+  health stats." The three example apps' `// Production:
+  EnrichmentDispatcher::new(...)` comments were replaced with the real
+  builder-based integration by PR #55. Deferred follow-ups from PR #55:
+  query-side embedder composition (retrievers still use the raw embedder by
+  scope) and per-provider monitor attribution under the router.
 - **Dead config fields removed.** `EmbeddingConfig.cache_enabled`,
   `RetrievalConfig.fusion_strategy`/`.query_cache_enabled`, and the
   `FusionStrategy` enum they were the only user of were parsed and
@@ -346,11 +425,18 @@ wiring status.
   by each `arcanum-pipeline` worker — the consumer (pipeline) sits below
   the implementer (engine) in the crate DAG, opposite to the `VectorStore`
   pattern.
-- **Inconsistent crate placement.** `PostgresGcWorker` (a `GcWorker`
-  implementation, PR #45 Task 9) lives in `arcanum-ingestion/src/gc.rs`,
-  not in `arcanum-evidence` alongside `DefaultEvidenceResolver` — the two
-  concrete evidence-layer implementations that PR #45 added ended up in
-  different crates.
+- **Crate-placement inconsistency resolved (corrected from an earlier
+  revision of this page).** `PostgresGcWorker` (a `GcWorker` implementation)
+  previously lived in `arcanum-ingestion/src/gc.rs`, separate from
+  `DefaultEvidenceResolver`; PR #53 moved it into `arcanum-evidence/src/gc.rs`
+  (pure rename, no logic change), so both concrete evidence-layer
+  implementations now live in the same crate. The same PR made
+  `StorageConfig.database_url` (Architecture) auto-wire
+  `PostgresChunkMetadataStore` and, when vector/tree/graph/chunk-metadata
+  stores are all present, `PostgresGcWorker`, in
+  `ArcanumEngineBuilder::build`; and made `DefaultEvidenceResolver`'s
+  `tree_store`/`graph_store` fields `Option`, so chunk resolution works
+  without a tree or graph backend.
 - `NoOpDocumentVersionStore` treats every document as new (no dedup); the
   Evidence Phase 1 PR (#44) changed the engine builder to require an
   explicit `version_store` rather than silently falling back to this type,
