@@ -6,7 +6,7 @@ Product + support search powered by [Arcanum](../../README.md).
 
 **Arcanum configuration:**
 - Ingestion: **Standard**
-- Retrieval: **ParallelFusion** (RRF) — Vector and BM25 both run on every query; results are fused so semantic and keyword matches coexist
+- Retrieval: **ParallelFusion** (RRF): Vector and BM25 both run on every query; results are fused so semantic and keyword matches coexist
 
 ---
 
@@ -58,7 +58,7 @@ Open **http://localhost:5173**.
    - `SKU JK-2201 waterproof rating`
    - `warranty claim process`
 
-Hover any product card on the Search page to see the **fusion breakdown** — how much BM25 vs Vector contributed.
+Hover any product card on the Search page to see the **fusion breakdown**: how much BM25 vs Vector contributed.
 
 ---
 

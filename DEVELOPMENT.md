@@ -1,6 +1,6 @@
 # Building an Enterprise RAG System with Arcanum
 
-A practical guide to assembling a production-grade RAG system from Arcanum's primitives. It walks through every decision point — backend selection, chunking configuration, retrieval strategy, experiment workflow, and operations — in the order you encounter them when building a real system.
+A practical guide to assembling a production-grade RAG system from Arcanum's primitives. It walks through every decision point (backend selection, chunking configuration, retrieval strategy, experiment workflow, and operations) in the order you encounter them when building a real system.
 
 ---
 
@@ -29,7 +29,7 @@ arcanum-eval       = { path = "../arcanum/arcanum-eval" }       # retrieval qual
 tokio = { version = "1", features = ["full"] }
 ```
 
-Everything compiles to a single binary. The `ArcanumEngine` builder validates wiring at startup — missing dependencies produce clear errors naming exactly what is needed, not panics at query time.
+Everything compiles to a single binary. The `ArcanumEngine` builder validates wiring at startup: missing dependencies produce clear errors naming exactly what is needed, not panics at query time.
 
 ---
 
@@ -49,7 +49,7 @@ queue_capacity      = 50000
 retry_max_attempts  = 5
 retry_base_delay_ms = 500
 
-# Optional — omit to use the built-in parsers (PDF, HTML, EPUB, DOCX)
+# Optional: omit to use the built-in parsers (PDF, HTML, EPUB, DOCX)
 [ingestion.docling.backend]
 type             = "http"
 base_url         = "http://docling-serve:5001"
@@ -111,7 +111,7 @@ ARCANUM_GLOBAL__RUNTIME_MODE=enterprise cargo run
 
 ## 3. Choosing Backends
 
-Every backend is a trait implementation. You swap them without touching any pipeline or retrieval code — just the builder wiring.
+Every backend is a trait implementation. You swap them without touching any pipeline or retrieval code, just the builder wiring.
 
 ### Vector Store
 
@@ -121,15 +121,15 @@ For most teams, start with **LanceDB** (zero-infrastructure, local or S3-backed)
 use arcanum_vector::lance::LanceVectorStore;
 use arcanum_vector::pgvector::PgVectorStore;
 
-// LanceDB — local or S3
+// LanceDB: local or S3
 let vector_store = LanceVectorStore::open("/data/vectors").await?;
 // or s3://bucket/vectors with AWS credentials in environment
 
-// PgVector — for existing Postgres shops
+// PgVector: for existing Postgres shops
 let vector_store = PgVectorStore::connect(&database_url, dimension).await?;
 ```
 
-Tantivy BM25 is included automatically when you use LanceDB — no separate wiring needed for lexical search.
+Tantivy BM25 is included automatically when you use LanceDB; no separate wiring needed for lexical search.
 
 ### Graph Store
 
@@ -146,7 +146,7 @@ let graph_store = InMemoryGraphStore::new();
 let graph_store = Neo4jStore::connect("bolt://neo4j:7687", "neo4j", &password).await?;
 ```
 
-If you omit `graph_store` from the builder entirely, graph and entity-extraction stages are silently skipped. No config changes needed — omitting the dependency is the disable switch.
+If you omit `graph_store` from the builder entirely, graph and entity-extraction stages are silently skipped. No config changes needed; omitting the dependency is the disable switch.
 
 ### Tree Store
 
@@ -224,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
 5. Wires retrievers based on which stores are present.
 6. Starts background tasks: secret reload loop, experiment eval loop.
 
-Any misconfiguration (bad strategy name, dimension mismatch, missing Postgres connection string in `production` mode) is returned from `build()` as an error — not discovered later.
+Any misconfiguration (bad strategy name, dimension mismatch, missing Postgres connection string in `production` mode) is returned from `build()` as an error, not discovered later.
 
 ---
 
@@ -291,7 +291,7 @@ Ingestion is async and queue-backed. `ingest()` enqueues a task and returns an `
 | `contextual` | When chunks need document-level context prefix for better precision. |
 | `graph` | When relationship-heavy queries are important (who-knows-who, part-of). |
 | `raptor` | When questions need abstractive reasoning across multiple documents. |
-| `full` | Maximum retrieval coverage — run all strategies. |
+| `full` | Maximum retrieval coverage: run all strategies. |
 
 For a new enterprise RAG system, start with `standard`. Add `graph` when entity-relationship queries become important, add `raptor` when abstractive summarisation queries start failing.
 
@@ -312,11 +312,11 @@ let op_id = engine.ingestion.ingest(IngestRequest {
 
 When `content` is `None`, the loader resolves `source_uri` using the configured loaders (S3, HTTP, local filesystem). When `content` is `Some`, it bypasses the loader and uses the provided bytes with `mime_hint` for format selection.
 
-`force: false` is the default — if the document's content hash matches a previous ingest, the pipeline skips it. Set `force: true` to re-chunk and re-embed even unchanged documents (useful after a chunker config change).
+`force: false` is the default: if the document's content hash matches a previous ingest, the pipeline skips it. Set `force: true` to re-chunk and re-embed even unchanged documents (useful after a chunker config change).
 
 ### Bulk ingest
 
-There is no separate batch API — submit one `ingest()` call per document. The worker pool handles concurrency. For large corpora, submit all tasks immediately and track them in parallel:
+There is no separate batch API; submit one `ingest()` call per document. The worker pool handles concurrency. For large corpora, submit all tasks immediately and track them in parallel:
 
 ```rust
 let operation_ids: Vec<_> = source_uris
@@ -351,7 +351,7 @@ The document registry tracks `(source_uri, collection_id)` pairs. On ingest:
 - **New** → normal ingestion flow.
 - **Interrupted cleanup** (previous run deleted the document record but left chunks) → registry detects `Replacing` status on the next ingest and runs cleanup before ingesting.
 
-Deduplication happens before any expensive model calls — a full corpus re-crawl touching unchanged documents is cheap.
+Deduplication happens before any expensive model calls, so a full corpus re-crawl touching unchanged documents is cheap.
 
 ---
 
@@ -361,7 +361,7 @@ Before chunking, each document passes through a preprocessor chain that converts
 
 | Set | Covered formats | Dependency |
 |---|---|---|
-| Built-in (`default_chains`) | PDF, HTML, XHTML, EPUB, DOCX | None — bundled parsers |
+| Built-in (`default_chains`) | PDF, HTML, XHTML, EPUB, DOCX | None (bundled parsers) |
 | `DoclingPreprocessor` | PDF, DOCX, PPTX, XLSX, EPUB, HTML, XHTML, PNG, JPEG, TIFF | docling-serve or `docling` CLI |
 
 Use the built-in set for the five common formats with no added infrastructure. Switch to `DoclingPreprocessor` when you need to handle presentations, spreadsheets, or images.
@@ -398,7 +398,7 @@ The CLI backend writes the document to a temporary file, runs the command, and r
 
 ### Format gap in built-in preprocessing
 
-If you stay with the built-in preprocessors, note that PPTX, XLSX, PNG, JPEG, and TIFF files pass through as raw bytes — no text is extracted. These documents will produce empty or near-empty chunks. Enable `DoclingPreprocessor` when your corpus includes these formats.
+If you stay with the built-in preprocessors, note that PPTX, XLSX, PNG, JPEG, and TIFF files pass through as raw bytes; no text is extracted. These documents will produce empty or near-empty chunks. Enable `DoclingPreprocessor` when your corpus includes these formats.
 
 ---
 
@@ -406,10 +406,10 @@ If you stay with the built-in preprocessors, note that PPTX, XLSX, PNG, JPEG, an
 
 Two-tier precedence:
 
-1. **Global default** (`config.toml [ingestion.chunking]`) — applies when a collection has no override.
-2. **Per-collection override** (`CollectionInfo.chunker_config`) — takes precedence over the global default.
+1. **Global default** (`config.toml [ingestion.chunking]`): applies when a collection has no override.
+2. **Per-collection override** (`CollectionInfo.chunker_config`): takes precedence over the global default.
 
-Resolution happens at job-start time. A bad config (unknown strategy, invalid params) fails the job immediately with a descriptive error — not mid-chunk.
+Resolution happens at job-start time. A bad config (unknown strategy, invalid params) fails the job immediately with a descriptive error, not mid-chunk.
 
 ### Selecting chunking strategies
 
@@ -423,15 +423,15 @@ The right strategy depends on your content type and downstream use:
 | Markdown / technical docs | `structure_aware` | `hierarchical` | `fixed` |
 | Short product descriptions | `propositional` | — | — |
 
-**`fixed`** — deterministic token counts. Predictable embedding cost. Best when content is uniform.
+**`fixed`**: deterministic token counts. Predictable embedding cost. Best when content is uniform.
 
-**`semantic`** — splits at sentence boundaries, keeping semantically coherent chunks. Higher quality embeddings for prose.
+**`semantic`**: splits at sentence boundaries, keeping semantically coherent chunks. Higher quality embeddings for prose.
 
-**`propositional`** — splits into atomic claims. Very small chunks, very high precision for fact-retrieval. High chunk count increases embedding cost.
+**`propositional`**: splits into atomic claims. Very small chunks, very high precision for fact-retrieval. High chunk count increases embedding cost.
 
-**`hierarchical`** — preserves heading/section structure. Best for knowledge graph extraction where structural relationships matter.
+**`hierarchical`**: preserves heading/section structure. Best for knowledge graph extraction where structural relationships matter.
 
-**`structure_aware`** — understands Markdown / HTML. Respects headings, code blocks, and lists. Best for documentation corpora.
+**`structure_aware`**: understands Markdown / HTML. Respects headings, code blocks, and lists. Best for documentation corpora.
 
 ### Update a collection's chunker config
 
@@ -471,21 +471,21 @@ for result in results {
 
 ### Orchestration modes
 
-**`Static`** — a fixed retriever is used for every query. Configure in `config.toml`:
+**`Static`**: a fixed retriever is used for every query. Configure in `config.toml`:
 
 ```toml
 [retrieval]
 orchestration_mode = "Static"
 ```
 
-**`QueryClassified`** — the query is sent to a lightweight classifier that routes it to the most appropriate retriever. Keyword-heavy queries go to BM25; entity-relationship queries go to Graph; abstract questions go to RAPTOR. Reduces unnecessary work for simple queries.
+**`QueryClassified`**: the query is sent to a lightweight classifier that routes it to the most appropriate retriever. Keyword-heavy queries go to BM25; entity-relationship queries go to Graph; abstract questions go to RAPTOR. Reduces unnecessary work for simple queries.
 
 ```toml
 [retrieval]
 orchestration_mode = "QueryClassified"
 ```
 
-**`ParallelFusion`** (recommended for production) — all configured retrievers run concurrently and results are merged using Reciprocal Rank Fusion (RRF), keyed on `document_id`. A document appearing in both vector and graph results is boosted; ordering within each retriever is preserved as a tie-breaker.
+**`ParallelFusion`** (recommended for production): all configured retrievers run concurrently and results are merged using Reciprocal Rank Fusion (RRF), keyed on `document_id`. A document appearing in both vector and graph results is boosted; ordering within each retriever is preserved as a tie-breaker.
 
 ```toml
 [retrieval]
@@ -538,7 +538,7 @@ curl -X POST /api/v1/chunk/benchmark \
 
 The response includes `recall_at_5`, `recall_at_10`, `mean_chunk_tokens`, and `chunk_size_p50`/`p95` per strategy. Pick the best candidate as the challenger.
 
-**Step 2: Explore with the inspect API.** Before committing to a full benchmark, use the stateless inspect endpoint to compare how strategies split a sample document. No storage, no embeddings — instant feedback.
+**Step 2: Explore with the inspect API.** Before committing to a full benchmark, use the stateless inspect endpoint to compare how strategies split a sample document. No storage, no embeddings, instant feedback.
 
 ```bash
 curl -X POST /api/v1/chunk/inspect \
@@ -566,7 +566,7 @@ curl -X POST /api/v1/collections/legal-contracts/experiments \
 # → { "experiment_id": "01924f2a-...", "status": "Active", ... }
 ```
 
-Only the `vector` field is overriding here; `graph` and `tree` remain at collection or global defaults. At most one active experiment per collection at a time — attempting to start a second returns HTTP 409.
+Only the `vector` field is overriding here; `graph` and `tree` remain at collection or global defaults. At most one active experiment per collection at a time; attempting to start a second returns HTTP 409.
 
 **Step 4: Monitor.**
 
@@ -581,16 +581,16 @@ The experiment transitions to `ReadyToPromote` when the background eval loop det
 **Step 5: Promote or abandon.**
 
 ```bash
-# Promote — collection's chunker_config updated; new ingestion uses promoted strategy
+# Promote: collection's chunker_config updated; new ingestion uses promoted strategy
 curl -X POST /api/v1/collections/legal-contracts/experiments/01924f2a-.../promote \
   -H "Authorization: Bearer $TOKEN"
 
-# Abandon — collection's chunker_config unchanged
+# Abandon: collection's chunker_config unchanged
 curl -X DELETE /api/v1/collections/legal-contracts/experiments/01924f2a-... \
   -H "Authorization: Bearer $TOKEN"
 ```
 
-Shadow writes are best-effort — a failure to write to the shadow namespace never fails the primary ingestion job. The primary collection is always the source of truth for queries.
+Shadow writes are best-effort: a failure to write to the shadow namespace never fails the primary ingestion job. The primary collection is always the source of truth for queries.
 
 ---
 
@@ -613,7 +613,7 @@ engine.eval.register_dataset(BenchmarkDataset {
     ],
 }).await?;
 
-// Run on-demand — or schedule with eval.schedule_cron in config.toml
+// Run on-demand, or schedule with eval.schedule_cron in config.toml
 let report = engine.eval.run("legal-golden").await?;
 println!("MRR: {:.3}  Hit@5: {:.3}  NDCG@10: {:.3}",
     report.mrr, report.hit_rate_at_5, report.ndcg_at_10);
@@ -716,7 +716,7 @@ cargo run -p arcanum-server
 
 ## 14. Evidence & Document Provenance
 
-Every chunk, RAPTOR tree summary, graph entity, and graph relation can be traced back to the document version and byte range it came from. This is what answers "show me the source" for a retrieved result — citations, compliance review, debugging a bad chunk.
+Every chunk, RAPTOR tree summary, graph entity, and graph relation can be traced back to the document version and byte range it came from. This is what answers "show me the source" for a retrieved result: citations, compliance review, debugging a bad chunk.
 
 ### How it fits together
 
@@ -731,7 +731,7 @@ Ingest ─→ snapshot (raw bytes + canonical JSON) ─→ chunk ─→ embed �
                                                               offset_start/offset_end)
 ```
 
-`make_vector_write_stage` writes a `ChunkMetadataRecord` for every chunk right after the vector store upsert succeeds — never before, so a failed vector write can't leave orphaned metadata. The record carries the chunk's exact byte range in the source document (`ChunkPosition::start`/`end`), not just which document it came from.
+`make_vector_write_stage` writes a `ChunkMetadataRecord` for every chunk right after the vector store upsert succeeds, never before, so a failed vector write can't leave orphaned metadata. The record carries the chunk's exact byte range in the source document (`ChunkPosition::start`/`end`), not just which document it came from.
 
 ### Wiring it up
 
@@ -764,9 +764,9 @@ let engine = ArcanumEngine::builder()
     .await?;
 ```
 
-Production swaps: `SqliteDocumentVersionStore` → `PostgresDocumentVersionStore`, `InMemoryChunkMetadataStore` → `PostgresChunkMetadataStore`, `LocalSnapshotStore` → an S3-backed `SnapshotStore` impl. `DefaultEvidenceResolver` itself doesn't change — it only depends on the four trait objects, not their concrete backends.
+Production swaps: `SqliteDocumentVersionStore` → `PostgresDocumentVersionStore`, `InMemoryChunkMetadataStore` → `PostgresChunkMetadataStore`, `LocalSnapshotStore` → an S3-backed `SnapshotStore` impl. `DefaultEvidenceResolver` itself doesn't change; it only depends on the four trait objects, not their concrete backends.
 
-If you skip `.evidence(...)`, the `/evidence/*` routes return `503` rather than `404` or panicking — the rest of the engine is unaffected.
+If you skip `.evidence(...)`, the `/evidence/*` routes return `503` rather than `404` or panicking; the rest of the engine is unaffected.
 
 ### Versioning policy
 
@@ -774,7 +774,7 @@ Set per collection via `DocumentVersionStore::set_versioning_policy`:
 
 | Policy | Behaviour | When to use |
 |---|---|---|
-| `Replace` (default) | Re-ingest supersedes the prior version immediately; only the latest is queryable | Most collections — content correction, no audit need |
+| `Replace` (default) | Re-ingest supersedes the prior version immediately; only the latest is queryable | Most collections: content correction, no audit need |
 | `AppendOnly` | Every version stays `Active` forever | Regulatory record-keeping where nothing is ever deleted |
 | `RetentionBased { days }` | Superseded versions are kept for `days`, then GC'd | Audit trail with a bounded retention window |
 
@@ -798,7 +798,7 @@ let chain = engine.evidence.as_ref().unwrap()
 //   block_ids, offset_start, offset_end
 ```
 
-`resolve_tree_node` / `resolve_entity` / `resolve_relation` work the same way but fan out: the returned `ProofNode.children` lists every chunk that contributed, and `raw_sources` is deduplicated by `(snapshot_uri, offset_start, offset_end)` so two children citing the exact same span don't produce duplicate citations — distinct spans from the same document are kept.
+`resolve_tree_node` / `resolve_entity` / `resolve_relation` work the same way but fan out: the returned `ProofNode.children` lists every chunk that contributed, and `raw_sources` is deduplicated by `(snapshot_uri, offset_start, offset_end)` so two children citing the exact same span don't produce duplicate citations; distinct spans from the same document are kept.
 
 `resolve_chunk` also cross-checks that the cited version is still `Active`; if it's been superseded or deleted (e.g. by GC), `chain.root.metadata.version_status` reports `"superseded"`, `"deleted"`, or `"unknown"` instead of silently returning stale evidence as if it were current.
 
@@ -815,7 +815,7 @@ Each returns `200` with a `ProofChain`, `404` if the ID doesn't resolve, or `503
 
 ### Garbage collection
 
-For `RetentionBased` collections, `GcWorker` removes the snapshot, vector chunks, tree nodes, graph entities, and chunk metadata for each superseded version once it ages past the retention window — scoped to that exact version, so an active version sharing the same `source_uri` is never touched.
+For `RetentionBased` collections, `GcWorker` removes the snapshot, vector chunks, tree nodes, graph entities, and chunk metadata for each superseded version once it ages past the retention window, scoped to that exact version, so an active version sharing the same `source_uri` is never touched.
 
 ```rust
 use arcanum_ingestion::PostgresGcWorker;
@@ -832,20 +832,20 @@ let engine = ArcanumEngine::builder()
     .await?;
 ```
 
-`PostgresGcWorker` requires Postgres — its bookkeeping query joins `document_versions` and `source_documents`, so there's no in-memory equivalent for local development. Trigger a pass on a schedule (cron, k8s CronJob):
+`PostgresGcWorker` requires Postgres: its bookkeeping query joins `document_versions` and `source_documents`, so there's no in-memory equivalent for local development. Trigger a pass on a schedule (cron, k8s CronJob):
 
 ```bash
 curl -X POST /admin/gc -H "Authorization: Bearer $ADMIN_TOKEN"
 # → { "versions_deleted": 12, "snapshots_removed": 12, "chunks_removed": 340, "errors": [] }
 ```
 
-A single version's deletion failure (e.g. a transient store error) is recorded in `errors` and that version stays `superseded` for retry on the next pass — the rest of the batch still completes.
+A single version's deletion failure (e.g. a transient store error) is recorded in `errors` and that version stays `superseded` for retry on the next pass; the rest of the batch still completes.
 
 ---
 
 ## 15. MCP Integration
 
-`arcanum-mcp` ships both a handler crate and a minimal standalone `arcanum-mcp` binary (env-driven: `ARCANUM_AUTH_SECRET` required, `MCP_PORT` default `8081`, `ARCANUM_DB_PATH` SQLite store; no embedder or vector store wired, so `search`/`ingest` need library wiring — see `examples/`). For full integration, construct the JSON-RPC handler and mount `McpServer` yourself, e.g. in your own `main.rs` alongside your HTTP server:
+`arcanum-mcp` ships both a handler crate and a minimal standalone `arcanum-mcp` binary (env-driven: `ARCANUM_AUTH_SECRET` required, `MCP_PORT` default `8081`, `ARCANUM_DB_PATH` SQLite store; no embedder or vector store wired, so `search`/`ingest` need library wiring; see `examples/`). For full integration, construct the JSON-RPC handler and mount `McpServer` yourself, e.g. in your own `main.rs` alongside your HTTP server:
 
 ```rust
 use arcanum_mcp::{McpServer, McpJsonRpcHandler};
@@ -868,7 +868,7 @@ Configure Claude to use it in `.claude/config.json`:
 }
 ```
 
-Claude can then call `search`, `ingest`, `list_collections`, and `eval_run` directly in its tool-use loop — all four are implemented. `list_collections` returns the collections visible to the caller, ACL-filtered; `eval_run` runs retrieval-quality evaluation against caller-supplied golden samples and returns an MRR/NDCG/Hit-Rate report. Each call requires a valid Bearer token passed as an `Authorization` header — no shared session, no bypass.
+Claude can then call `search`, `ingest`, `list_collections`, and `eval_run` directly in its tool-use loop; all four are implemented. `list_collections` returns the collections visible to the caller, ACL-filtered; `eval_run` runs retrieval-quality evaluation against caller-supplied golden samples and returns an MRR/NDCG/Hit-Rate report. Each call requires a valid Bearer token passed as an `Authorization` header: no shared session, no bypass.
 
 ---
 
@@ -912,7 +912,7 @@ Key metrics to alert on:
 | `arcanum_circuit_breaker_state{backend="embedder"}` | == "open" |
 | `arcanum_circuit_breaker_state{backend="vector_store"}` | == "open" |
 
-The Grafana dashboard stack ships in `arcanum-telemetry/grafana/`. Import the JSON dashboard files into your Grafana instance — they assume a Prometheus datasource named `arcanum-metrics`.
+The Grafana dashboard stack ships in `arcanum-telemetry/grafana/`. Import the JSON dashboard files into your Grafana instance; they assume a Prometheus datasource named `arcanum-metrics`.
 
 ---
 
@@ -978,15 +978,15 @@ let engine = ArcanumEngine::builder()
     .await?;
 ```
 
-`POST /admin/rotate-keys` triggers an immediate reload outside the normal interval — useful during incident response.
+`POST /admin/rotate-keys` triggers an immediate reload outside the normal interval, useful during incident response.
 
 ### Health checks
 
 ```bash
-# Liveness — process is alive
+# Liveness: process is alive
 GET /health
 
-# Readiness — all backends reachable
+# Readiness: all backends reachable
 GET /health/ready
 ```
 
@@ -1000,8 +1000,8 @@ Use `/health/ready` as the Kubernetes readiness probe. It checks the vector stor
 
 **Setting `force: true` on large corpora.** This bypasses the deduplication check and re-embeds every document, even unchanged ones. Set it only on specific documents where you want to reprocess, or after a chunker/embedder change where consistency is required.
 
-**Running `full` pipeline without graph or tree stores.** The `full` template gracefully skips graph and tree stages when the corresponding stores are not wired. This is intentional. If you expect graph or tree ingestion, verify the stores are wired by checking the startup log — it lists which stages are enabled.
+**Running `full` pipeline without graph or tree stores.** The `full` template gracefully skips graph and tree stages when the corresponding stores are not wired. This is intentional. If you expect graph or tree ingestion, verify the stores are wired by checking the startup log; it lists which stages are enabled.
 
-**Single active experiment limit.** Only one shadow experiment can be `Active` per collection. Starting a second before the first is promoted or abandoned returns HTTP 409. This is enforced atomically — no TOCTOU window.
+**Single active experiment limit.** Only one shadow experiment can be `Active` per collection. Starting a second before the first is promoted or abandoned returns HTTP 409. This is enforced atomically; no TOCTOU window.
 
 **Token embedding dimension mismatch.** The embedder dimension must match what the vector store was initialised with. Arcanum validates this at startup, not at query time. If you change models, you must re-create the collection (which re-creates its index) and re-ingest.

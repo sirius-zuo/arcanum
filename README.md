@@ -2,7 +2,7 @@
 
 **Production-grade Retrieval-Augmented Generation engine written in Rust.**
 
-Arcanum combines five retrieval strategies — dense vector, BM25 lexical, knowledge graph, hierarchical RAPTOR tree, and token-level ColBERT — into a single, enterprise-ready system with pluggable backends, per-backend chunking strategies, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
+Arcanum combines five retrieval strategies (dense vector, BM25 lexical, knowledge graph, hierarchical RAPTOR tree, and token-level ColBERT) into a single, enterprise-ready system with pluggable backends, per-backend chunking strategies, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
 
 ---
 
@@ -10,14 +10,14 @@ Arcanum combines five retrieval strategies — dense vector, BM25 lexical, knowl
 
 Most RAG frameworks are single-strategy wrappers around one vector database. Arcanum is different:
 
-- **Five retrieval strategies in a single orchestrator** — hybrid dense+sparse, graph-aware, and hierarchical retrieval are first-class, not afterthoughts.
-- **Per-backend chunking** — vector, graph, and tree backends each run their own chunker. A knowledge graph benefits from hierarchical chunks; a vector index benefits from semantic coherence. Both are first-class.
-- **Chunk strategy experimentation built-in** — shadow experiments A/B-test a challenger chunking strategy against the live collection without affecting queries. An offline benchmark harness and an inspect API let you measure before you commit.
-- **Hexagonal architecture enforced at the type level** — every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
-- **Built-in evidence layer** — every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
-- **Compiled, not interpreted** — the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
-- **MCP handler included** — Claude and other AI assistants can call `search`, `ingest`, `list_collections`, and `eval_run` over JSON-RPC 2.0 directly; all four tools are implemented (see [MCP Integration](#mcp-integration)).
-- **Three runtime modes** — `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
+- **Five retrieval strategies in a single orchestrator**: hybrid dense+sparse, graph-aware, and hierarchical retrieval are first-class, not afterthoughts.
+- **Per-backend chunking**: vector, graph, and tree backends each run their own chunker. A knowledge graph benefits from hierarchical chunks; a vector index benefits from semantic coherence. Both are first-class.
+- **Chunk strategy experimentation built-in**: shadow experiments A/B-test a challenger chunking strategy against the live collection without affecting queries. An offline benchmark harness and an inspect API let you measure before you commit.
+- **Hexagonal architecture enforced at the type level**: every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
+- **Built-in evidence layer**: every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
+- **Compiled, not interpreted**: the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
+- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, and `eval_run` over JSON-RPC 2.0 directly; all four tools are implemented (see [MCP Integration](#mcp-integration)).
+- **Three runtime modes**: `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
 
 ---
 
@@ -110,7 +110,7 @@ Performs a coarse ANN pass followed by a MaxSim token-vector re-rank. Falls back
 | `QueryClassified` | Classifier routes queries to the most relevant retriever |
 | `ParallelFusion` | All retrievers run concurrently; document-level RRF fusion |
 
-**Fusion key:** Arcanum keys cross-backend fusion on `document_id`, not `chunk_id`. With per-backend chunkers each backend produces independent `ChunkId`s that never align — `document_id` is the stable, correct cross-backend key. A document appearing in both vector and graph results is boosted; one appearing in only one is not penalised.
+**Fusion key:** Arcanum keys cross-backend fusion on `document_id`, not `chunk_id`. With per-backend chunkers each backend produces independent `ChunkId`s that never align; `document_id` is the stable, correct cross-backend key. A document appearing in both vector and graph results is boosted; one appearing in only one is not penalised.
 
 ---
 
@@ -127,9 +127,9 @@ Before chunking, every document passes through a preprocessor chain that convert
 | `default_chains` (built-in) | PDF, HTML, XHTML, EPUB, DOCX | No `[ingestion.docling]` config |
 | `DoclingPreprocessor` (docling) | PDF, DOCX, PPTX, XLSX, EPUB, HTML, XHTML, PNG, JPEG, TIFF | `[ingestion.docling]` present in config |
 
-`DoclingPreprocessor` integrates with [docling-serve](https://github.com/DS4SD/docling-serve) and extends format coverage to presentations, spreadsheets, and images — formats the built-in parsers do not handle.
+`DoclingPreprocessor` integrates with [docling-serve](https://github.com/DS4SD/docling-serve) and extends format coverage to presentations, spreadsheets, and images, none of which the built-in parsers handle.
 
-**HTTP backend** — posts each document to a running docling-serve instance. Supports synchronous and asynchronous (poll-based) modes:
+**HTTP backend**: posts each document to a running docling-serve instance. Supports synchronous and asynchronous (poll-based) modes:
 
 ```toml
 [ingestion.docling.backend]
@@ -140,7 +140,7 @@ use_async        = true   # poll for completion instead of blocking
 poll_interval_ms = 2000
 ```
 
-**CLI backend** — shells out to a local `docling` binary. Useful for air-gapped environments or local development without a server:
+**CLI backend**: shells out to a local `docling` binary. Useful for air-gapped environments or local development without a server:
 
 ```toml
 [ingestion.docling.backend]
@@ -162,10 +162,10 @@ Preprocess ─┬─→ vector_chunk (chunkers.vector) → embed → vector_writ
 
 Each branch uses its own `Arc<dyn Chunker>` resolved from a two-tier config:
 
-1. **Collection-level override** — per-collection `PerBackendChunkConfig`, set at creation or updated via the collection API.
-2. **Global default** — `IngestionConfig.chunking`, applied when the collection has no override.
+1. **Collection-level override**: per-collection `PerBackendChunkConfig`, set at creation or updated via the collection API.
+2. **Global default**: `IngestionConfig.chunking`, applied when the collection has no override.
 
-Both paths go through `ChunkRegistry.build()` at job-start time — a bad config fails immediately, not mid-ingest.
+Both paths go through `ChunkRegistry.build()` at job-start time, so a bad config fails immediately, not mid-ingest.
 
 ### Built-in Chunking Strategies
 
@@ -197,7 +197,7 @@ Specify a strategy in config or per-collection override:
 | `raptor` | + TreeEmbed + RaptorBuild | Hierarchical tree for summarisation queries |
 | `full` | All of the above, conditionally wired | Maximum retrieval coverage |
 
-Stages are opt-in based on what is present on the engine. If no `graph_store` is wired, graph stages are silently skipped. No code changes required — just wire or omit a dependency in the builder.
+Stages are opt-in based on what is present on the engine. If no `graph_store` is wired, graph stages are silently skipped. No code changes required; just wire or omit a dependency in the builder.
 
 ### Document Deduplication
 
@@ -207,7 +207,7 @@ A `DocumentRegistry` tracks each `(source_uri, collection_id)` pair. On re-inges
 
 ## Evidence & Provenance
 
-Every retrievable unit — a vector chunk, a RAPTOR tree summary, a graph entity, a graph relation — can be traced back to the exact document version and byte range it came from. This answers "where did this come from?" for compliance, debugging, and citation use cases.
+Every retrievable unit (a vector chunk, a RAPTOR tree summary, a graph entity, a graph relation) can be traced back to the exact document version and byte range it came from. This answers "where did this come from?" for compliance, debugging, and citation use cases.
 
 ### Document Versioning
 
@@ -219,7 +219,7 @@ Every retrievable unit — a vector chunk, a RAPTOR tree summary, a graph entity
 | `AppendOnly` | All versions remain `Active` indefinitely |
 | `RetentionBased { days }` | Superseded versions are kept for `days`, then garbage-collected |
 
-`SnapshotStore` persists the raw bytes (and an optional canonical JSON sidecar) for each version, so the original document can always be re-fetched — not just the chunks derived from it. `ChunkMetadataStore` records, per chunk, the `document_id`, `version_num`, `source_uri`, `snapshot_uri`, `page`/`section`/`block_ids`, and exact `offset_start`/`offset_end` in the source document — written alongside the vector store during ingestion.
+`SnapshotStore` persists the raw bytes (and an optional canonical JSON sidecar) for each version, so the original document can always be re-fetched, not just the chunks derived from it. `ChunkMetadataStore` records, per chunk, the `document_id`, `version_num`, `source_uri`, `snapshot_uri`, `page`/`section`/`block_ids`, and exact `offset_start`/`offset_end` in the source document, written alongside the vector store during ingestion.
 
 ### Resolving Evidence
 
@@ -232,9 +232,9 @@ pub struct ProofChain {
 }
 ```
 
-- `resolve_chunk(chunk_id)` — looks up `ChunkMetadataRecord`, cross-checks the version is still `Active` (flagged in the response if not), and returns a single-source `ProofChain`.
-- `resolve_tree_node(node_id)` — fans out to every leaf chunk under a RAPTOR summary node.
-- `resolve_entity(entity_id)` / `resolve_relation(source, type, target)` — fans out to every chunk a graph entity or relation was extracted from.
+- `resolve_chunk(chunk_id)`: looks up `ChunkMetadataRecord`, cross-checks the version is still `Active` (flagged in the response if not), and returns a single-source `ProofChain`.
+- `resolve_tree_node(node_id)`: fans out to every leaf chunk under a RAPTOR summary node.
+- `resolve_entity(entity_id)` / `resolve_relation(source, type, target)`: fans out to every chunk a graph entity or relation was extracted from.
 
 ```http
 GET /evidence/chunk/{chunk_id}
@@ -247,7 +247,7 @@ All four require a Bearer token and return `404` if the ID is unresolvable, `503
 
 ### Retention & Garbage Collection
 
-For collections using `RetentionBased` policy, `GcWorker` (implemented by `PostgresGcWorker`) purges superseded versions once their retention window expires — removing the snapshot, vector chunks, tree nodes, graph entities, and chunk metadata for that specific version, without touching any other version that happens to share the same `source_uri`.
+For collections using `RetentionBased` policy, `GcWorker` (implemented by `PostgresGcWorker`) purges superseded versions once their retention window expires, removing the snapshot, vector chunks, tree nodes, graph entities, and chunk metadata for that specific version, without touching any other version that happens to share the same `source_uri`.
 
 ```http
 POST /admin/gc
@@ -267,12 +267,12 @@ let engine = ArcanumEngine::builder()
     .evidence(Arc::new(DefaultEvidenceResolver::new(
         chunk_metadata_store.clone(), version_store.clone(), tree_store.clone(), graph_store.clone(),
     )))
-    .gc_worker(gc_worker) // PostgresGcWorker — requires Postgres, production only
+    .gc_worker(gc_worker) // PostgresGcWorker: requires Postgres, production only
     .build()
     .await?;
 ```
 
-`chunk_metadata_store`, `evidence`, and `gc_worker` are all optional — omit them and the `/evidence/*` routes return `503` and `/admin/gc` does too, with no other behaviour change. `GcWorker` requires Postgres for its bookkeeping (`document_versions` table), so there is no in-memory equivalent for local development.
+`chunk_metadata_store`, `evidence`, and `gc_worker` are all optional: omit them and the `/evidence/*` routes return `503` and `/admin/gc` does too, with no other behaviour change. `GcWorker` requires Postgres for its bookkeeping (`document_versions` table), so there is no in-memory equivalent for local development.
 
 ---
 
@@ -318,14 +318,14 @@ Content-Type: application/json
 }
 ```
 
-Returns `recall_at_5`, `recall_at_10`, `mean_chunk_tokens`, `chunk_size_p50`, `chunk_size_p95` per strategy. No LLM calls — recall against labeled document IDs is the signal.
+Returns `recall_at_5`, `recall_at_10`, `mean_chunk_tokens`, `chunk_size_p50`, `chunk_size_p95` per strategy. No LLM calls; recall against labeled document IDs is the signal.
 
 ### C — Shadow Experiments (live A/B testing)
 
 Test a challenger strategy on real traffic without affecting queries:
 
 ```http
-# Start experiment — all new documents are also written to a shadow namespace
+# Start experiment: all new documents are also written to a shadow namespace
 POST /api/v1/collections/{id}/experiments
 { "vector": { "strategy": "semantic", "params": { "max_chars": 800 } }, "graph": null, "tree": null }
 
@@ -340,7 +340,7 @@ POST /api/v1/collections/{id}/experiments/{exp_id}/promote
 DELETE /api/v1/collections/{id}/experiments/{exp_id}
 ```
 
-Shadow writes are best-effort — a shadow write failure never fails the primary ingestion job. Only the primary namespace is queried. At most one `Active` experiment per collection at a time.
+Shadow writes are best-effort: a shadow write failure never fails the primary ingestion job. Only the primary namespace is queried. At most one `Active` experiment per collection at a time.
 
 ---
 
@@ -351,7 +351,7 @@ use arcanum_engine::ArcanumEngine;
 use arcanum_core::config::ArcanumConfig;
 use std::sync::Arc;
 
-// Minimal — vector search only
+// Minimal: vector search only
 let engine = ArcanumEngine::builder()
     .auth_secret("your-32-char-minimum-secret-here")
     .vector_store(Arc::new(my_lance_db_store))
@@ -359,7 +359,7 @@ let engine = ArcanumEngine::builder()
     .build()
     .await?;
 
-// Full — all retrieval strategies
+// Full: all retrieval strategies
 let engine = ArcanumEngine::builder()
     .config(ArcanumConfig::from_env())
     .auth_secret(std::env::var("ARCANUM_AUTH_SECRET")?)
@@ -388,12 +388,12 @@ engine.ingestion.ingest(IngestRequest {
     mime_hint: None,
 }, &user_id).await?;
 
-// Via HTTP — URI reference
+// Via HTTP: URI reference
 curl -X POST /api/v1/ingest \
   -H "Authorization: Bearer $TOKEN" \
   -d '{"source_uri":"s3://bucket/doc.pdf","collection_id":"legal","pipeline":"full"}'
 
-// Via HTTP — direct upload
+// Via HTTP: direct upload
 curl -X POST "/api/v1/upload?collection_id=legal&filename=contract.pdf&pipeline=full" \
   -H "Authorization: Bearer $TOKEN" \
   --data-binary @contract.pdf
@@ -418,10 +418,10 @@ let results = engine.retrieval.search(
 
 Two token types, one middleware:
 
-- **HMAC API keys** (`HS256`) — issued per user with an `allowed_collections` scope list. `is_admin: true` grants full access.
-- **RS256 admin JWTs** — for admin operations; validated against a configurable public key PEM.
+- **HMAC API keys** (`HS256`): issued per user with an `allowed_collections` scope list. `is_admin: true` grants full access.
+- **RS256 admin JWTs**: for admin operations; validated against a configurable public key PEM.
 
-All MCP tool calls and admin routes require an `Authorization: Bearer <token>` header. The MCP server performs per-request token extraction — there are no session tokens or shared credentials.
+All MCP tool calls and admin routes require an `Authorization: Bearer <token>` header. The MCP server performs per-request token extraction; there are no session tokens or shared credentials.
 
 ### Role-Based Access Control (RBAC)
 
@@ -435,7 +435,7 @@ Admin operations are gated by a three-tier role hierarchy:
 
 ### Audit Logging
 
-Every authenticated operation is recorded with `user_id`, `collection_id`, operation type, result status, and timestamp. The audit trail is queryable via the admin API. `audit_retention_days` (default 90) exists in config but isn't enforced yet — `AuditLogger` is an unbounded in-memory `Vec` with no eviction.
+Every authenticated operation is recorded with `user_id`, `collection_id`, operation type, result status, and timestamp. The audit trail is queryable via the admin API. `audit_retention_days` (default 90) exists in config but isn't enforced yet: `AuditLogger` is an unbounded in-memory `Vec` with no eviction.
 
 ### Circuit Breakers
 
@@ -443,7 +443,7 @@ Independent circuit breakers protect the embedding provider and the vector store
 
 ### Secret Store & Hot Reload
 
-`SecretStore` is a trait — back it with HashiCorp Vault, AWS Secrets Manager, or environment variables. `ArcanumEngine` holds the store and spawns a background task that calls `store.reload()` on a configurable interval (default 300 s). `POST /admin/rotate-keys` triggers an immediate reload after key rotation.
+`SecretStore` is a trait: back it with HashiCorp Vault, AWS Secrets Manager, or environment variables. `ArcanumEngine` holds the store and spawns a background task that calls `store.reload()` on a configurable interval (default 300 s). `POST /admin/rotate-keys` triggers an immediate reload after key rotation.
 
 ### CORS
 
@@ -480,9 +480,9 @@ runtime_mode = "enterprise"   # development | production | enterprise
 
 | Mode | Metadata backend | Startup enforcement |
 |---|---|---|
-| `development` | SQLite permitted | None — suitable for local iteration |
+| `development` | SQLite permitted | None (suitable for local iteration) |
 | `production` | Postgres required | SQLite rejected at startup |
-| `enterprise` | Postgres required | SQLite rejected at startup — identical to `production`; no additional checks yet |
+| `enterprise` | Postgres required | SQLite rejected at startup (identical to `production`; no additional checks yet) |
 
 Mode is also readable from the `ARCANUM_RUNTIME_MODE` environment variable. Config is layered: defaults → file (`config.toml` or `config.yaml`) → environment variables, with later layers taking precedence.
 
@@ -492,16 +492,16 @@ Mode is also readable from the `ARCANUM_RUNTIME_MODE` environment variable. Conf
 
 ## MCP Integration
 
-Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`) plus a minimal standalone `arcanum-mcp` binary. The bin is env-driven — `ARCANUM_AUTH_SECRET` (required), `MCP_PORT` (default `8081`), `ARCANUM_DB_PATH` (SQLite version store) — but wires no embedder or vector store, so `search`/`ingest` need library wiring (see `examples/`) before they return real results. Mounting the handler behind your own `main.rs` alongside your HTTP server remains the full-integration path (see [DEVELOPMENT.md](DEVELOPMENT.md#15-mcp-integration)):
+Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`) plus a minimal standalone `arcanum-mcp` binary. The bin is env-driven, configured via `ARCANUM_AUTH_SECRET` (required), `MCP_PORT` (default `8081`), and `ARCANUM_DB_PATH` (SQLite version store), but wires no embedder or vector store, so `search`/`ingest` need library wiring (see `examples/`) before they return real results. Mounting the handler behind your own `main.rs` alongside your HTTP server remains the full-integration path (see [DEVELOPMENT.md](DEVELOPMENT.md#15-mcp-integration)):
 
 | Tool | Parameters | Status |
 |---|---|---|
-| `search` | `query`, `collection_id`, `top_k` | Implemented — returns an array of scored chunks |
-| `ingest` | `source_uri`, `collection_id`, `pipeline` | Implemented — returns an `operation_id` for tracking |
-| `list_collections` | — | Implemented — returns collections visible to the caller, ACL-filtered |
+| `search` | `query`, `collection_id`, `top_k` | Implemented; returns an array of scored chunks |
+| `ingest` | `source_uri`, `collection_id`, `pipeline` | Implemented; returns an `operation_id` for tracking |
+| `list_collections` | — | Implemented; returns collections visible to the caller, ACL-filtered |
 | `eval_run` | `collection_id` | Implemented; params: `collection_id`, `samples[{query, relevant_chunk_ids}]`, `k` (default 5, max 100) |
 
-Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request — no shared session, no bypass.
+Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request: no shared session, no bypass.
 
 ---
 
@@ -527,14 +527,14 @@ queue_capacity      = 10000
 retry_max_attempts  = 3
 retry_base_delay_ms = 1000
 
-# Docling preprocessor — omit this section to use the built-in parsers
+# Docling preprocessor: omit this section to use the built-in parsers
 [ingestion.docling.backend]
 type             = "http"
 base_url         = "http://docling-serve:5001"
 timeout_secs     = 300
 use_async        = false
 
-# Global default chunker — per-collection overrides take precedence
+# Global default chunker: per-collection overrides take precedence
 [ingestion.chunking.vector]
 strategy = "semantic"
 params   = { max_chars = 800 }
@@ -588,11 +588,11 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 | `arcanum-ingestion` | Loaders, preprocessors (HTML/PDF/EPUB/DOCX + DoclingPreprocessor for PPTX/XLSX/images), chunkers, ChunkRegistry |
 | `arcanum-middleware` | Circuit breaker, retry policy, bounded queue |
 | `arcanum-pipeline` | DAG stage runner and built-in pipeline templates |
-| `arcanum-evidence` | `DefaultEvidenceResolver` — resolves chunks/tree nodes/entities/relations back to source documents |
+| `arcanum-evidence` | `DefaultEvidenceResolver`: resolves chunks/tree nodes/entities/relations back to source documents |
 | `arcanum-retrieval` | Multi-strategy orchestrator and all Retriever impls |
 | `arcanum-eval` | Quality metrics, golden datasets, scheduled evaluation |
 | `arcanum-chunk-eval` | Chunk inspect API, offline benchmark harness, shadow experiment evaluation |
-| `arcanum-engine` | `ArcanumEngine` builder — wires the full system |
+| `arcanum-engine` | `ArcanumEngine` builder: wires the full system |
 | `arcanum-mcp` | MCP JSON-RPC 2.0 server |
 | `arcanum-server` | Axum HTTP server, admin portal, WebSocket handler |
 | `arcanum-telemetry` | Structured tracing, Prometheus metrics, Grafana stack |
@@ -601,4 +601,4 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT; see [LICENSE](LICENSE).

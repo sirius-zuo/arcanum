@@ -1,4 +1,4 @@
-# Production Deployment Guide — Folio Library Search
+# Production Deployment Guide: Folio Library Search
 
 The Full pipeline needs a vector store, graph store, tree store, and model
 providers for embeddings + enrichment.
@@ -72,14 +72,14 @@ let version_store = Arc::new(PostgresDocumentVersionStore::new(&db_url).await?);
 let snapshot_store = Arc::new(LocalSnapshotStore::new("data/snapshots")); // or an S3-backed SnapshotStore
 let chunk_metadata_store = Arc::new(PostgresChunkMetadataStore::new(&db_url).await?);
 
-// The evidence resolver and GC worker are built from the same stores wired above —
+// The evidence resolver and GC worker are built from the same stores wired above;
 // no separate config. GC enforces RetentionBased versioning policy and needs Postgres
 // for its bookkeeping, so (unlike the resolver) it isn't available in the dev example.
 let gc_worker = Arc::new(PostgresGcWorker::new(
     &db_url, version_store.clone(), snapshot_store, vector_store.clone(),
     tree_store.clone(), graph_store.clone(), chunk_metadata_store.clone(),
 ).await?);
-// .gc_worker(gc_worker) — add to the builder chain alongside .evidence(...)
+// .gc_worker(gc_worker): add to the builder chain alongside .evidence(...)
 ```
 
 > **Note on full-length books:** RAPTOR build time for a 300,000-word novel is
@@ -89,7 +89,7 @@ let gc_worker = Arc::new(PostgresGcWorker::new(
 >
 > **Note on author/series browsing:** it consumes the framework endpoint
 > `GET /api/v1/graph`, typed against `Arc<dyn GraphStore>`. Swapping
-> `InMemoryGraphStore` for `Neo4jStore` requires **no** changes — the endpoint serves
+> `InMemoryGraphStore` for `Neo4jStore` requires **no** changes; the endpoint serves
 > whichever graph store the engine holds.
 
 Add imports:

@@ -1,4 +1,4 @@
-# Production Deployment Guide — Devforge Docs Assistant
+# Production Deployment Guide: Devforge Docs Assistant
 
 This guide explains how to replace the dev in-memory stores with production-grade services.
 

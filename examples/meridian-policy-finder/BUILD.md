@@ -1,4 +1,4 @@
-# Production Deployment Guide — Meridian Policy Finder
+# Production Deployment Guide: Meridian Policy Finder
 
 Replace the dev in-memory/local stores with production-grade services.
 

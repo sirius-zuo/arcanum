@@ -2,11 +2,11 @@
 
 Research intelligence powered by [Arcanum](../../README.md).
 
-**Scenario:** Helix Labs is a 200-person drug discovery startup. Scientists query the company's research knowledge — compound assays, clinical trials, and mechanisms.
+**Scenario:** Helix Labs is a 200-person drug discovery startup. Scientists query the company's research knowledge: compound assays, clinical trials, and mechanisms.
 
 **Arcanum configuration:**
-- Ingestion: **Full** — entity extraction + knowledge graph + RAPTOR tree + contextual enrichment
-- Retrieval: **QueryClassified** — entity queries route to Graph, synthesis queries to RAPTOR, broad queries to Vector + BM25
+- Ingestion: **Full**: entity extraction + knowledge graph + RAPTOR tree + contextual enrichment
+- Retrieval: **QueryClassified**: entity queries route to Graph, synthesis queries to RAPTOR, broad queries to Vector + BM25
 
 Dev mode uses **in-memory** graph and tree stores plus an Ollama enricher, so the full pipeline runs with no external services.
 
@@ -56,9 +56,9 @@ Open **http://localhost:5173**.
 
 | Query | Routes to |
 |---|---|
-| `does Compound 17g inhibit EGFR?` | **Graph** — entity traversal |
-| `summarise adverse events across all Phase 2 trials` | **RAPTOR** — document synthesis |
-| `CRISPR delivery mechanisms in neuronal tissue` | **Vector + BM25** — semantic |
+| `does Compound 17g inhibit EGFR?` | **Graph**: entity traversal |
+| `summarise adverse events across all Phase 2 trials` | **RAPTOR**: document synthesis |
+| `CRISPR delivery mechanisms in neuronal tissue` | **Vector + BM25**: semantic |
 
 3. **Knowledge Graph** → see the extracted entities (compounds, proteins) and their relationships. Click a node to inspect it.
 

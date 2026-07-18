@@ -5,9 +5,9 @@
 `arcanum-retrieval` turns a `Query` into a `RetrievalResult`.
 `orchestrator.rs`'s `RetrievalOrchestrator::retrieve` runs an optional
 query-transform fan-out, a configurable subset of five strategy
-`Retriever` implementations — `VectorRetriever`, `Bm25Retriever`,
-`GraphRetriever`, `RaptorRetriever`, `ColBertRetriever` (`strategies/`)
-— in parallel per query, merges hits with `fusion.rs`'s `RrfFusion`, then
+`Retriever` implementations (`VectorRetriever`, `Bm25Retriever`,
+`GraphRetriever`, `RaptorRetriever`, `ColBertRetriever`, all in `strategies/`)
+in parallel per query, merges hits with `fusion.rs`'s `RrfFusion`, then
 pipes the result through `reranker.rs`'s `Reranker`, an optional
 `processor.rs::Deduplicator` pass, and always `processor.rs
 ::CitationGenerator` (Runtime Flow 1). `WeightedFusion`/`LearnedFusion`
@@ -22,7 +22,7 @@ never links a concrete storage crate.
 
 ## Position in the System
 
-`arcanum-retrieval` consumes [Core](core.md) — `arcanum_core::traits`
+`arcanum-retrieval` consumes [Core](core.md): `arcanum_core::traits`
 (`Retriever`, `Reranker`, `Evaluator` from `traits::retrieval`;
 `LexicalIndex`; `GraphPlanner`; `VectorStore`/`GraphStore`/`TreeStore` as
 trait objects; `Embedder`/`TextEnricher`; `CacheInvalidator`) and
@@ -34,24 +34,24 @@ crate's own `[dev-dependencies]`, referenced solely from
 `strategies/bm25.rs`'s and `strategies/graph.rs`'s `#[cfg(test)]`
 modules.
 
-- [Engine](engine.md) — `ArcanumEngineBuilder::build` constructs
+- [Engine](engine.md): `ArcanumEngineBuilder::build` constructs
   `VectorRetriever`, `ColBertRetriever`, `GraphRetriever`,
   `RaptorRetriever`, and `Bm25Retriever` (conditionally, per which
   backends were configured), adds each to a `RetrievalOrchestrator`, and
   forwards its own `query_transformer`/`reranker`/`dedup_threshold`
   fields into the orchestrator's matching `with_*` setters (Runtime Flow
-  1) — then wraps it in a `RetrievalService` alongside auth, audit, and
-  — when `RetrievalConfig.query_cache` is set — a `QueryCache` attached
+  1), then wraps it in a `RetrievalService` alongside auth, audit, and,
+  when `RetrievalConfig.query_cache` is set, a `QueryCache` attached
   via `with_cache` and registered on the same `CacheInvalidationBroadcaster`
   the pipeline worker fires on content changes (Key Decisions, Implementation
   Notes; full wiring on [Engine](engine.md)).
-- [Storage](storage.md) — `arcanum-vector`'s `Bm25Index` implements
+- [Storage](storage.md): `arcanum-vector`'s `Bm25Index` implements
   `LexicalIndex`; `arcanum-graph`'s `GraphQueryPlanner` implements
   `GraphPlanner`; both are constructed by `arcanum-engine` and handed in
   as trait objects, never named by this crate's own build.
-- [Evidence](evidence.md) — `CitationGenerator` reads `ChunkProvenance`
+- [Evidence](evidence.md): `CitationGenerator` reads `ChunkProvenance`
   fields (`document_version`, `snapshot_uri`, `section`) PR #44 added.
-- [Evaluation](evaluation.md) — `arcanum-eval` implements the
+- [Evaluation](evaluation.md): `arcanum-eval` implements the
   `Evaluator` trait `traits::retrieval` also defines, scoring
   `(Query, Vec<RetrievedChunk>)` pairs this crate produces.
 
@@ -111,7 +111,7 @@ classDiagram
 `VectorStore::search`. `Bm25Retriever` (`bm25.rs`) is scoped to one
 collection (`new`) or accepts any (`new_global`); it calls
 `LexicalIndex::search` and, per its own doc comment, builds each
-`RetrievedChunk` from only the returned `(store_id, score)` pair — a stub
+`RetrievedChunk` from only the returned `(store_id, score)` pair: a stub
 `DocumentId` and `text: store_id`, not a real `IndexedChunk`, "until a
 metadata lookup is wired in." `GraphRetriever` (`graph.rs`) calls
 `GraphPlanner::plan_entities` for seed entity names, then
@@ -122,7 +122,7 @@ walks `TreeStore::get_level` from `max_depth` down to `0`, scoring each
 `TreeNode` by cosine similarity times a per-level weight
 `1.0 / (1.0 + level)`. `ColBertRetriever` (`colbert.rs`) does a coarse
 `VectorStore::search` over `(top_k * 4).max(20)` candidates, then
-reranks by `max_sim` — the MaxSim token-level score — when a chunk's
+reranks by `max_sim` (the MaxSim token-level score) when a chunk's
 `IndexedChunk.token_vectors` is present, falling back to the coarse
 score otherwise. Every strategy's `retrieve` rejects a `Query` with no
 `collection_id` first (Key Decisions).
@@ -135,13 +135,13 @@ score otherwise. Every strategy's `retrieve` rejects a `Query` with no
 per-strategy weight and keeps the max. `LearnedFusion::fuse` forwards to
 `WeightedFusion::fuse`. `reranker.rs`'s four `Reranker` implementations
 and `transformer.rs`'s three `QueryTransformer` implementations are
-independent, self-contained components — none references
+independent, self-contained components; none references
 `RetrievalOrchestrator` or vice versa. `cache.rs`'s `QueryCache` wraps a
 `RwLock<HashMap<String, CacheEntry>>` with size-bounded, oldest-first
 eviction on `insert` and a TTL check on `get`; it implements
 `CacheInvalidator::invalidate_document` by retaining only keys that
 don't contain the given `collection_id`, since `QueryCache::cache_key`
-formats as `"{text}:{collection_id}:{top_k}:{filters_json}"` — the
+formats as `"{text}:{collection_id}:{top_k}:{filters_json}"`; the
 serialized `query.filters` is a fourth segment (Key Decisions).
 
 ## Runtime Flows
@@ -151,35 +151,35 @@ serialized `query.filters` is a fourth segment (Key Decisions).
 opt-in, defaulting to pre-2.6 behavior.)
 1. If `with_query_transformer` is set, `QueryTransformer::transform` fans
    the query out to N (HyDE, multi-query, rewrite); an empty result or
-   `Err` warns and falls back to `vec![query.clone()]`. Unset by default
-   — `retrieve` then runs the original query only, matching pre-2.6
+   `Err` warns and falls back to `vec![query.clone()]`. Unset by default;
+   `retrieve` then runs the original query only, matching pre-2.6
    behavior.
 2. Each resulting query runs through `fan_out_and_fuse` (pre-2.6 logic,
    unchanged, now extracted into its own method): `active_retrievers
    (query)` selects wired `Retriever`s per `OrchestratorMode` (`Static` =
    fixed list, `ParallelFusion` = every wired retriever, `QueryClassified`
-   = `classify_query`'s lexical heuristic — `[Raptor]` for summarization
+   = `classify_query`'s lexical heuristic: `[Raptor]` for summarization
    signals, `[Graph, Vector]` for quoted text/≥2 capitalized words, else
    `[Vector, Bm25]`); each runs in its own `tokio::spawn` under a 5s
    `strategy_timeout` and `info_span!`, warning and dropping on timeout/
    `Err` rather than failing the call, always recording
    `arcanum_retrieval_total`/`_duration_seconds`. Surviving
    `(RetrievalStrategy, Vec<RetrievedChunk>)` pairs feed `RrfFusion::fuse
-   (.., 60.0)` — `k` is still hardcoded here (Implementation Notes).
+   (.., 60.0)`; `k` is still hardcoded here (Implementation Notes).
 3. If step 1 produced more than one query, a second `RrfFusion::fuse(..,
    60.0)` pass merges the per-query fused sets, reusing the same
    function; the `RetrievalStrategy` tag each entry needs for that call
    is a required-but-unused placeholder (`RetrievalStrategy::Vector`),
    since `fuse` only groups/scores by `document_id`. `strategy_scores` on
    the final result is captured here, before rerank/dedup.
-4. `self.reranker.rerank(query, fused.clone())` reorders the fused set —
+4. `self.reranker.rerank(query, fused.clone())` reorders the fused set:
    defaults to `NullReranker` (passthrough, unconfigured order unchanged
    from pre-2.6); an `Err` warns and falls back to the pre-rerank order.
 5. If `with_dedup_threshold` is set, `Deduplicator::deduplicate` drops
-   near-duplicate chunks (cosine similarity ≥ threshold) — catching
+   near-duplicate chunks (cosine similarity ≥ threshold), catching
    cross-document near-duplicates `RrfFusion`'s `document_id`-keyed dedup
    structurally can't. Unset by default: dedup is skipped.
-6. `CitationGenerator::generate` always runs over the final set —
+6. `CitationGenerator::generate` always runs over the final set:
    `RetrievalResult.citations` is no longer hardcoded `vec![]`. It maps
    the richer `processor::Citation` onto the narrower `arcanum_core
    ::types::Citation`, dropping `chunk_id`/`collection_id`, which aren't
@@ -187,8 +187,8 @@ opt-in, defaulting to pre-2.6 behavior.)
 7. `arcanum-engine`'s `RetrievalService::search` wraps the whole call: it
    checks `AuthMiddleware::can_access_collection` and a
    `vector_store_cb: Arc<CircuitBreaker>` before calling
-   `orchestrator.retrieve`, and — when `with_cache` attached one (Key
-   Decisions) — checks `QueryCache::get(&cache_key)` before and
+   `orchestrator.retrieve`, and, when `with_cache` attached one (Key
+   Decisions), checks `QueryCache::get(&cache_key)` before and
    `QueryCache::insert` after; a cache hit still writes an `AuditEntry`
    before returning, same as a miss.
 
@@ -199,18 +199,18 @@ opt-in, defaulting to pre-2.6 behavior.)
    Arc::new(GraphQueryPlanner::new(enricher, 2))` (`arcanum-graph`), then
    passes the first as `bm25.clone() as Arc<dyn LexicalIndex>` into
    `Bm25Retriever::new_global` and the second directly into
-   `GraphRetriever::new` — see [Core](core.md)'s "LexicalIndex and
+   `GraphRetriever::new`; see [Core](core.md)'s "LexicalIndex and
    GraphPlanner extracted" decision.
 2. `Bm25Retriever::retrieve` calls only `self.index.search(collection_id,
    text, top_k)` through the trait object; `GraphRetriever::retrieve`
    calls only `self.graph_store.query(..)` and
-   `self.planner.plan_entities(..)`, both `Arc<dyn _>` fields — neither
+   `self.planner.plan_entities(..)`, both `Arc<dyn _>` fields; neither
    retriever's non-test code names `Bm25Index`, `InMemoryGraphStore`, or
    `GraphQueryPlanner`.
 3. Each retriever's own test module constructs the real
    `arcanum_vector`/`arcanum_graph` types directly (`FakeLexicalIndex` in
    `bm25.rs`'s tests is a hand-rolled stub, but `graph.rs`'s tests use
-   real `InMemoryGraphStore` and `GraphQueryPlanner`) — reachable only
+   real `InMemoryGraphStore` and `GraphQueryPlanner`), reachable only
    because both crates sit in `[dev-dependencies]`.
 
 **3. Which of the five strategies the engine actually wires**
@@ -219,7 +219,7 @@ opt-in, defaulting to pre-2.6 behavior.)
    Some(embedder))` guard (`ColBertRetriever::new` needs exactly those two
    deps); `GraphRetriever` iff `graph_store`/`vector_store`/`embedder`/
    `enricher` are all `Some`; `RaptorRetriever` iff `tree_store`/`embedder`
-   are `Some`; `Bm25Retriever::new_global` iff `bm25_index` is `Some` —
+   are `Some`; `Bm25Retriever::new_global` iff `bm25_index` is `Some`;
    each addition increments an `arcanum_active_retrievers` gauge.
 2. `OrchestratorMode::Static` is built as the fixed pair `[Vector, Bm25]`
    regardless of which other retrievers were wired; the builder warns if
@@ -229,7 +229,7 @@ opt-in, defaulting to pre-2.6 behavior.)
    `ColBertRetriever` is now constructed (previous item) and reachable
    under `ParallelFusion` (the config default, iterating every registered
    retriever), but `classify_query` still never returns `RetrievalStrategy
-   ::ColBert` and `Static`'s fixed list still never includes it — so only
+   ::ColBert` and `Static`'s fixed list still never includes it, so only
    `ParallelFusion` selects it (Implementation Notes).
 
 ## Key Decisions
@@ -237,201 +237,201 @@ opt-in, defaulting to pre-2.6 behavior.)
 Newest first.
 
 ### `QueryCache` activated behind config; cache key made filter-aware
-- **Decision** — `RetrievalConfig.query_cache: Option<QueryCacheConfig>`
+- **Decision**: `RetrievalConfig.query_cache: Option<QueryCacheConfig>`
   (`max_entries`, `ttl_secs`; default `None`) now gates construction:
   when set, `ArcanumEngineBuilder::build` builds a `QueryCache`, attaches
   it to `RetrievalService` via `with_cache`, and pushes the same `Arc`
   into the `CacheInvalidationBroadcaster` invalidator list alongside the
   pipeline's other invalidators. `QueryCache::cache_key` also changed:
-  a fourth segment — `serde_json`-serialized `query.filters` — is
+  a fourth segment (`serde_json`-serialized `query.filters`) is
   appended to the existing `text:collection_id:top_k` key, so two
   otherwise-identical queries with different `MetadataFilter`s no longer
   share a cache slot; filter `Vec` order is part of the key, so a
   reordered-but-equal filter set produces a cache miss rather than a
   false hit (fails safe, not fails free).
-- **Context** — PR #52 executed a plan (untracked) to activate two
+- **Context**: PR #52 executed a plan (untracked) to activate two
   "fully-implemented-but-unreachable" caches, `QueryCache` among them.
   The filter-aware key was added mid-PR as "review-driven hardening":
   the PR body records that the whole-branch review found the prior
-  filter-blind key let "cached results violate filter scoping" — a
+  filter-blind key let "cached results violate filter scoping", a
   data-leak class bug, since a cache hit for one filter set could be
   served to a query using a different one.
-- **Alternatives rejected** — auto-deriving cache size/TTL rather than
+- **Alternatives rejected**: auto-deriving cache size/TTL rather than
   requiring an explicit `QueryCacheConfig` is not discussed in the PR
   body; the config field defaults to `None` (off), matching this crate's
   existing pattern of explicit opt-in for optional pipeline stages (see
   "Pipeline stages (2.6)," below).
-- **Consequences** — `QueryCache` is reachable in production for the
+- **Consequences**: `QueryCache` is reachable in production for the
   first time since it was written (superseding the prior "unreachable"
   Key Decision and Implementation Notes entry below, left as history).
   `RetrievalService::search` now audit-logs a cache hit the same as a
-  miss (previously hits skipped the audit log — also review-driven).
+  miss (previously hits skipped the audit log, also review-driven).
   Follow-ups the PR body defers are in Implementation Notes.
-- **Ref** — 2026-07-16, PR #52.
+- **Ref**: 2026-07-16, PR #52.
 
 ### Pipeline stages (2.6) are opt-in, not auto-derived from `enricher`
-- **Decision** — the new query-transform/rerank/dedup stages activate
+- **Decision**: the new query-transform/rerank/dedup stages activate
   only via their own explicit `with_query_transformer`/`with_reranker`/
   `with_dedup_threshold` setters; `CitationGenerator` is the one
   exception and always runs.
-- **Context** — commit message for 2.6: "Deliberately not auto-derived
+- **Context**: commit message for 2.6: "Deliberately not auto-derived
   from the existing `enricher` builder field the way 2.4 auto-wired the
   evidence resolver: `LlmReranker` calls the enricher once per chunk per
   query — real latency/cost that shouldn't silently activate for
   deployments that already pass an enricher for graph planning."
   Citations were made unconditional since "this is a pure bugfix filling
   an always-empty field, not a new opt-in capability."
-- **Alternatives rejected** — auto-wiring a default reranker whenever
-  `enricher` is set (2.4's pattern for `DefaultEvidenceResolver`) —
+- **Alternatives rejected**: auto-wiring a default reranker whenever
+  `enricher` is set (2.4's pattern for `DefaultEvidenceResolver`),
   rejected for the reason above.
-- **Consequences** — existing deployments see zero behavior change from
+- **Consequences**: existing deployments see zero behavior change from
   2.6 unless they opt in; `citations` is populated for every caller from
   this change on, with no opt-out.
-- **Ref** — 2026-07-15, PR #50, commit `b7e81d70`.
+- **Ref**: 2026-07-15, PR #50, commit `b7e81d70`.
 
 ### `CitationGenerator` reads `ChunkProvenance` first, `ChunkMetadata` as fallback
-- **Decision** — `CitationGenerator::generate` reads `source_uri`,
+- **Decision**: `CitationGenerator::generate` reads `source_uri`,
   `section`, `document_version`, and `snapshot_uri` from
   `Chunk.provenance` (`ChunkProvenance`), falling back to the legacy
   `ChunkMetadata` map's `"source_uri"`/`"title"` keys only when the
   provenance fields are empty.
-- **Context** — PR #44 (Evidence Phase 1) introduced `ChunkProvenance`
+- **Context**: PR #44 (Evidence Phase 1) introduced `ChunkProvenance`
   "replacing loose metadata fields (`source_uri`, `snapshot_uri`,
   `canonical_uri`, `page`, `section`, `block_ids`)," and its bug-fix
   table records that three LanceDB tests broke because "tests set
   `source_uri` in `chunk.metadata` but `build_batch` now reads from
-  `chunk.provenance.source_uri`" — confirming provenance became the
+  `chunk.provenance.source_uri`", confirming provenance became the
   workspace-wide source of truth this generator was updated to match.
-- **Alternatives rejected** — No PR or design doc records rejecting a
+- **Alternatives rejected**: No PR or design doc records rejecting a
   provenance-only (no fallback) approach; the doc comment in
   `processor.rs` frames the metadata fallback as accommodating "legacy
   chunks that lack provenance."
-- **Consequences** — citations for chunks written after PR #44 report
+- **Consequences**: citations for chunks written after PR #44 report
   accurate `document_version`/`snapshot_uri`; chunks that
   `Bm25Retriever`/`RaptorRetriever` synthesize with
   `provenance: Default::default()` (Implementation Notes) still produce
   empty-`source_uri` citations even under this provenance-first path.
-- **Ref** — 2026-06-16, PR #44.
+- **Ref**: 2026-06-16, PR #44.
 
 ### Fusion key changed from `ChunkId` to `DocumentId`
-- **Decision** — `RrfFusion`, `WeightedFusion`, and `LearnedFusion` all
+- **Decision**: `RrfFusion`, `WeightedFusion`, and `LearnedFusion` all
   key fusion on `DocumentId` (via the shared `reduce_to_best_per_doc`
   helper) instead of `ChunkId`.
-- **Context** — the PR body: "When different retrieval backends (vector,
+- **Context**: the PR body: "When different retrieval backends (vector,
   graph, BM25) use independent chunkers, the same document produces
   different `ChunkId`s. Fusion keyed on `ChunkId` treated them as
   separate results. Keying on `DocumentId` enables cross-backend
   document-level boosting."
-- **Alternatives rejected** — the PR body frames the prior `ChunkId`
+- **Alternatives rejected**: the PR body frames the prior `ChunkId`
   keying (itself introduced as a security fix by commit `c703b837`) as
   the behavior being replaced, not a considered alternative to the new
   design.
-- **Consequences** — two chunks from different backends belonging to the
-  same document now merge into one fused result — but only for
+- **Consequences**: two chunks from different backends belonging to the
+  same document now merge into one fused result, but only for
   strategies whose `document_id` is the real stored one.
   `VectorRetriever`, `GraphRetriever`, and `ColBertRetriever` pass
   through the `IndexedChunk` a store's `search` returned, preserving it;
   `Bm25Retriever`/`RaptorRetriever` construct a fresh `DocumentId::new()`
   per chunk instead (Implementation Notes), so this boosting does not
   apply to either of those two strategies today.
-- **Ref** — 2026-06-07, PR #39.
+- **Ref**: 2026-06-07, PR #39.
 
 ### `LexicalIndex`/`GraphPlanner` extraction — retrieval-side view
-- **Decision** — `Bm25Retriever` and `GraphRetriever` hold `Arc<dyn
+- **Decision**: `Bm25Retriever` and `GraphRetriever` hold `Arc<dyn
   LexicalIndex>`/`Arc<dyn GraphPlanner>` instead of concrete
   `arcanum_vector`/`arcanum_graph` types, and `Cargo.toml` moved both
   crates to `[dev-dependencies]`. Full rationale for the trait shapes is
   on [Core](core.md); this is the retrieval-side consequence.
-- **Context** — before this commit, `arcanum-retrieval` depended on
+- **Context**: before this commit, `arcanum-retrieval` depended on
   `arcanum-vector` and `arcanum-graph` as regular dependencies.
-- **Alternatives rejected** — no PR or design doc records a rationale for
+- **Alternatives rejected**: no PR or design doc records a rationale for
   the specific trait shapes (see core.md).
-- **Consequences** — `arcanum-retrieval`'s non-test build has zero path
+- **Consequences**: `arcanum-retrieval`'s non-test build has zero path
   dependency on either concrete storage crate; the only place in this
   crate still importing `arcanum_graph::{GraphQueryPlanner,
   InMemoryGraphStore}` is `strategies/graph.rs`'s test module, reachable
   only via the dev-dependency.
-- **Ref** — 2026-06-01, commit `976c9458`.
+- **Ref**: 2026-06-01, commit `976c9458`.
 
 ### `QueryCache` implements `CacheInvalidator` (R8)
-- **Decision** — `QueryCache` implements `CacheInvalidator
+- **Decision**: `QueryCache` implements `CacheInvalidator
   ::invalidate_document`, evicting every entry whose key contains the
   given `collection_id`, alongside its own `get`/`insert`/`cache_key` API.
-- **Context** — No PR or design doc records a rationale; observed current
+- **Context**: No PR or design doc records a rationale; observed current
   state: `QueryCache::cache_key` formats as
   `"{text}:{collection_id}:{top_k}"`, making substring-matching on
   `collection_id` a workable invalidation strategy without an index.
-  **Update (2026-07-16, PR #52)** — the key gained a fourth `filters_json`
+  **Update (2026-07-16, PR #52)**: the key gained a fourth `filters_json`
   segment (Key Decisions, above); substring-matching on `collection_id`
   still works unchanged since that segment sits earlier in the key.
-- **Alternatives rejected** — none recorded.
-- **Consequences** — `QueryCache` is ready to register on a
+- **Alternatives rejected**: none recorded.
+- **Consequences**: `QueryCache` is ready to register on a
   `CacheInvalidationBroadcaster` alongside other `CacheInvalidator`
   implementations (e.g. `arcanum-models`' `EmbeddingCache`, see
-  [Core](core.md)) — but `ArcanumEngineBuilder::build` never registers it
+  [Core](core.md)), but `ArcanumEngineBuilder::build` never registers it
   there, nor calls `RetrievalService::with_cache` (Implementation Notes),
   so this capability has no effect in the current composition root.
-  **Update (2026-07-16, PR #52)** — both gaps closed: `build` now
+  **Update (2026-07-16, PR #52)**: both gaps are closed; `build` now
   registers `QueryCache` on the broadcaster and calls `with_cache`
   whenever `RetrievalConfig.query_cache` is set (Key Decisions, above).
-- **Ref** — 2026-05-31, commit `13a0ef50`.
+- **Ref**: 2026-05-31, commit `13a0ef50`.
 
 ### Explicit `collection_id` required; fail-open collection scope denied
-- **Decision** — `VectorRetriever`, `GraphRetriever`, `RaptorRetriever`,
+- **Decision**: `VectorRetriever`, `GraphRetriever`, `RaptorRetriever`,
   `ColBertRetriever`, and `Bm25Retriever::retrieve` all return
   `ArcanumError::Config` immediately if `query.collection_id` is `None`,
   instead of defaulting to an unscoped or global search.
-- **Context** — the commit title states the intent: "address security
+- **Context**: the commit title states the intent: "address security
   findings — deny fail-open collection scope, key RRF on `ChunkId`,
   require explicit collection in `Bm25Retriever`." (The RRF-on-`ChunkId`
   part was later superseded by PR #39, above.)
-- **Alternatives rejected** — No PR or design doc records the prior
+- **Alternatives rejected**: No PR or design doc records the prior
   fail-open behavior or alternatives weighed; observed current state:
   every strategy retriever, including `RaptorRetriever`/`ColBertRetriever`
   (added afterward), implements the same guard as its first step.
-- **Consequences** — no strategy retriever can run a cross-collection
+- **Consequences**: no strategy retriever can run a cross-collection
   query; `Query.collection_id` is mandatory at the retriever layer,
   matching `RetrievalService::search`'s own check ([Engine](engine.md)).
-- **Ref** — 2026-05-29, commit `c703b837`.
+- **Ref**: 2026-05-29, commit `c703b837`.
 
 ## Implementation Notes
 
 - **`QueryTransformer`/`Reranker`/`Deduplicator`/`CitationGenerator`
-  unwired — resolved, PR #50.** All four are now called from `retrieve`;
+  unwired (resolved, PR #50).** All four are now called from `retrieve`;
   see Runtime Flow 1 for the 6-stage pipeline. `RrfFusion::fuse`'s `60.0`
   `k` constant is still hardcoded (unchanged).
-- **`GraphRetriever`'s `chunk_ids` computed and never used — resolved,
-  PR #49.** Now wired through as a `MetadataFilter{field: "chunk_id", op:
+- **`GraphRetriever`'s `chunk_ids` computed and never used (resolved,
+  PR #49).** Now wired through as a `MetadataFilter{field: "chunk_id", op:
   In}` on the `VectorStore::search` call, with matching filter support
   added to both `LanceDbStore` and `PgVectorStore`.
 - **`Bm25Retriever`/`RaptorRetriever` fabricate a fresh `DocumentId` per
-  chunk (undercuts PR #39) — split: `RaptorRetriever` fixed,
+  chunk (undercuts PR #39); split: `RaptorRetriever` fixed,
   `Bm25Retriever` still open.** `RaptorRetriever` (PR #49) now derives a
   deterministic UUID v5 from `TreeNode.source_uri`, so its hits fuse
   correctly by `DocumentId`. `Bm25Retriever` still calls
   `DocumentId::new()` per chunk: PR #49's commit message deferred this
   half to "land alongside the BM25 write-path wiring (Stage 2.1 of the
   remediation plan), since fixing the schema gap once covers both," but
-  Stage 2.1 (PR #50) only wired the ingestion *write* path — this
+  Stage 2.1 (PR #50) only wired the ingestion *write* path; this
   *read*-path fabrication is unchanged, the deferred fix did not
   materialize. (The Fusion-key Key Decision's Consequences field, below,
-  predates this split and still calls both retrievers broken — left as
+  predates this split and still calls both retrievers broken, left as
   history; this bullet is the current truth.)
-- **`LanceDbStore`'s hardcoded `score: 1.0` — resolved, PR #49** (fix
+- **`LanceDbStore`'s hardcoded `score: 1.0` (resolved, PR #49)** (fix
   itself on [Storage](storage.md)). Real similarity now comes from
   LanceDB's `_distance` column, so `reduce_to_best_per_doc`'s per-doc
   selection is meaningful for `LanceDbStore` too, not just `PgVectorStore`.
-- **`ColBertRetriever` unconstructed — resolved, PR #50 (2.2).** Built
+- **`ColBertRetriever` unconstructed (resolved, PR #50, stage 2.2).** Built
   alongside `VectorRetriever` in the same guard (Runtime Flow 3); the
   classifier gap (`classify_query` never selects `ColBert`) is separate
   and still open.
-- **`QueryCache` unreachable in production — resolved, PR #52.**
+- **`QueryCache` unreachable in production (resolved, PR #52).**
   `ArcanumEngineBuilder::build` now constructs it and calls
   `RetrievalService::with_cache` whenever `RetrievalConfig.query_cache`
   is `Some` (Key Decisions, above). One residual gap (open): the
   `CacheInvalidationBroadcaster` that consumes the invalidator list is
   built only inside the pipeline-wiring block, which is gated on both an
-  embedder and a vector store being configured — a deployment that
+  embedder and a vector store being configured, so a deployment that
   enables `query_cache` without those (e.g. BM25/graph-only) gets a
   reachable, caching `QueryCache` that never receives invalidation
   signals, so entries persist until their TTL rather than being evicted
@@ -441,24 +441,24 @@ Newest first.
   *contain* the given `collection_id`, not an exact per-segment match
   (Key Decisions, "`QueryCache` implements `CacheInvalidator`"); a
   `collection_id` that happens to be a substring of another key's query
-  text or filters JSON evicts extra entries. Safe direction — it only
+  text or filters JSON evicts extra entries. Safe direction (it only
   ever over-evicts, never leaves a stale entry live for the wrong
-  collection — so PR #52 shipped without changing it.
+  collection), so PR #52 shipped without changing it.
 - **`record_source_association` wiring for per-source embedding
-  invalidation — deferred, PR #52.** Out of scope for this crate today
+  invalidation (deferred, PR #52).** Out of scope for this crate today
   (`QueryCache` has no per-source granularity to begin with), but PR
   #52's body lists it as a follow-up for the sibling `EmbeddingCache`
   activation on [Core](core.md)/[Engine](engine.md).
-- **`RetrievalConfig.fusion_strategy`/`.query_cache_enabled` — removed,
+- **`RetrievalConfig.fusion_strategy`/`.query_cache_enabled`: removed,
   not just dead (PR #49).** Both fields and the `FusionStrategy` enum
   they were the only user of were deleted outright (matching
   [Core](core.md)'s "Dead config fields removed"); `retrieve` still always
   calls `RrfFusion::fuse(.., 60.0)` unconditionally, same effective
   behavior, just without the misleading unread config.
-- **`Bm25Retriever` write path — resolved, PR #50 (2.1).**
+- **`Bm25Retriever` write path (resolved, PR #50, stage 2.1).**
   `Bm25Index::index_chunks` is now called from the ingestion write path
   (`arcanum-pipeline/src/stages.rs`, best-effort alongside the vector
-  upsert) — a freshly ingested collection's `Bm25Retriever` results are no
+  upsert); a freshly ingested collection's `Bm25Retriever` results are no
   longer guaranteed empty. See [Pipeline](pipeline.md)/[Storage](storage.md).
 
 ## Source Anchors

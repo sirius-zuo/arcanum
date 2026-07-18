@@ -2,11 +2,11 @@
 
 Digital library search and discovery powered by [Arcanum](../../README.md).
 
-**Scenario:** Folio is a 60-person digital library platform for schools and public libraries. Patrons upload books and query across the collection — from exact passages to whole-book summaries to thematic discovery.
+**Scenario:** Folio is a 60-person digital library platform for schools and public libraries. Patrons upload books and query across the collection: from exact passages to whole-book summaries to thematic discovery.
 
 **Arcanum configuration:**
-- Ingestion: **Full** — author/character/series knowledge graph + RAPTOR tree (passage → chapter summary → book summary) + contextual enrichment
-- Retrieval: **ParallelFusion** (RRF, 600 ms timeout) — passage, chapter-summary, book-summary, and graph results coexist
+- Ingestion: **Full**: author/character/series knowledge graph + RAPTOR tree (passage → chapter summary → book summary) + contextual enrichment
+- Retrieval: **ParallelFusion** (RRF, 600 ms timeout): passage, chapter-summary, book-summary, and graph results coexist
 
 Dev mode uses **in-memory** graph and tree stores plus an Ollama enricher.
 
@@ -61,7 +61,7 @@ Open **http://localhost:5173**.
 | `summarise Moby Dick` | **Book Summary** (RAPTOR L2) |
 | `the riddle contest in the dark` | **Passage** / **Chapter Summary** |
 
-3. **Discover** → thematic queries like `books about obsession and fate` — results are grouped, anchored by whole-book summaries.
+3. **Discover** → thematic queries like `books about obsession and fate`; results are grouped, anchored by whole-book summaries.
 
 ---
 

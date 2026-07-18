@@ -2,11 +2,11 @@
 
 Contract portfolio intelligence powered by [Arcanum](../../README.md).
 
-**Scenario:** Vantage Legal is the 120-person legal team at a midsize PE firm. Lawyers query the full contract portfolio — clauses, obligations, parties, and precedents.
+**Scenario:** Vantage Legal is the 120-person legal team at a midsize PE firm. Lawyers query the full contract portfolio: clauses, obligations, parties, and precedents.
 
 **Arcanum configuration:**
-- Ingestion: **Full** — entity extraction (parties) + knowledge graph + RAPTOR + contextual enrichment
-- Retrieval: **ParallelFusion** (RRF, 500 ms per-strategy timeout) — all four strategies run per query
+- Ingestion: **Full**: entity extraction (parties) + knowledge graph + RAPTOR + contextual enrichment
+- Retrieval: **ParallelFusion** (RRF, 500 ms per-strategy timeout): all four strategies run per query
 
 Dev mode uses **in-memory** graph and tree stores plus an Ollama enricher.
 
@@ -56,10 +56,10 @@ Open **http://localhost:5173**.
 
 | Query | Strongest contributor |
 |---|---|
-| `indemnification cap` | **BM25** — exact term |
-| `data residency obligations` | **Vector** — semantic |
-| `obligations that survive termination` | **RAPTOR** — clause-group synthesis |
-| `TechCorp` | **Graph** — party entity |
+| `indemnification cap` | **BM25**: exact term |
+| `data residency obligations` | **Vector**: semantic |
+| `obligations that survive termination` | **RAPTOR**: clause-group synthesis |
+| `TechCorp` | **Graph**: party entity |
 
 Each result shows a four-strategy contribution sidebar (BM25 · Vector · Graph · RAPTOR).
 
