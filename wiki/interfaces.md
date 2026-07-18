@@ -10,10 +10,12 @@ tracing/metrics machinery both are instrumented with. They are split from
 `arcanum-engine` so transport concerns (HTTP routing, JSON-RPC framing,
 CORS, WebSocket upgrade) never leak into the service layer, and split from
 each other because a deployment may run either transport independently.
-Neither crate has a `[[bin]]` target of its own; both are libraries a host
-binary (the example apps under `examples/`) assembles alongside
-`arcanum_telemetry::init()` — see Implementation Notes for what that means
-for `arcanum-mcp` in practice today.
+`arcanum-server` has no `[[bin]]` target of its own — it's a library a
+host binary (the example apps under `examples/`) assembles alongside
+`arcanum_telemetry::init()`. `arcanum-mcp` now ships its own
+`[[bin]] arcanum-mcp` (`src/main.rs`, PR #57) in addition to being
+importable as a library — see Runtime Flow 2 and Implementation Notes for
+what its minimal env-driven wiring covers today.
 
 ## Position in the System
 
@@ -62,6 +64,7 @@ classDiagram
     class WsHandler
     class MetricsRoute
     class ArcanumEngine
+    class McpBin
     class McpServer
     class McpJsonRpcHandler
     class CapabilityRegistry
@@ -89,10 +92,12 @@ classDiagram
     AdminRoutes --> ArcanumEngine
     GraphRoutes --> ArcanumEngine
     WsHandler --> ArcanumEngine : events.subscribe
+    McpBin --> ArcanumEngine : builds (auth + version_store only)
+    McpBin --> McpServer
     McpServer --> McpJsonRpcHandler
     McpJsonRpcHandler --> ArcanumEngine
-    McpJsonRpcHandler ..> CapabilityRegistry : never constructed
-    McpJsonRpcHandler ..> SessionManager : never constructed
+    McpJsonRpcHandler --> CapabilityRegistry : default_registry()
+    McpJsonRpcHandler --> SessionManager : sessions.create()
     TelemetryInit ..> ArcanumEngine : independent — host binary wires both
 ```
 
@@ -113,14 +118,20 @@ every admin route. `ws.rs`'s `ws_handler` validates independently again
 `Sec-WebSocket-Protocol`) since axum's WS upgrade path bypasses the shared
 helper.
 
-`arcanum-mcp` is three unconnected pieces today: `McpServer` (`server.rs`)
-is a tiny axum app exposing `POST /mcp` and `GET /health`, forwarding the
-JSON-RPC body to `McpJsonRpcHandler::handle`; `McpJsonRpcHandler`
-(`handlers.rs`) matches on the JSON-RPC `method` field and, for
-`tools/call`, dispatches by tool name in `dispatch_tool`; `CapabilityRegistry`
-(`capability_registry.rs`) and `SessionManager`/`McpSession` (`session.rs`)
-are fully implemented and unit-tested but neither is ever constructed by
-`McpServer` or `McpJsonRpcHandler` — see Implementation Notes.
+`arcanum-mcp`'s pieces are wired together as of PR #57: `McpServer`
+(`server.rs`) is a tiny axum app exposing `POST /mcp` and `GET /health`,
+forwarding the JSON-RPC body to `McpJsonRpcHandler::handle`;
+`McpJsonRpcHandler` (`handlers.rs`) owns an `Arc<CapabilityRegistry>` and
+an `Arc<SessionManager>`, both built in `McpJsonRpcHandler::new`/
+`new_test` — the registry via `default_registry()`, which registers all
+four tools (`ingest`, `search`, `list_collections`, `eval_run`) with a
+JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
+field: `tools/list` returns `self.registry.list()` (sorted by name)
+directly, `initialize` calls `self.sessions.create(client_info)` and
+returns the new `McpSession`'s `id` in `_meta.sessionId`, and `tools/call`
+extracts claims before dispatching by tool name in `dispatch_tool`. See
+Runtime Flow 2 for the full request path and Implementation Notes for
+what's still not wired (session eviction, MCP-path rate limiting).
 
 `arcanum_telemetry::init(TelemetryConfig)` is a free function: it builds an
 optional OTLP `TracerProvider` (only if `otlp_endpoint` is set, degrading
@@ -148,23 +159,52 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    crate's macros — every handler in `api.rs`, `admin.rs`, and the
    collection routes follows this same time-then-record pattern.
 
-**2. MCP `tools/call` for `search`**
+**2. MCP session start, `tools/list`, and `tools/call` dispatch**
+0. Since PR #57, `arcanum-mcp` also ships a runnable `[[bin]] arcanum-mcp`
+   (`main.rs`): it reads `ARCANUM_AUTH_SECRET` (required, ≥32 chars),
+   `MCP_PORT` (default `8081`), and `ARCANUM_DB_PATH` (default
+   `./arcanum-mcp.db`); builds an `ArcanumEngine` with only `auth_secret`
+   and a `SqliteDocumentVersionStore` wired — no embedder or vector
+   store — and logs that honestly before calling
+   `McpServer::new(handler, port).start()`. `search` and `ingest` calls
+   against this bin will error until a deployment wires the rest through
+   `ArcanumEngineBuilder` itself (library use, `examples/`).
 1. `POST /mcp` calls `McpJsonRpcHandler::handle`, which reads
-   `request["method"]`.
-2. For `tools/call`, `handle` calls `self.extract_claims(&headers)` — a
+   `request["method"]`. For `"initialize"`, `handle` calls
+   `self.sessions.create(client_info)` unconditionally (no auth required)
+   and returns the new `McpSession`'s `id` in the result's
+   `_meta.sessionId`; `SessionManager` has no eviction, so sessions
+   accumulate for the process lifetime (see Implementation Notes).
+2. For `"tools/list"`, `handle` returns `self.registry.list()` — sorted by
+   name, each entry carrying its `input_schema` — directly as the
+   `tools` array; this is `CapabilityRegistry`, not a hand-written
+   literal, so it cannot drift from what `dispatch_tool` actually
+   implements.
+3. For `"tools/call"`, `handle` calls `self.extract_claims(&headers)` — a
    `Bearer` token validated against `validate_api_key`, returning JSON-RPC
    error `-32001` on any failure (missing engine, header, or invalid
-   token) rather than an HTTP status code.
-3. `dispatch_tool` matches `request["params"]["name"]`. For `"search"` it
-   builds a `Query` and calls `engine.retrieval.search`, returning chunks
-   JSON-encoded inside an MCP `content` array; `"ingest"` follows the same
-   shape against `engine.ingestion.ingest`. Any other name — including
-   `"eval_run"`, which `tools/list` advertises — falls through to the
-   final `_ =>` arm and returns error `-32602`, `"Unknown tool: {name}"`;
-   see Implementation Notes.
-4. Every branch of `handle` records
+   token) rather than an HTTP status code; unlike `routes/auth.rs`'s
+   `validate_bearer`, this path does not consult `engine.rate_limiter`
+   (see Implementation Notes).
+4. `dispatch_tool` then matches `request["params"]["name"]` against all
+   four registered tools. `"search"`/`"ingest"` build a `Query`/
+   `IngestRequest` and call `engine.retrieval.search`/
+   `engine.ingestion.ingest`. `"list_collections"` calls
+   `engine.version_store.list_collections()` and filters the result
+   through `engine.auth.can_access_collection(claims, ...)` per entry.
+   `"eval_run"` validates the caller-supplied `samples` (non-empty, ≤100
+   entries, `k` ≤ 100 — else `-32602`), runs each sample's query through
+   `engine.retrieval.search` under the *caller's own* claims (no
+   escalation), then returns `EvalRunner::new(k).evaluate(...)`'s
+   serialized `EvalReport`. Any unregistered name still falls through to
+   the final `_ =>` arm and returns `-32602`, `"Unknown tool: {name}"`.
+5. Every branch of `handle` records
    `arcanum_mcp_requests_total{method=...,status=...}` and
    `arcanum_mcp_request_duration_seconds{method=...}` before returning.
+   `server.rs`'s `handle_jsonrpc` catches any `Err` from `handle` itself
+   and wraps it as `-32603`, but always with `"id": null` — the original
+   request's `id` is not propagated into that path (see Implementation
+   Notes).
 
 **3. Observability: process start to Grafana**
 1. A host binary (an example app's `main.rs`, not `arcanum-server` itself)
@@ -189,6 +229,34 @@ recorder via `metrics_prometheus::try_install()`. It returns a
 ## Key Decisions
 
 Newest first.
+
+### `tools/list` becomes registry-driven; `eval_run` runs under the caller's own claims with hard caps
+- **Decision** — `McpJsonRpcHandler` builds a `CapabilityRegistry` in
+  `default_registry()` and serves `tools/list` from `registry.list()`
+  instead of a hand-written JSON literal; the new `eval_run` arm in
+  `dispatch_tool` runs every caller-supplied sample's search through
+  `engine.retrieval.search` using the *caller's own* `ApiKeyClaims` — no
+  elevated or service-level identity — and rejects `samples` above 100
+  entries or `k` above 100 with `-32602` before touching the engine.
+- **Context** — PR #57's summary states both directly: "`tools/list` is
+  registry-driven: the previously-unused `CapabilityRegistry` is now the
+  single source of truth (sorted, schema-carrying); a coverage test
+  asserts every registered tool dispatches — structurally closing the
+  advertised-but-unimplemented bug class this plan existed to fix," and
+  for `eval_run`: "Runs under the caller's own claims — no privilege
+  escalation. Bounded: ≤100 samples, k ≤ 100."
+- **Alternatives rejected** — the prior hand-written `json!{...}` literal
+  for `tools/list`, named as the mechanism that let it drift from
+  `dispatch_tool`'s real arms (the exact bug class this PR closes);
+  running `eval_run`'s searches under a service-level/elevated identity,
+  which would let a caller probe collections beyond their own ACL via
+  golden-sample queries.
+- **Consequences** — a new tool now needs exactly one
+  `registry.register(...)` call to be advertised correctly, since
+  `tools/list` and `dispatch_tool` can no longer independently drift;
+  `eval_run` is bounded by the same ACL as `search`, so a caller cannot
+  benchmark a collection they lack access to, even read-only.
+- **Ref** — 2026-07-17, PR #57.
 
 ### `vector_list_documents`/`vector_stats_*` read `DocumentVersionStore`, not `VectorStore`
 - **Decision** — `routes/collections.rs`'s `vector_list_documents`,
@@ -275,36 +343,34 @@ Newest first.
 
 ## Implementation Notes
 
-- **`arcanum-mcp`'s `McpServer` is constructed nowhere outside its own
-  tests (gap).** No crate in the workspace — not `arcanum-server`, not any
-  `examples/*/src/main.rs` — imports `arcanum_mcp`; `arcanum-mcp` has no
-  `[[bin]]` target either. The only callers of `McpJsonRpcHandler::new`/
-  `new_test` are `handlers.rs`'s own `#[cfg(test)]` module.
-  `DEVELOPMENT.md`'s MCP Integration section was rewritten (commit
-  `b953c687`) to show the real constructor —
-  `McpServer::new(handler, 3000).start()`, matching `McpServer::new`'s
-  actual `(handler: Arc<McpJsonRpcHandler>, port: u16)` signature — so
-  the documented snippet now compiles against the current API. The
-  underlying gap remains: no production crate or example ever
-  constructs `McpServer`, consistent with this path never having been
-  exercised end to end.
-- **MCP tool list: two of four advertised tools work (gap).** `tools/list`
-  advertises `ingest`, `search`, `list_collections`, and `eval_run`, but
-  `dispatch_tool` only has arms for `"ingest"` and `"search"` that reach
-  the engine; `"list_collections"` always returns a hardcoded `"[]"`
-  regardless of `engine`/`claims`; `"eval_run"` has no arm at all and
-  returns `-32602`, `"Unknown tool: eval_run"`. The root README and
-  `DEVELOPMENT.md` were both corrected (commit `b953c687`) to mark
-  `list_collections`/`eval_run` as advertised-but-unimplemented rather
-  than claiming all four work.
-- **`CapabilityRegistry` and `SessionManager` are fully implemented,
-  unit-tested, and never constructed by production code (gap).**
-  `tools/list`'s response in `handlers.rs` is a hand-written `json!{...}`
-  literal, not `CapabilityRegistry::list()`; `SessionManager::create` is
-  never called from `handle` or anywhere else — `initialize` returns a
-  static capabilities object with no session ID, so "session" in
-  `McpSession`/`SessionManager` names a concept the JSON-RPC flow doesn't
-  track.
+- **`arcanum-mcp`'s `McpServer` now has a real constructor site (closed
+  gap, PR #57).** `main.rs`'s new `[[bin]] arcanum-mcp` constructs
+  `McpJsonRpcHandler::new(engine)` and calls
+  `McpServer::new(handler, port).start()` — no longer "constructed
+  nowhere outside its own tests." The bin's `ArcanumEngine` wires only
+  `auth_secret` and a `SqliteDocumentVersionStore`, so `search`/`ingest`
+  through this bin still error until a deployment adds an embedder and
+  vector store (library use via `ArcanumEngineBuilder`, as `examples/`
+  does for `arcanum-server`). No crate under `examples/` imports
+  `arcanum_mcp` yet — the bin is the only production caller of
+  `McpServer::new` so far.
+- **MCP tool list: all four advertised tools now dispatch (closed gap, PR
+  #57).** `tools/list` advertises `ingest`, `search`, `list_collections`,
+  and `eval_run`; `dispatch_tool` now has a real arm for each — see
+  Runtime Flow 2. A coverage test
+  (`test_every_registered_tool_dispatches_without_unknown_tool_error`)
+  iterates `registry.list()` and asserts none of them fall through to the
+  `"Unknown tool"` arm, structurally closing the class of bug where
+  `tools/list` and `dispatch_tool` drift apart.
+- **`CapabilityRegistry` and `SessionManager` are now constructed and used
+  (closed gap, PR #57).** `tools/list`'s response is `registry.list()`,
+  not a hand-written `json!{...}` literal; `initialize` calls
+  `self.sessions.create(client_info)` and returns the session id in
+  `_meta.sessionId`. `SessionManager` still has no eviction or TTL
+  (labeled debt, PR #57 body): `close()` only flags a session `closed`,
+  it never removes it from the map, so an unauthenticated `initialize`
+  call (no auth required on this method) can grow the map for the life
+  of a long-running bin.
 - **WS "wildcard subscription" comment corrected (PR #49).** `ws.rs`'s
   `handle_socket` comment previously claimed "Subscribe to all EventBus
   events via a wildcard topic subscription"; PR #49 (commit `31c83450`)
@@ -340,12 +406,22 @@ Newest first.
   JSON-RPC path still does not consult it: `McpJsonRpcHandler`'s
   `extract_claims` calls `engine.auth.validate_api_key` directly and
   never calls `validate_bearer` or the rate limiter, so MCP tool calls
-  remain unbounded.
+  remain unbounded (labeled debt, noted in the PR #57 body's deferred
+  follow-ups as well).
 - **`arcanum_server::metrics::init_metrics` deleted (PR #49).** The Key
   Decision below ("`GET /metrics` added with bearer auth...") notes the
   function was left behind, unreferenced, after its call site was
   removed; PR #49 (commit `31c83450`) deleted the function itself from
   `metrics.rs`. `metrics.rs` now contains only `get_metrics_text`.
+- **MCP error responses lose the request `id` (labeled debt, PR #57
+  body).** `server.rs`'s `handle_jsonrpc` returns `"id": null` on every
+  `Err` from `McpJsonRpcHandler::handle` (the `-32603` path), regardless
+  of the original request's `id` — a client cannot correlate that error
+  back to the call it made. Errors `handle` itself returns as `Ok(...)`
+  (`-32001`, `-32602`, `-32601`) already carry the correct `id`; this gap
+  is specific to the outer `?`-propagated path in `server.rs`. Flagged in
+  PR #57's deferred follow-ups as "request-id propagation into `?`-path
+  error responses."
 
 ## Source Anchors
 
@@ -355,7 +431,12 @@ Newest first.
 - `arcanum-server/src/ws.rs`
 - `arcanum-server/src/portal.rs`
 - `arcanum-server/src/metrics.rs`
-- `arcanum-mcp/src/`
+- `arcanum-mcp/src/main.rs`
+- `arcanum-mcp/src/lib.rs`
+- `arcanum-mcp/src/handlers.rs`
+- `arcanum-mcp/src/capability_registry.rs`
+- `arcanum-mcp/src/session.rs`
+- `arcanum-mcp/src/server.rs`
 - `arcanum-telemetry/src/`
 - `observability/`
 - `docker-compose.observability.yml`
