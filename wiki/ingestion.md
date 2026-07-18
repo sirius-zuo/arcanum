@@ -9,8 +9,10 @@ built-in Docling-backed `Preprocessor`, five `Chunker` strategies behind a
 name-keyed registry, prompt-injection sanitization and entity/context
 enrichment helpers, and the persistence layer that makes re-ingestion
 idempotent — document version history, raw/canonical snapshot storage,
-per-chunk provenance metadata, and the retention-based GC worker that
-reclaims superseded data. It exists as its own crate so `arcanum-pipeline`
+per-chunk provenance metadata, and, since PR #54, the Postgres adapter
+for shadow-experiment persistence. The retention-based GC worker that
+previously lived here moved to [Evidence](evidence.md) in PR #53 — see
+Key Decisions. It exists as its own crate so `arcanum-pipeline`
 can depend on a stable set of ingestion-side ports without pulling in
 `arcanum-vector`/`arcanum-graph`/`arcanum-tree` directly.
 
@@ -18,14 +20,15 @@ can depend on a stable set of ingestion-side ports without pulling in
 
 `arcanum-ingestion` consumes only [Core](core.md) — `arcanum_core::traits`
 (`DocumentLoader`, `Preprocessor`, `Chunker`, `DocumentVersionStore`,
-`SnapshotStore`, `ChunkMetadataStore`, `GcWorker`, `VectorStore`/
-`TreeStore`/`GraphStore` for `PostgresGcWorker`'s cross-store deletes) and
+`SnapshotStore`, `ChunkMetadataStore`, `ExperimentStore`) and
 `arcanum_core::types` (`RawDocument`, `Chunk`, `DocumentVersion`,
-`ChunkMetadataRecord`, `GcReport`, and related evidence/provenance types).
-It has no dependency on `arcanum-vector`, `arcanum-graph`, or
-`arcanum-tree` as concrete crates — `PostgresGcWorker` reaches them only
-through the `Arc<dyn VectorStore>`/`Arc<dyn TreeStore>`/`Arc<dyn
-GraphStore>` trait objects its constructor takes.
+`ChunkMetadataRecord`, and related evidence/provenance types). It has no
+dependency on `arcanum-vector`, `arcanum-graph`, `arcanum-tree`, or
+`arcanum-evidence` as concrete crates. **Update (2026-07-16, PR #53)** —
+`PostgresGcWorker` and its `Arc<dyn VectorStore>`/`Arc<dyn TreeStore>`/
+`Arc<dyn GraphStore>` cross-store deletes, previously documented here,
+moved to `arcanum-evidence`; see the Evidence bullet below and Key
+Decisions.
 
 - [Pipeline](pipeline.md) — `arcanum-pipeline`'s DAG stages
   (`arcanum-pipeline/src/stages.rs`: `make_load_stage`, `make_dedup_stage`,
@@ -48,6 +51,11 @@ GraphStore>` trait objects its constructor takes.
   reads the same `DocumentVersionStore`/`SnapshotStore`/`ChunkMetadataStore`
   data that `arcanum-ingestion`'s concrete stores write, via the
   `arcanum-core` trait objects; neither crate depends on the other.
+  `PostgresGcWorker` (`arcanum_core::traits::GcWorker`) lived in this
+  crate's `gc.rs` through PR #45; PR #53 moved it to
+  `arcanum-evidence/src/gc.rs` as a pure rename, closing the mis-placement
+  this page previously flagged as debt — the GC worker's architecture,
+  runtime flow, and Key Decisions now live on [Evidence](evidence.md).
 
 ## Architecture
 
@@ -59,7 +67,7 @@ classDiagram
     class DocumentVersionStore { <<trait>> }
     class SnapshotStore { <<trait>> }
     class ChunkMetadataStore { <<trait>> }
-    class GcWorker { <<trait>> }
+    class ExperimentStore { <<trait>> }
 
     class LoaderRegistry
     class FileLoader
@@ -80,7 +88,7 @@ classDiagram
     class PostgresDocumentVersionStore
     class LocalSnapshotStore
     class PostgresChunkMetadataStore
-    class PostgresGcWorker
+    class PostgresExperimentStore
     class ContextEnricher
     class EntityExtractor
 
@@ -106,10 +114,7 @@ classDiagram
     PostgresDocumentVersionStore ..|> DocumentVersionStore
     LocalSnapshotStore ..|> SnapshotStore
     PostgresChunkMetadataStore ..|> ChunkMetadataStore
-    PostgresGcWorker ..|> GcWorker
-    PostgresGcWorker --> DocumentVersionStore : reads
-    PostgresGcWorker --> SnapshotStore : deletes
-    PostgresGcWorker --> ChunkMetadataStore : deletes
+    PostgresExperimentStore ..|> ExperimentStore
 ```
 
 `loaders/` is one file per source type: `file.rs` (`FileLoader`, extension
@@ -163,11 +168,18 @@ and lines matching a fixed list of prompt-injection phrases.
 `chunk_metadata.rs`'s `PostgresChunkMetadataStore` (`ChunkMetadataStore`
 over a `chunk_metadata` table). `snapshot/local.rs`'s `LocalSnapshotStore`
 implements `SnapshotStore` over the filesystem
-(`<root>/<doc_id>/<version>/{raw.bin,canonical.json}`). `gc.rs`'s
-`PostgresGcWorker` implements `GcWorker` directly against a `PgPool` for
-its superseded-version scan, calling the injected `Arc<dyn
-SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
-`Arc<dyn TreeStore>`/`Arc<dyn GraphStore>` for the per-store deletes.
+(`<root>/<doc_id>/<version>/{raw.bin,canonical.json}`). `experiments.rs`'s
+`PostgresExperimentStore` (added in PR #54) implements
+`arcanum_core::traits::ExperimentStore` — a port that itself moved to
+`arcanum-core` in the same PR — against the `chunk_experiments` table;
+`try_start` is a plain `INSERT` whose one-active-per-collection
+constraint is enforced by a partial unique index on `collection_id
+WHERE status = 'active'` added by migration
+`0002_chunk_experiments_active_unique.sql`, with a unique-violation
+mapped to the same "already has an active experiment" error the
+in-memory store returns, rather than an application-level lock.
+[Evaluation](evaluation.md) owns the experiment-lifecycle domain rules
+this adapter persists.
 
 ## Runtime Flows
 
@@ -222,7 +234,7 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
    per-backend chunk stages that consume `deps.chunkers.vector/graph/tree`
    are pipeline-side orchestration — see [Pipeline](pipeline.md).
 
-**3. Version registration, chunk metadata, and GC**
+**3. Version registration and chunk metadata**
 1. After a successful `vector_write` stage, `make_register_version_stage`
    calls `DocumentVersionStore::add_version` with the version whose
    `snapshot_uri`/`canonical_uri` came from the snapshot stage — so a
@@ -234,20 +246,62 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
    block_ids}`) and calls `ChunkMetadataStore::put` — `PostgresChunkMetadataStore::put`
    upserts by `chunk_id` — only after the vector store `upsert` itself
    succeeds.
-3. `PostgresGcWorker::run_once` queries every `document_versions` row with
-   `status = 'superseded'`, skips any collection whose
-   `get_versioning_policy` isn't `RetentionBased` or hasn't aged past
-   `retention_days`, then for each expired version deletes its snapshot
-   (`SnapshotStore::delete`), its `chunk_metadata` rows and the chunk IDs
-   they return (`ChunkMetadataStore::delete_by_document_version`), those
-   exact chunk IDs from the vector store (`VectorStore::delete`), and —
-   only if no other live version shares the `document_id` — the
-   `source_uri`-scoped `TreeStore`/`GraphStore::delete_by_source_uri`
-   (see the GC Key Decision below for why the scoping differs). A version
-   is marked `'deleted'` only once every step succeeds; partial failures
-   collect into `GcReport.errors` and retry on the next run.
+
+Reclaiming a superseded version's snapshot/chunk/vector/tree/graph data
+once it ages past `retention_days` is `PostgresGcWorker::run_once`'s job
+— since PR #53 that worker, and its runtime flow, live in
+[Evidence](evidence.md), not here.
 
 ## Key Decisions
+
+### `PostgresExperimentStore` joins `versioning/` as the `ExperimentStore` port's Postgres adapter
+- **Decision** — `experiments.rs` implements
+  `arcanum_core::traits::ExperimentStore` (a port PR #54 moved into
+  `arcanum-core` alongside its `InMemoryExperimentStore` default) against
+  the previously-idle `chunk_experiments` table, joining
+  `PostgresDocumentVersionStore`/`PostgresChunkMetadataStore` as this
+  module's third Postgres adapter.
+- **Context** — the PR body: "`PostgresExperimentStore`
+  (arcanum-ingestion/src/versioning/) on the existing `chunk_experiments`
+  table; migration 0002 adds a partial unique index so
+  one-active-per-collection is enforced by the database (plain INSERT,
+  unique-violation mapped — race-free across processes, proven by a
+  concurrent `try_start` test)."
+- **Alternatives rejected** — No PR or design doc records an alternative
+  placement for the adapter; it follows the same
+  ports-in-core/adapters-elsewhere pattern PR #53 invoked for
+  `PostgresGcWorker`'s departure (see below), with `versioning/` as this
+  crate's established home for Postgres adapters.
+- **Consequences** — a `storage.database_url`-backed deployment gets
+  restart-surviving shadow experiments with database-enforced
+  one-active-per-collection; the experiment lifecycle rules themselves
+  (start/promote/abandon, ready-to-promote thresholds) stay in
+  `ExperimentService` — see [Evaluation](evaluation.md), which owns that
+  narrative.
+- **Ref** — 2026-07-16, PR #54.
+
+### `PostgresGcWorker` departs for `arcanum-evidence`, resolving the crate-placement debt this page flagged
+- **Decision** — `gc.rs`'s `PostgresGcWorker` moved out of this crate to
+  `arcanum-evidence/src/gc.rs` as a pure rename (100%-similarity, no
+  logic change); `arcanum-ingestion/src/lib.rs` no longer exports it, and
+  this crate no longer references `GcWorker`, `VectorStore`, `TreeStore`,
+  or `GraphStore`.
+- **Context** — PR #53's summary: the move matches "the
+  ports-in-core/adapters-in-own-crate pattern. No layering cycle:
+  evidence gains only `sqlx`." This page's Implementation Notes
+  previously flagged the worker's placement here as inconsistent with
+  the rest of `versioning/`'s adapters (see [Core](core.md)'s
+  crate-placement decision) — that inconsistency is now resolved by the
+  move, not by a new caller appearing.
+- **Alternatives rejected** — not recorded beyond the pattern-matching
+  rationale above.
+- **Consequences** — the GC worker's architecture, runtime flow
+  (superseded-version scan and per-store deletes), and any new Key
+  Decisions on its behavior now live on [Evidence](evidence.md); this
+  page keeps the "GC worker deletes are scoped..." decision below
+  unchanged as the historical record of that logic's rationale, with a
+  pointer added to its Consequences.
+- **Ref** — 2026-07-16, PR #53.
 
 ### Docling-only ingestion, selected by name through PreprocessorCatalog
 - **Decision** — deleted every legacy MIME-specific preprocessor
@@ -288,6 +342,9 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
   around that addressing gap rather than being a chosen design.
 - **Consequences** — GC leaves a superseded version's tree/graph data
   unreclaimed whenever another version of the same document is still live.
+  **Update (2026-07-16, PR #53)** — `PostgresGcWorker` and this scoping
+  logic moved to `arcanum-evidence/src/gc.rs`; the code this decision
+  describes now lives on [Evidence](evidence.md), unchanged in behavior.
 - **Ref** — 2026-06-16, PR #45.
 
 ### Persistent DocumentVersionStore replaces DocumentRegistry-based dedup
@@ -386,11 +443,15 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
   `DocumentRegistry` → `DocumentVersionStore` migration this completes,
   and [Core](core.md)'s "Superseded dedup mechanism removed" note for the
   matching update from the crate-placement side.
-- **`PostgresGcWorker` lives in `gc.rs` at the crate root, not under
-  `versioning/`,** unlike the `DocumentVersionStore`/`ChunkMetadataStore`
-  implementations — see [Core](core.md)'s "Inconsistent crate placement"
-  note for the same drift from the crate-placement side (`PostgresGcWorker`
-  landed in `arcanum-ingestion`, not `arcanum-evidence`).
+- **`PostgresGcWorker`'s crate-root placement was resolved by moving it
+  out, not by a rewrite (resolved debt).** This page previously flagged
+  `gc.rs`'s `PostgresGcWorker` as living inconsistently at the crate root
+  rather than under `versioning/` alongside the other adapters, and as
+  misplaced in `arcanum-ingestion` rather than `arcanum-evidence` — see
+  [Core](core.md)'s crate-placement note for the matching update from
+  that side. PR #53 moved the file to `arcanum-evidence/src/gc.rs`
+  unchanged; the debt is resolved by relocation, and both flagged issues
+  no longer apply to this crate.
 - **Sanitization runs at enrichment time, on chunk text — not at intake,
   on raw bytes.** `sanitizer::sanitize_for_enrichment` is only called from
   `ContextEnricher::enrich_chunk` and `EntityExtractor::extract`, after
@@ -408,8 +469,8 @@ SnapshotStore>`/`Arc<dyn ChunkMetadataStore>`/`Arc<dyn VectorStore>`/
 - `arcanum-ingestion/src/registry.rs`
 - `arcanum-ingestion/src/enrichment/` (module)
 - `arcanum-ingestion/src/versioning/` (module)
+- `arcanum-ingestion/src/versioning/experiments.rs`
 - `arcanum-ingestion/src/snapshot/` (module)
-- `arcanum-ingestion/src/gc.rs`
 - `arcanum-ingestion/src/sanitizer.rs`
 - `arcanum-ingestion/src/detection.rs`
 
