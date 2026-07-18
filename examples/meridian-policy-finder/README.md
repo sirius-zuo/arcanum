@@ -6,7 +6,7 @@ Internal HR/policy Q&A assistant powered by [Arcanum](../../README.md).
 
 **Arcanum configuration:**
 - Ingestion: **Standard** (Load → Chunk → Embed → VectorWrite)
-- Retrieval: **QueryClassified** — a lightweight classifier routes keyword lookups to BM25 and conceptual questions to Vector
+- Retrieval: **QueryClassified**: a lightweight classifier routes keyword lookups to BM25 and conceptual questions to Vector
 
 ---
 
@@ -53,10 +53,10 @@ Open **http://localhost:5173**.
 
 | Question | Routed to |
 |---|---|
-| `PTO accrual rate for part-time employees` | **BM25** — keyword lookup |
-| `how does maternity leave affect my performance review?` | **Vector** — semantic |
-| `401k match percentage` | **BM25** — keyword lookup |
-| `can I take unpaid leave during an active project?` | **Vector** — semantic |
+| `PTO accrual rate for part-time employees` | **BM25**: keyword lookup |
+| `how does maternity leave affect my performance review?` | **Vector**: semantic |
+| `401k match percentage` | **BM25**: keyword lookup |
+| `can I take unpaid leave during an active project?` | **Vector**: semantic |
 
 The **routing pill** below the search bar shows which strategy the classifier chose. Check **Recent Questions** to see your history with the routing decision per query.
 

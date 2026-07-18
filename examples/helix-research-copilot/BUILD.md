@@ -1,4 +1,4 @@
-# Production Deployment Guide — Helix Research Copilot
+# Production Deployment Guide: Helix Research Copilot
 
 The Full pipeline needs four backing services in production: a vector store, a
 graph store, a tree store, and model providers for embeddings + enrichment.
@@ -64,7 +64,7 @@ let tree_store = Arc::new(PgTreeStore::new(&db_url).await?);
 
 > **Note on the Knowledge Graph page:** it consumes the framework endpoint
 > `GET /api/v1/graph`, which is typed against `Arc<dyn GraphStore>`. Swapping
-> `InMemoryGraphStore` for `Neo4jStore` requires **no** changes — the endpoint serves
+> `InMemoryGraphStore` for `Neo4jStore` requires **no** changes; the endpoint serves
 > whichever graph store the engine was built with.
 
 Add imports:

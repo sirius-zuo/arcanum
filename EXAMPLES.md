@@ -1,7 +1,7 @@
 # Arcanum Usage Examples
 
 **Date:** 2026-06-01 (updated 2026-06-16)
-**Status:** Approved — all 6 examples implemented in `examples/`
+**Status:** Approved; all 6 examples implemented in `examples/`
 
 Six real-world scenarios for small and midsize companies covering every combination of ingestion strategy (Standard, Full) and retrieval orchestration mode (Static, QueryClassified, ParallelFusion).
 
@@ -10,11 +10,11 @@ Six real-world scenarios for small and midsize companies covering every combinat
 ## How to read these examples
 
 Each example explains:
-- **Why this ingestion strategy** — the reasoning for Standard vs. Full, not just which one
-- **Why this retrieval mode** — when the mode fits and when it would fail
-- **Engine configuration** — minimal working Rust builder + TOML config, matching the actual `examples/<name>/src/main.rs`
-- **Representative queries** — showing how each strategy contributes
-- **Wrong choice cost** — what breaks if you pick differently
+- **Why this ingestion strategy**: the reasoning for Standard vs. Full, not just which one
+- **Why this retrieval mode**: when the mode fits and when it would fail
+- **Engine configuration**: minimal working Rust builder + TOML config, matching the actual `examples/<name>/src/main.rs`
+- **Representative queries**: showing how each strategy contributes
+- **Wrong choice cost**: what breaks if you pick differently
 
 **Coverage map:**
 
@@ -33,11 +33,11 @@ The Full + Static combination is absent because it is an anti-pattern: building 
 
 ## Shared project structure
 
-All 6 examples follow the same structure (each is a standalone Rust binary crate, not a workspace member — devforge declares this with an empty `[workspace]` table in its `Cargo.toml`; the others simply omit one):
+All 6 examples follow the same structure (each is a standalone Rust binary crate, not a workspace member; devforge declares this with an empty `[workspace]` table in its `Cargo.toml`; the others simply omit one):
 
 ```
 examples/<example-name>/
-├── Cargo.toml              # [package] + [[bin]] — path deps to arcanum-*
+├── Cargo.toml              # [package] + [[bin]]; path deps to arcanum-*
 ├── README.md / BUILD.md    # scenario + run instructions / production migration guide
 ├── config.toml             # dev configuration
 ├── Makefile                # make dev, make build, make run, make clean
@@ -53,9 +53,9 @@ examples/<example-name>/
 
 **Dependencies** (`Cargo.toml`): Standard examples (Devforge, Meridian, Canopy) depend on `arcanum-engine`, `arcanum-server`, `arcanum-core`, `arcanum-vector`, `arcanum-models`, `arcanum-ingestion`, `arcanum-telemetry`. Full-pipeline examples (Helix, Vantage, Folio) add `arcanum-graph` and `arcanum-tree`; Folio additionally adds `arcanum-evidence` for its evidence resolver.
 
-**`main.rs` pattern:** load `config.toml` (fall back to `ArcanumConfig::default()`) → construct dev stores (with comments pointing to the production alternative — see each example's `BUILD.md`) → `ArcanumEngineBuilder::new(config)` with the stores → mint a real admin API key via `engine.auth.generate_admin_key(...)` and write it to `.arcanum-dev-key` / `ui/.env.development` (a fabricated key string would fail `validate_api_key`) → `arcanum_server::build_app(Some(engine))` → serve `ui/dist/` as a SPA fallback if it exists, otherwise print the Vite dev URL.
+**`main.rs` pattern:** load `config.toml` (fall back to `ArcanumConfig::default()`) → construct dev stores (with comments pointing to the production alternative; see each example's `BUILD.md`) → `ArcanumEngineBuilder::new(config)` with the stores → mint a real admin API key via `engine.auth.generate_admin_key(...)` and write it to `.arcanum-dev-key` / `ui/.env.development` (a fabricated key string would fail `validate_api_key`) → `arcanum_server::build_app(Some(engine))` → serve `ui/dist/` as a SPA fallback if it exists, otherwise print the Vite dev URL.
 
-**API client pattern** (`ui/src/api/`): all requests carry `Authorization: Bearer <key>`. The core endpoints are `POST /api/v1/search` (body: `query`, `collection_id`, `top_k`) and `POST /api/v1/ingest` (body: `source_uri`, `collection_id`, **`pipeline`** — not `pipeline_template`). Devforge's implementation has grown beyond this minimal shape to support its document-management UI: `POST /api/v1/upload` for raw file bytes, plus `GET/POST/DELETE /api/v1/vector/collections[/:name][/stats|/documents]` for collection and document management. Full-pipeline examples additionally call `GET /api/v1/graph`.
+**API client pattern** (`ui/src/api/`): all requests carry `Authorization: Bearer <key>`. The core endpoints are `POST /api/v1/search` (body: `query`, `collection_id`, `top_k`) and `POST /api/v1/ingest` (body: `source_uri`, `collection_id`, **`pipeline`**, not `pipeline_template`). Devforge's implementation has grown beyond this minimal shape to support its document-management UI: `POST /api/v1/upload` for raw file bytes, plus `GET/POST/DELETE /api/v1/vector/collections[/:name][/stats|/documents]` for collection and document management. Full-pipeline examples additionally call `GET /api/v1/graph`.
 
 **Dev workflow:** `npm install --prefix ui` → `make dev` (or `cargo run` + `cd ui && npm run dev` in two terminals) → backend on `:8080`, Vite on `:5173` (proxies `/api`, `/admin`, `/ws`, `/evidence` to `:8080`) → open `http://localhost:5173`, ingest from `samples/`, run queries.
 
@@ -67,11 +67,11 @@ examples/<example-name>/
 
 Added after this doc's original design (commits `3d552332`, `0b3108cc`, `4a001b88`, `48e42559`; see `docs/superpowers/specs/2026-06-15-evidence-foundation-design.md` and `2026-06-15-evidence-phase2-design.md`). It is engine-level infrastructure, wired in via additional `ArcanumEngineBuilder` methods:
 
-- `.version_store(Arc<dyn DocumentVersionStore>)` — tracks ingestion events, content hashes, and document history per collection (`SqliteDocumentVersionStore` in dev, `PostgresDocumentVersionStore` in production). Powers accurate document counts (`GET /api/v1/vector/collections/:name/documents`, `/stats`) even for documents that produced zero chunks.
-- `.snapshot_store(Arc<dyn SnapshotStore>)` — persists the raw bytes + canonical sidecar JSON of each ingested document (`LocalSnapshotStore` in dev).
-- `.chunk_metadata_store(Arc<dyn ChunkMetadataStore>)` — typed chunk provenance (document version, snapshot URI, page/section/block anchors).
-- `.evidence(Arc<dyn EvidenceResolver>)` — answers "show me the source" for any chunk, tree node, entity, or relation; served under `GET /evidence/chunk/:chunk_id`, `/evidence/tree-node/:node_id`, `/evidence/entity/:entity_id`, `/evidence/relation/:source_id/:relation_type/:target_id`.
-- `.gc_worker(Arc<dyn GcWorker>)` — retention-policy garbage collection; requires Postgres-backed stores, so no example wires this in dev.
+- `.version_store(Arc<dyn DocumentVersionStore>)`: tracks ingestion events, content hashes, and document history per collection (`SqliteDocumentVersionStore` in dev, `PostgresDocumentVersionStore` in production). Powers accurate document counts (`GET /api/v1/vector/collections/:name/documents`, `/stats`) even for documents that produced zero chunks.
+- `.snapshot_store(Arc<dyn SnapshotStore>)`: persists the raw bytes + canonical sidecar JSON of each ingested document (`LocalSnapshotStore` in dev).
+- `.chunk_metadata_store(Arc<dyn ChunkMetadataStore>)`: typed chunk provenance (document version, snapshot URI, page/section/block anchors).
+- `.evidence(Arc<dyn EvidenceResolver>)`: answers "show me the source" for any chunk, tree node, entity, or relation; served under `GET /evidence/chunk/:chunk_id`, `/evidence/tree-node/:node_id`, `/evidence/entity/:entity_id`, `/evidence/relation/:source_id/:relation_type/:target_id`.
+- `.gc_worker(Arc<dyn GcWorker>)`: retention-policy garbage collection; requires Postgres-backed stores, so no example wires this in dev.
 
 **Current wiring across the 6 examples:**
 
@@ -81,14 +81,14 @@ Added after this doc's original design (commits `3d552332`, `0b3108cc`, `4a001b8
 | Folio | ✅ | implicit default | ✅ (`DefaultEvidenceResolver`) |
 | Meridian, Canopy, Helix, Vantage | not yet wired | not yet wired | not yet wired |
 
-Devforge needed `version_store` to fix its document-count/list-documents endpoints (commit `48e42559`); Folio is the only example with the full evidence resolver wired, exercising `/evidence/*`. The other four examples don't wire any evidence-layer store yet — their `/api/v1/vector/collections/*/stats` and `/documents` endpoints will work but won't reflect document-level history, and `/evidence/*` will return nothing useful for their content.
+Devforge needed `version_store` to fix its document-count/list-documents endpoints (commit `48e42559`); Folio is the only example with the full evidence resolver wired, exercising `/evidence/*`. The other four examples don't wire any evidence-layer store yet: their `/api/v1/vector/collections/*/stats` and `/documents` endpoints will work but won't reflect document-level history, and `/evidence/*` will return nothing useful for their content.
 
 ---
 
 ## Example 1 — Standard + Static
 
 **Devforge** · 25-person API-first SaaS startup
-**Use case:** "Ask the Docs" — a search assistant embedded in their developer portal
+**Use case:** "Ask the Docs", a search assistant embedded in their developer portal
 
 ### Content
 
@@ -100,12 +100,12 @@ Documents are clean, short-section Markdown with no entity relationships worth g
 
 ### Why Static
 
-Query patterns are predictable: developers either search for a method name or error code (BM25 wins) or ask a conceptual question (Vector wins). A fixed two-strategy set handles >95% of queries. QueryClassified adds a classifier call that's unnecessary when patterns are stable. ParallelFusion would spin up Graph and RAPTOR retrievers that return nothing — nothing was indexed there — and add latency for zero gain.
+Query patterns are predictable: developers either search for a method name or error code (BM25 wins) or ask a conceptual question (Vector wins). A fixed two-strategy set handles >95% of queries. QueryClassified adds a classifier call that's unnecessary when patterns are stable. ParallelFusion would spin up Graph and RAPTOR retrievers that return nothing (nothing was indexed there) and add latency for zero gain.
 
 ### Engine configuration
 
 ```rust
-// Dev version store — persists version history across restarts so dedup works
+// Dev version store: persists version history across restarts so dedup works
 // and document counts are accurate. Switch to PostgresDocumentVersionStore in production.
 let version_store  = Arc::new(SqliteDocumentVersionStore::open("data/versions.db").await?);
 let snapshot_store = Arc::new(LocalSnapshotStore::new("data/snapshots"));
@@ -146,7 +146,7 @@ Full ingestion wastes 3–5× ingestion time extracting entities from API docs t
 ## Example 2 — Standard + QueryClassified
 
 **Meridian Consulting** · 150-person management consulting firm
-**Use case:** "Policy Finder" — an internal Q&A assistant on the company intranet
+**Use case:** "Policy Finder", an internal Q&A assistant on the company intranet
 
 ### Content
 
@@ -160,8 +160,8 @@ Policy docs are well-structured prose with no entity relationships worth graphin
 
 Two structurally different query types coexist, each handled optimally by a different retriever:
 
-- **Lookup queries** ("how many vacation days do I get in year 2?") — BM25 wins; the answer is a specific phrase in a policy table.
-- **Conceptual queries** ("how does maternity leave affect my performance review cycle?") — Vector wins; the answer spans two separate policy sections with no shared phrasing.
+- **Lookup queries** ("how many vacation days do I get in year 2?"): BM25 wins; the answer is a specific phrase in a policy table.
+- **Conceptual queries** ("how does maternity leave affect my performance review cycle?"): Vector wins; the answer spans two separate policy sections with no shared phrasing.
 
 Running both on every query doubles LLM embedding cost and latency at a company where IT cost is scrutinised. The classifier adds ~5ms to route correctly, saving a BM25 pass on semantic queries. The fallback (confidence below 0.7) runs both and returns the first result set.
 
@@ -198,7 +198,7 @@ top_k                           = 6
 
 ### Wrong choice cost
 
-Static with BM25-only fails all conceptual queries. ParallelFusion runs both strategies on every query — technically correct but at 150 employees × 30 queries/day the wasted Ollama compute per month is measurable on shared infrastructure.
+Static with BM25-only fails all conceptual queries. ParallelFusion runs both strategies on every query; technically correct, but at 150 employees × 30 queries/day the wasted Ollama compute per month is measurable on shared infrastructure.
 
 ---
 
@@ -213,7 +213,7 @@ Static with BM25-only fails all conceptual queries. ParallelFusion runs both str
 
 ### Why Standard ingestion
 
-Content is short and structured — contextual enrichment does not improve "waterproof rating: 20,000mm". Products do not have meaningful relational graph edges worth traversing. At ~3,500 documents, Full ingestion would be 3–5× more expensive for no measurable retrieval improvement.
+Content is short and structured; contextual enrichment does not improve "waterproof rating: 20,000mm". Products do not have meaningful relational graph edges worth traversing. At ~3,500 documents, Full ingestion would be 3–5× more expensive for no measurable retrieval improvement.
 
 ### Why ParallelFusion
 
@@ -264,7 +264,7 @@ QueryClassified fails because "GORE-TEX tent comparison" looks semantic but also
 ## Example 4 — Full + QueryClassified
 
 **Helix Labs** · 200-person drug discovery startup
-**Use case:** "Research Copilot" — scientists query the company's accumulated research knowledge
+**Use case:** "Research Copilot", where scientists query the company's accumulated research knowledge
 
 ### Content
 
@@ -274,28 +274,28 @@ QueryClassified fails because "GORE-TEX tent comparison" looks semantic but also
 
 Three of the four extra Full stages each carry distinct, non-substitutable value:
 
-**EntityExtract + GraphWrite:** Compounds, target proteins, biological pathways, and adverse events are deeply interconnected. "What else targets EGFR?" requires graph traversal across edges extracted from 12 different papers — a Vector search over text cannot reconstruct the relationship graph.
+**EntityExtract + GraphWrite:** Compounds, target proteins, biological pathways, and adverse events are deeply interconnected. "What else targets EGFR?" requires graph traversal across edges extracted from 12 different papers; a Vector search over text cannot reconstruct the relationship graph.
 
 **RAPTORBuild:** Papers and protocols are long. RAPTOR L2 root nodes hold the full study summary; L1 nodes hold section summaries; L0 nodes hold passage-level content. "Summarize the adverse event profile across all Phase 2 JAK inhibitor trials" resolves at L1/L2; "what was the MTD in cohort 3?" resolves at L0.
 
 **ContextEnrich:** Dense scientific text benefits from prepending paper title and section heading to each chunk before embedding. Without it, "She observed elevated ALT at day 14" is contextually ambiguous; with enrichment the chunk is anchored to its study, compound, and cohort.
 
-In production, GLiNER handles entity extraction (compounds, genes, proteins) cheaply at scale and Claude Haiku handles context prefix generation and RAPTOR summaries. **Dev mode uses a single local Ollama model (`qwen2.5`) as the enricher for all three intents** — no external services required, at the cost of lower-quality entity extraction and summaries than the production split.
+In production, GLiNER handles entity extraction (compounds, genes, proteins) cheaply at scale and Claude Haiku handles context prefix generation and RAPTOR summaries. **Dev mode uses a single local Ollama model (`qwen2.5`) as the enricher for all three intents**: no external services required, at the cost of lower-quality entity extraction and summaries than the production split.
 
 ### Why QueryClassified
 
 Scientists ask three structurally different query types, each best handled by a different strategy:
 
-1. **Entity queries** — "Does Compound X bind to Receptor Y?" → entity mention detected → GraphRetriever traverses the compound→protein edge
-2. **Analytical queries** — "Summarize adverse events across all Phase 2 JAK inhibitor trials" → RAPTOR traverses tree levels across multiple documents
-3. **Semantic queries** — "CRISPR delivery mechanisms in neuronal tissue" → Vector + BM25 fallback
+1. **Entity queries**: "Does Compound X bind to Receptor Y?" → entity mention detected → GraphRetriever traverses the compound→protein edge
+2. **Analytical queries**: "Summarize adverse events across all Phase 2 JAK inhibitor trials" → RAPTOR traverses tree levels across multiple documents
+3. **Semantic queries**: "CRISPR delivery mechanisms in neuronal tissue" → Vector + BM25 fallback
 
 Running all in parallel (ParallelFusion) works but wastes GPU time on a 60–200ms RAPTOR tree traversal for simple entity-lookup queries. The classifier adds ~8ms and eliminates that cost on the majority of queries. The 0.7 confidence threshold falls back to Vector + BM25 when the query intent is ambiguous.
 
 ### Engine configuration
 
 ```rust
-// Dev: in-memory graph + tree stores, single local-Ollama enricher — no external
+// Dev: in-memory graph + tree stores, single local-Ollama enricher; no external
 // services required. Production: Neo4j, Postgres-backed tree store, GLiNER + Claude
 // Haiku split via EnrichmentDispatcher (see BUILD.md).
 let vector_store = Arc::new(LanceDbStore::new("data/helix.lance").await?);
@@ -347,18 +347,18 @@ top_k                           = 12
 
 ### Wrong choice cost
 
-Standard + QueryClassified misses the graph layer — "what else targets EGFR?" cannot traverse relationship-only edges; Vector returns only chunks that explicitly mention EGFR alongside another compound. Full + Static (Vector only) returns fragmented chunk-level results on analytical queries rather than RAPTOR summaries; scientists receive noise instead of synthesis.
+Standard + QueryClassified misses the graph layer: "what else targets EGFR?" cannot traverse relationship-only edges; Vector returns only chunks that explicitly mention EGFR alongside another compound. Full + Static (Vector only) returns fragmented chunk-level results on analytical queries rather than RAPTOR summaries; scientists receive noise instead of synthesis.
 
 ### Known gap
 
-Helix does not yet wire `.version_store()`. Document counts and history (`GET /api/v1/vector/collections/:name/documents`, `/stats`) won't reflect ingested documents the way Devforge's do — see [Evidence & versioning layer](#evidence--versioning-layer) above.
+Helix does not yet wire `.version_store()`. Document counts and history (`GET /api/v1/vector/collections/:name/documents`, `/stats`) won't reflect ingested documents the way Devforge's do; see [Evidence & versioning layer](#evidence--versioning-layer) above.
 
 ---
 
 ## Example 5 — Full + ParallelFusion
 
 **Vantage Legal** · 120-person corporate legal team at a midsize private equity firm
-**Use case:** "Contract Intelligence" — lawyers query the full contract portfolio to surface obligations, risks, and precedents
+**Use case:** "Contract Intelligence", where lawyers query the full contract portfolio to surface obligations, risks, and precedents
 
 ### Content
 
@@ -366,7 +366,7 @@ Helix does not yet wire `.version_store()`. Document counts and history (`GET /a
 
 ### Why Full ingestion
 
-**EntityExtract + GraphWrite:** Contracts are entity-dense. Parties, obligations, dates, jurisdictions, penalty clauses, and indemnification terms are named entities with relationships. "Which contracts involve Acme Corp?" is a graph traversal across `Party:Acme_Corp → Contract` edges — including subsidiaries and DBAs captured as graph aliases at extraction time, which a text search would miss.
+**EntityExtract + GraphWrite:** Contracts are entity-dense. Parties, obligations, dates, jurisdictions, penalty clauses, and indemnification terms are named entities with relationships. "Which contracts involve Acme Corp?" is a graph traversal across `Party:Acme_Corp → Contract` edges, including subsidiaries and DBAs captured as graph aliases at extraction time, which a text search would miss.
 
 **RAPTORBuild:** Long contracts require cross-section synthesis. "What is our standard position on IP assignment in employment agreements?" requires reasoning across multiple clause types spread across dozens of pages. RAPTOR L2 root nodes hold the contract's structural summary; L1 nodes hold clause-group summaries; L0 nodes hold individual clause text.
 
@@ -376,7 +376,7 @@ As with Helix, dev mode runs a single local Ollama enricher (`qwen2.5`); product
 
 ### Why ParallelFusion
 
-Legal queries are fundamentally unpredictable — lawyers jump between precision lookups and open-ended research in the same session:
+Legal queries are fundamentally unpredictable: lawyers jump between precision lookups and open-ended research in the same session:
 
 - "indemnification clause" → BM25 exact match
 - "what are our data residency obligations to EU vendors?" → Vector semantic
@@ -428,18 +428,18 @@ top_k               = 15
 
 ### Wrong choice cost
 
-Full + QueryClassified fails because legal queries fool the classifier constantly — "surviving obligations after termination" looks like a keyword query but spans multiple conceptual clause types. Standard + ParallelFusion works but loses the graph layer; "which contracts involve Acme Corp as a subsidiary?" becomes a text search that misses graph edges captured at entity extraction time.
+Full + QueryClassified fails because legal queries fool the classifier constantly: "surviving obligations after termination" looks like a keyword query but spans multiple conceptual clause types. Standard + ParallelFusion works but loses the graph layer; "which contracts involve Acme Corp as a subsidiary?" becomes a text search that misses graph edges captured at entity extraction time.
 
 ### Known gap
 
-Like Helix, Vantage does not yet wire `.version_store()` or the evidence resolver — see [Evidence & versioning layer](#evidence--versioning-layer) above.
+Like Helix, Vantage does not yet wire `.version_store()` or the evidence resolver; see [Evidence & versioning layer](#evidence--versioning-layer) above.
 
 ---
 
 ## Example 6 — Full + ParallelFusion
 
 **Folio** · 60-person digital library platform serving schools and public libraries
-**Use case:** Book search and discovery — patrons upload ePub/PDF books and query across the full collection, ranging from specific passage lookup to whole-book summarization
+**Use case:** Book search and discovery: patrons upload ePub/PDF books and query across the full collection, ranging from specific passage lookup to whole-book summarization
 
 ### Content
 
@@ -465,9 +465,9 @@ Entity types extracted: `Author`, `Character`, `Place` (real and fictional), `Se
 
 A book's content spans thousands of chunks. RAPTOR builds three levels:
 
-- **L0 (leaf):** Individual passage chunks — paragraph or scene granularity
-- **L1 (mid):** Chapter or section summaries — cluster of semantically related passages
-- **L2 (root):** Whole-book summary — full arc, central themes, main argument
+- **L0 (leaf):** Individual passage chunks (paragraph or scene granularity)
+- **L1 (mid):** Chapter or section summaries (clusters of semantically related passages)
+- **L2 (root):** Whole-book summary (full arc, central themes, main argument)
 
 Without RAPTOR, "Summarize the plot of Moby Dick" returns 40 random chunks about whales. With RAPTOR, the L2 root node answers the question directly. "What happens in Chapter 5 of The Hobbit?" resolves at L1. "What does Bilbo say when he finds the ring?" resolves at L0. All three levels participate in every query; RAPTOR weights leaf results for specific queries and root results for broad analytical queries.
 
@@ -477,7 +477,7 @@ Raw book chunks are deeply context-dependent: "She looked at him and said nothin
 
 Dev mode runs a single local Ollama enricher (`qwen2.5`); production splits entity extraction to SpaCy and context-prefix/summary generation to Claude Haiku via `EnrichmentDispatcher`.
 
-**Evidence layer:** Folio is the only example that wires the full evidence stack — `.version_store()`, `.chunk_metadata_store()`, and `.evidence()` with a `DefaultEvidenceResolver`. For a library this matters most: "show me the source" for a generated summary needs to resolve back to the exact book, chapter, and passage. See [Evidence & versioning layer](#evidence--versioning-layer) above.
+**Evidence layer:** Folio is the only example that wires the full evidence stack: `.version_store()`, `.chunk_metadata_store()`, and `.evidence()` with a `DefaultEvidenceResolver`. For a library this matters most: "show me the source" for a generated summary needs to resolve back to the exact book, chapter, and passage. See [Evidence & versioning layer](#evidence--versioning-layer) above.
 
 ### Why ParallelFusion
 
@@ -522,7 +522,7 @@ let engine = ArcanumEngineBuilder::new(config)
     .chunk_metadata_store(chunk_metadata_store)
     .evidence(evidence_resolver)
     // GC worker requires Postgres (retention-policy bookkeeping lives in
-    // document_versions). Not wired in this in-memory dev example — production:
+    // document_versions). Not wired in this in-memory dev example; production:
     //   .gc_worker(Arc::new(PostgresGcWorker::new(
     //       &db_url, version_store, snapshot_store, vector_store,
     //       tree_store, graph_store, chunk_metadata_store,
@@ -563,7 +563,7 @@ top_k               = 15
 
 ### Representative queries across the full spectrum
 
-**Very specific — passage-level (L0 dominant)**
+**Very specific: passage-level (L0 dominant)**
 
 | Query | Strategies | Result |
 |---|---|---|
@@ -572,7 +572,7 @@ top_k               = 15
 | "The exact opening line of Anna Karenina" | BM25 dominant | First chunk of the novel |
 | "What does Jay Gatsby say the first time he meets Daisy?" | Vector (character + emotional context) + Graph (Character:Gatsby + Character:Daisy co-occurrence → Chapter 5) | L0 passage from the reunion scene |
 
-**Series, authors, characters — graph-dominant**
+**Series, authors, characters: graph-dominant**
 
 | Query | Strategies | Result |
 |---|---|---|
@@ -581,7 +581,7 @@ top_k               = 15
 | "Which Agatha Christie books feature both Poirot and Hastings?" | Graph dominant (character co-occurrence edges across books) | Filtered book list |
 | "What other books share a universe with The Left Hand of Darkness?" | Graph (`Book → Series/Universe → related Books`) + Vector | Hainish Cycle books + thematically similar results |
 
-**High-level summarization — RAPTOR-dominant**
+**High-level summarization: RAPTOR-dominant**
 
 | Query | Strategies | Result |
 |---|---|---|
@@ -590,7 +590,7 @@ top_k               = 15
 | "What is the central argument of Thinking Fast and Slow?" | RAPTOR L2 + L1 (chapter summaries) | Book-level argument + key chapter points |
 | "Compare how Hemingway and Fitzgerald use symbolism" | RAPTOR L2 per author + Graph (Author entities) | Cross-book synthesis from both authors' root summaries |
 
-**Cross-collection discovery — fusion earns its keep**
+**Cross-collection discovery: fusion earns its keep**
 
 | Query | Strategies | Result |
 |---|---|---|
@@ -600,7 +600,7 @@ top_k               = 15
 
 ### Wrong choice cost
 
-**Standard + ParallelFusion:** "Summarize Moby Dick" returns 40 fragmented passage chunks — no whole-book summary exists because RAPTOR was never built. "All books by Melville" becomes a text search over documents containing "Melville" — works for his own books but misses bibliography entries, biographical works, and books that discuss him by relation rather than by name.
+**Standard + ParallelFusion:** "Summarize Moby Dick" returns 40 fragmented passage chunks; no whole-book summary exists because RAPTOR was never built. "All books by Melville" becomes a text search over documents containing "Melville", which works for his own books but misses bibliography entries, biographical works, and books that discuss him by relation rather than by name.
 
 **Full + QueryClassified:** "Jay Gatsby party quote" is simultaneously a character lookup (Graph) and a passage search (Vector); the classifier picks one and is wrong half the time. "Books about grief" looks semantic to the classifier but RAPTOR L2 root summaries carry the clearest thematic signal; routing to Vector-only misses those. Series ordering queries ("what Mistborn books are there") occasionally look semantic to the classifier and get routed to Vector instead of Graph, returning thematic passages instead of the ordered series list.
 
@@ -608,4 +608,4 @@ top_k               = 15
 
 ---
 
-*Arcanum Usage Examples — produced via brainstorming session, 2026-06-01 — updated 2026-06-16 against the shipped `examples/` implementations and the evidence/versioning layer.*
+*Arcanum Usage Examples, produced via brainstorming session on 2026-06-01, updated 2026-06-16 against the shipped `examples/` implementations and the evidence/versioning layer.*

@@ -1,4 +1,4 @@
-# Production Deployment Guide — Canopy Product Search
+# Production Deployment Guide: Canopy Product Search
 
 Replace dev stores with production-grade services. ParallelFusion benefits from a
 query cache at scale, so this guide also adds optional Redis.

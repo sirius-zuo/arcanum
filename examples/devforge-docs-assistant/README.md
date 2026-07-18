@@ -6,7 +6,7 @@ Developer portal search powered by [Arcanum](../../README.md).
 
 **Arcanum configuration:**
 - Ingestion: **Standard** (Load → Chunk → Embed → VectorWrite)
-- Retrieval: **Static** ([Vector, BM25]) — fixed two-strategy set, no classifier overhead
+- Retrieval: **Static** ([Vector, BM25]): fixed two-strategy set, no classifier overhead
 
 ---
 
@@ -47,7 +47,7 @@ make dev
 
 Then open **http://localhost:5173** in your browser.
 
-The terminal will print your dev API key — it's automatically injected into the UI.
+The terminal will print your dev API key; it's automatically injected into the UI.
 
 ---
 
@@ -59,9 +59,9 @@ The terminal will print your dev API key — it's automatically injected into th
 
 | Query | Expected strategy |
 |---|---|
-| `invalid_api_key error` | **BM25** — exact phrase match |
-| `how do I authenticate with OAuth2?` | **Vector** — semantic match |
-| `rate limit headers` | **Both** — overlap |
+| `invalid_api_key error` | **BM25**: exact phrase match |
+| `how do I authenticate with OAuth2?` | **Vector**: semantic match |
+| `rate limit headers` | **Both**: overlap |
 
 The strategy badge on each result shows which retriever found it.
 

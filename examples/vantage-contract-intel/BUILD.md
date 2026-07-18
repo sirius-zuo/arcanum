@@ -1,4 +1,4 @@
-# Production Deployment Guide — Vantage Contract Intelligence
+# Production Deployment Guide: Vantage Contract Intelligence
 
 The Full pipeline needs a vector store, graph store, tree store, and model
 providers for embeddings + enrichment.
@@ -65,7 +65,7 @@ let tree_store = Arc::new(PgTreeStore::new(&db_url).await?);
 
 > **Note on the Parties page:** it consumes the framework endpoint `GET /api/v1/graph`,
 > typed against `Arc<dyn GraphStore>`. Swapping `InMemoryGraphStore` for `Neo4jStore`
-> requires **no** changes — the endpoint serves whichever graph store the engine holds.
+> requires **no** changes; the endpoint serves whichever graph store the engine holds.
 
 Add imports:
 ```rust

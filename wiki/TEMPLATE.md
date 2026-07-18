@@ -8,7 +8,7 @@
 
 ## Position in the System
 
-What it consumes and what consumes it — each as a link to the sibling wiki page,
+What it consumes and what consumes it, each as a link to the sibling wiki page,
 with module/package names. Must mirror the dependency direction enforced by
 the project's dependency/layering check, if one exists.
 
@@ -31,11 +31,11 @@ The 2–3 sequences that matter, as numbered steps referencing function/type nam
 Newest first. Each entry:
 
 ### <Decision title>
-- **Decision** — one sentence.
-- **Context** — why the question arose.
-- **Alternatives rejected** — and why.
-- **Consequences** — what this commits us to.
-- **Ref** — YYYY-MM-DD, PR #N (or commit SHA).
+- **Decision**: one sentence.
+- **Context**: why the question arose.
+- **Alternatives rejected**: and why.
+- **Consequences**: what this commits us to.
+- **Ref**: YYYY-MM-DD, PR #N (or commit SHA).
 
 ## Implementation Notes
 
