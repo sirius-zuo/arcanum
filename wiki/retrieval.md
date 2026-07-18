@@ -41,8 +41,10 @@ modules.
   forwards its own `query_transformer`/`reranker`/`dedup_threshold`
   fields into the orchestrator's matching `with_*` setters (Runtime Flow
   1) — then wraps it in a `RetrievalService` alongside auth, audit, and
-  an optional `QueryCache` (Implementation Notes covers which of those
-  the builder actually supplies).
+  — when `RetrievalConfig.query_cache` is set — a `QueryCache` attached
+  via `with_cache` and registered on the same `CacheInvalidationBroadcaster`
+  the pipeline worker fires on content changes (Key Decisions, Implementation
+  Notes; full wiring on [Engine](engine.md)).
 - [Storage](storage.md) — `arcanum-vector`'s `Bm25Index` implements
   `LexicalIndex`; `arcanum-graph`'s `GraphQueryPlanner` implements
   `GraphPlanner`; both are constructed by `arcanum-engine` and handed in
@@ -139,7 +141,8 @@ independent, self-contained components — none references
 eviction on `insert` and a TTL check on `get`; it implements
 `CacheInvalidator::invalidate_document` by retaining only keys that
 don't contain the given `collection_id`, since `QueryCache::cache_key`
-formats as `"{text}:{collection_id}:{top_k}"`.
+formats as `"{text}:{collection_id}:{top_k}:{filters_json}"` — the
+serialized `query.filters` is a fourth segment (Key Decisions).
 
 ## Runtime Flows
 
@@ -184,8 +187,10 @@ opt-in, defaulting to pre-2.6 behavior.)
 7. `arcanum-engine`'s `RetrievalService::search` wraps the whole call: it
    checks `AuthMiddleware::can_access_collection` and a
    `vector_store_cb: Arc<CircuitBreaker>` before calling
-   `orchestrator.retrieve`, and — when a cache was supplied — checks
-   `QueryCache::get(&cache_key)` before and `QueryCache::insert` after.
+   `orchestrator.retrieve`, and — when `with_cache` attached one (Key
+   Decisions) — checks `QueryCache::get(&cache_key)` before and
+   `QueryCache::insert` after; a cache hit still writes an `AuditEntry`
+   before returning, same as a miss.
 
 **2. `Bm25Retriever`/`GraphRetriever` reaching backends through
 `LexicalIndex`/`GraphPlanner`**
@@ -230,6 +235,39 @@ opt-in, defaulting to pre-2.6 behavior.)
 ## Key Decisions
 
 Newest first.
+
+### `QueryCache` activated behind config; cache key made filter-aware
+- **Decision** — `RetrievalConfig.query_cache: Option<QueryCacheConfig>`
+  (`max_entries`, `ttl_secs`; default `None`) now gates construction:
+  when set, `ArcanumEngineBuilder::build` builds a `QueryCache`, attaches
+  it to `RetrievalService` via `with_cache`, and pushes the same `Arc`
+  into the `CacheInvalidationBroadcaster` invalidator list alongside the
+  pipeline's other invalidators. `QueryCache::cache_key` also changed:
+  a fourth segment — `serde_json`-serialized `query.filters` — is
+  appended to the existing `text:collection_id:top_k` key, so two
+  otherwise-identical queries with different `MetadataFilter`s no longer
+  share a cache slot; filter `Vec` order is part of the key, so a
+  reordered-but-equal filter set produces a cache miss rather than a
+  false hit (fails safe, not fails free).
+- **Context** — PR #52 executed a plan (untracked) to activate two
+  "fully-implemented-but-unreachable" caches, `QueryCache` among them.
+  The filter-aware key was added mid-PR as "review-driven hardening":
+  the PR body records that the whole-branch review found the prior
+  filter-blind key let "cached results violate filter scoping" — a
+  data-leak class bug, since a cache hit for one filter set could be
+  served to a query using a different one.
+- **Alternatives rejected** — auto-deriving cache size/TTL rather than
+  requiring an explicit `QueryCacheConfig` is not discussed in the PR
+  body; the config field defaults to `None` (off), matching this crate's
+  existing pattern of explicit opt-in for optional pipeline stages (see
+  "Pipeline stages (2.6)," below).
+- **Consequences** — `QueryCache` is reachable in production for the
+  first time since it was written (superseding the prior "unreachable"
+  Key Decision and Implementation Notes entry below, left as history).
+  `RetrievalService::search` now audit-logs a cache hit the same as a
+  miss (previously hits skipped the audit log — also review-driven).
+  Follow-ups the PR body defers are in Implementation Notes.
+- **Ref** — 2026-07-16, PR #52.
 
 ### Pipeline stages (2.6) are opt-in, not auto-derived from `enricher`
 - **Decision** — the new query-transform/rerank/dedup stages activate
@@ -323,6 +361,9 @@ Newest first.
   state: `QueryCache::cache_key` formats as
   `"{text}:{collection_id}:{top_k}"`, making substring-matching on
   `collection_id` a workable invalidation strategy without an index.
+  **Update (2026-07-16, PR #52)** — the key gained a fourth `filters_json`
+  segment (Key Decisions, above); substring-matching on `collection_id`
+  still works unchanged since that segment sits earlier in the key.
 - **Alternatives rejected** — none recorded.
 - **Consequences** — `QueryCache` is ready to register on a
   `CacheInvalidationBroadcaster` alongside other `CacheInvalidator`
@@ -330,6 +371,9 @@ Newest first.
   [Core](core.md)) — but `ArcanumEngineBuilder::build` never registers it
   there, nor calls `RetrievalService::with_cache` (Implementation Notes),
   so this capability has no effect in the current composition root.
+  **Update (2026-07-16, PR #52)** — both gaps closed: `build` now
+  registers `QueryCache` on the broadcaster and calls `with_cache`
+  whenever `RetrievalConfig.query_cache` is set (Key Decisions, above).
 - **Ref** — 2026-05-31, commit `13a0ef50`.
 
 ### Explicit `collection_id` required; fail-open collection scope denied
@@ -381,12 +425,30 @@ Newest first.
   alongside `VectorRetriever` in the same guard (Runtime Flow 3); the
   classifier gap (`classify_query` never selects `ColBert`) is separate
   and still open.
-- **`QueryCache` is unreachable in production (gap).** `RetrievalService
-  ::with_cache` is called nowhere outside its own tests, and
-  `ArcanumEngineBuilder::build` constructs
-  `CacheInvalidationBroadcaster::new(vec![])` — empty — for the pipeline
-  side (see [Pipeline](pipeline.md)'s force-only invalidation note).
-  `QueryCache::new` itself is called only from `cache.rs`'s own tests.
+- **`QueryCache` unreachable in production — resolved, PR #52.**
+  `ArcanumEngineBuilder::build` now constructs it and calls
+  `RetrievalService::with_cache` whenever `RetrievalConfig.query_cache`
+  is `Some` (Key Decisions, above). One residual gap (open): the
+  `CacheInvalidationBroadcaster` that consumes the invalidator list is
+  built only inside the pipeline-wiring block, which is gated on both an
+  embedder and a vector store being configured — a deployment that
+  enables `query_cache` without those (e.g. BM25/graph-only) gets a
+  reachable, caching `QueryCache` that never receives invalidation
+  signals, so entries persist until their TTL rather than being evicted
+  on document change.
+- **`QueryCache::invalidate_document` over-evicts by substring match
+  (known behavior, open).** It retains entries whose key doesn't
+  *contain* the given `collection_id`, not an exact per-segment match
+  (Key Decisions, "`QueryCache` implements `CacheInvalidator`"); a
+  `collection_id` that happens to be a substring of another key's query
+  text or filters JSON evicts extra entries. Safe direction — it only
+  ever over-evicts, never leaves a stale entry live for the wrong
+  collection — so PR #52 shipped without changing it.
+- **`record_source_association` wiring for per-source embedding
+  invalidation — deferred, PR #52.** Out of scope for this crate today
+  (`QueryCache` has no per-source granularity to begin with), but PR
+  #52's body lists it as a follow-up for the sibling `EmbeddingCache`
+  activation on [Core](core.md)/[Engine](engine.md).
 - **`RetrievalConfig.fusion_strategy`/`.query_cache_enabled` — removed,
   not just dead (PR #49).** Both fields and the `FusionStrategy` enum
   they were the only user of were deleted outright (matching
