@@ -25,7 +25,7 @@ graph TD
     engine --> models[arcanum-models]
     engine --> middleware[arcanum-middleware]
     engine --> vector[arcanum-vector]
-    engine --> graph[arcanum-graph]
+    engine --> graphComp[arcanum-graph]
     engine --> tree[arcanum-tree]
     engine --> core
     pipeline --> ingestion
@@ -43,7 +43,7 @@ graph TD
     models --> core
     eval --> core
     vector --> core
-    graph --> core
+    graphComp --> core
     tree --> core
 ```
 
