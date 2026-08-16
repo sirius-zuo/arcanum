@@ -7,7 +7,7 @@ use crate::{
 };
 use arcanum_core::{
     traits::{ProgressEmitter, Source},
-    types::{IngestionReport, IngestionStatus, IngestionTask},
+    types::{IngestionProgressReport, IngestionStatus, IngestionTask},
     ArcanumError, Result,
 };
 use arcanum_middleware::BoundedQueue;
@@ -162,7 +162,7 @@ pub async fn run_task(
                 } else {
                     IngestionStatus::PartialSuccess { failed_stages }
                 };
-                let report = IngestionReport {
+                let report = IngestionProgressReport {
                     operation_id:         operation_id.clone(),
                     source_uri:           source_uri.clone(),
                     pipeline_template:    pipeline_template.clone(),

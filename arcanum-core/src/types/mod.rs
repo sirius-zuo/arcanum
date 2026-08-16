@@ -37,8 +37,12 @@ pub struct StageResult {
     pub error: Option<String>,
 }
 
+/// Worker progress payload emitted over the event bus. This is NOT the
+/// canonical durable `IngestionReport` (which lives in `types::operation` and
+/// carries the version-specific original-content URI); it is a live-progress
+/// snapshot only and must not be treated as terminal truth.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct IngestionReport {
+pub struct IngestionProgressReport {
     pub operation_id: OperationId,
     pub source_uri: String,
     pub pipeline_template: String,
@@ -54,7 +58,7 @@ mod ingestion_report_tests {
     use super::*;
     #[test]
     fn test_ingestion_report_construction() {
-        let report = IngestionReport {
+        let report = IngestionProgressReport {
             operation_id: OperationId::new(),
             source_uri: "file://test.pdf".to_string(),
             pipeline_template: "standard".to_string(),
