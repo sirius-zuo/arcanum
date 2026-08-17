@@ -27,12 +27,6 @@ use arcanum_ingestion::operations::postgres::PostgresOperationStore;
 use arcanum_ingestion::operations::sqlite::SqliteOperationStore;
 use chrono::Utc;
 
-/// Local PostgreSQL used for the contract suite. Override with
-/// `TEST_DATABASE_URL` to target a different instance. The `arcanum_test`
-/// database must exist (see the project migrations / task report).
-const DEFAULT_TEST_DATABASE_URL: &str =
-    "postgres://yeehai:yeehai_local_test_only@localhost:5432/arcanum_test";
-
 fn is_conflict(e: &ArcanumError) -> bool {
     matches!(e, ArcanumError::Conflict(_))
 }
@@ -326,9 +320,10 @@ async fn sqlite_store_contract() {
 }
 
 #[tokio::test]
+#[ignore] // needs TEST_DATABASE_URL pointing at a reachable Postgres
 async fn postgres_store_contract() {
     let url = std::env::var("TEST_DATABASE_URL")
-        .unwrap_or_else(|_| DEFAULT_TEST_DATABASE_URL.to_string());
+        .expect("set TEST_DATABASE_URL to run this test");
     run_store_contract(|| async {
         PostgresOperationStore::new(&url)
             .await
