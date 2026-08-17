@@ -173,6 +173,29 @@ async fn submission_by_payload_locator_returns_202() {
 }
 
 #[tokio::test]
+async fn metadata_with_both_inline_payload_and_locator_is_rejected() {
+    let engine = test_engine().await;
+    let token = engine.auth.generate_admin_key("tester");
+    let mut map = serde_json::Map::new();
+    map.insert("idempotency_key".to_string(), serde_json::json!(unique_key("both")));
+    map.insert("logical_source_uri".to_string(), serde_json::json!("s3://bucket/docs/both.md"));
+    map.insert("collection_id".to_string(), serde_json::json!("col1"));
+    map.insert(
+        "pipeline_configuration".to_string(),
+        serde_json::json!({ "template": "standard" }),
+    );
+    map.insert("payload".to_string(), serde_json::json!([1, 2, 3]));
+    map.insert(
+        "payload_locator".to_string(),
+        serde_json::json!("file:///tmp/arcanum-test/operations/00000000-0000-0000-0000-000000000001"),
+    );
+    let meta = serde_json::Value::Object(map).to_string();
+
+    let (status, json) = post_submission(&engine, &token, &meta, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "both inline payload and payload_locator must be 400, not 409: {json}");
+}
+
+#[tokio::test]
 async fn idempotent_replay_returns_200_and_same_operation() {
     let engine = test_engine().await;
     let token = engine.auth.generate_admin_key("tester");

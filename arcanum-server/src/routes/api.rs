@@ -265,6 +265,9 @@ async fn parse_operation_parts(
     } else if submission.payload.is_none() && submission.payload_locator.is_none() {
         return Err(bad_request("submission requires inline payload or a payload_locator"));
     }
+    if submission.payload.is_some() && submission.payload_locator.is_some() {
+        return Err(bad_request("payload and payload_locator are mutually exclusive"));
+    }
     Ok(submission)
 }
 
@@ -382,6 +385,11 @@ pub async fn list_operation_by_idempotency(
 /// vector, graph, and tree stores and marks the collection-scoped document
 /// versions deleted per the version-store contract. Repeating removal for an
 /// absent source is a no-op success.
+///
+/// The BM25/lexical index is deliberately NOT removed here: `LexicalIndex`/
+/// `Bm25Index` expose only `delete_document(id)` keyed by a bare chunk id, not
+/// a source-scoped delete, and BM25 is a supplementary index rather than the
+/// source of truth. Full lexical removal is tracked as a follow-up.
 #[tracing::instrument(skip_all)]
 pub async fn delete_collection_source(
     headers: HeaderMap,

@@ -197,6 +197,12 @@ paths:
       responses:
         '204':
           description: Removal succeeded (or was a no-op for an absent source).
+        '400':
+          description: The required source_uri query parameter is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -317,12 +323,13 @@ components:
           $ref: '#/components/schemas/CollectionId'
         pipeline_configuration:
           type: object
-          description: Pipeline configuration, e.g. { "template": "standard" }.
+          description: 'Pipeline configuration, e.g. { "template": "standard" }.'
         payload:
-          type: string
-          format: binary
+          type: array
+          items:
+            type: integer
           nullable: true
-          description: Inline payload bytes (never returned by query routes).
+          description: Inline payload bytes as a JSON byte array (never returned by query routes).
         payload_locator:
           type: string
           nullable: true
