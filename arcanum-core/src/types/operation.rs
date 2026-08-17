@@ -8,6 +8,7 @@ use crate::ArcanumError;
 /// Stable identifier for a durable ingestion operation. This is what Core
 /// receives on submission and later queries by.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct OperationId(pub Uuid);
 
 impl OperationId {
@@ -29,6 +30,10 @@ pub struct IngestionTask {
     pub content:           Option<Vec<u8>>,
     /// MIME hint for inline content (derived from the upload filename).
     pub mime_hint:         Option<String>,
+    /// Durable locator for a payload staged in the `OperationPayloadStore`.
+    /// Set when `content` is `None` and the submission was staged before
+    /// `create_or_get`; the worker resolves `Source::Raw` from these bytes.
+    pub payload_locator:   Option<String>,
 }
 
 /// Lifecycle of a durable ingestion operation.

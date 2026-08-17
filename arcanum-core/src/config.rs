@@ -90,10 +90,19 @@ pub struct IngestionConfig {
     pub queue_capacity:      usize,
     pub retry_max_attempts:  u32,
     pub retry_base_delay_ms: u64,
+    /// Maximum accepted size for an inline operation payload submitted to
+    /// `POST /api/v1/ingestion-operations` (and used to bound multipart
+    /// payload staging). Payloads larger than this are rejected with 413.
+    #[serde(default = "default_max_upload_bytes")]
+    pub max_upload_bytes:    usize,
     #[serde(default)]
     pub chunking:            PerBackendChunkConfig,
     #[serde(default)]
     pub docling:             Option<DoclingConfig>,
+}
+
+fn default_max_upload_bytes() -> usize {
+    64 * 1024 * 1024 // 64 MiB
 }
 
 impl Default for IngestionConfig {
@@ -103,6 +112,7 @@ impl Default for IngestionConfig {
             queue_capacity:      10_000,
             retry_max_attempts:  3,
             retry_base_delay_ms: 1_000,
+            max_upload_bytes:    default_max_upload_bytes(),
             chunking: PerBackendChunkConfig::default(),
             docling: None,
         }
@@ -276,6 +286,11 @@ impl ArcanumConfig {
                 cfg.ingestion.queue_capacity = n;
             }
         }
+        if let Ok(v) = std::env::var("ARCANUM_INGESTION_MAX_UPLOAD_BYTES") {
+            if let Ok(n) = v.parse() {
+                cfg.ingestion.max_upload_bytes = n;
+            }
+        }
         if let Ok(v) = std::env::var("ARCANUM_EMBEDDING_PROVIDER") {
             cfg.embedding.provider = v;
         }
@@ -325,6 +340,9 @@ impl ArcanumConfig {
         }
         if std::env::var("ARCANUM_INGESTION_QUEUE_CAPACITY").is_ok() {
             cfg.ingestion.queue_capacity = from_env.ingestion.queue_capacity;
+        }
+        if std::env::var("ARCANUM_INGESTION_MAX_UPLOAD_BYTES").is_ok() {
+            cfg.ingestion.max_upload_bytes = from_env.ingestion.max_upload_bytes;
         }
         if std::env::var("ARCANUM_EMBEDDING_PROVIDER").is_ok() {
             cfg.embedding.provider = from_env.embedding.provider;

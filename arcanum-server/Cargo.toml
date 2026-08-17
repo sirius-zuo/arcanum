@@ -15,7 +15,7 @@ serde          = { workspace = true }
 serde_json     = { workspace = true }
 anyhow         = { workspace = true }
 tracing        = { workspace = true }
-axum           = { version = "0.7", features = ["ws", "macros"] }
+axum           = { version = "0.7", features = ["ws", "macros", "multipart"] }
 metrics            = { workspace = true }
 metrics-prometheus = { workspace = true }
 prometheus         = { workspace = true }

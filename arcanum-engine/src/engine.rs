@@ -2,12 +2,12 @@ use arcanum_core::{
     config::{ArcanumConfig, MetadataBackend, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
-             OperationStore, SnapshotStore, DocumentVersionStore, ChunkMetadataStore,
-             EvidenceResolver, GcWorker, Preprocessor, Reranker},
+             OperationStore, OperationPayloadStore, SnapshotStore, DocumentVersionStore,
+             ChunkMetadataStore, EvidenceResolver, GcWorker, Preprocessor, Reranker},
     types::{RetrievalStrategy, EnrichIntent},
     Result, ArcanumError,
 };
-use arcanum_ingestion::{LocalSnapshotStore, PostgresOperationStore, SqliteOperationStore};
+use arcanum_ingestion::{LocalOperationPayloadStore, LocalSnapshotStore, PostgresOperationStore, SqliteOperationStore};
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader,
@@ -147,6 +147,7 @@ pub struct ArcanumEngineBuilder {
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
     operation_store: Option<Arc<dyn OperationStore>>,
+    payload_store: Option<Arc<dyn OperationPayloadStore>>,
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
     experiment_store: Option<Arc<dyn ExperimentStore>>,
@@ -175,6 +176,7 @@ impl Default for ArcanumEngineBuilder {
             snapshot_store: None,
             chunk_metadata_store: None,
             operation_store: None,
+            payload_store: None,
             evidence: None,
             gc_worker: None,
             experiment_store: None,
@@ -282,6 +284,11 @@ impl ArcanumEngineBuilder {
 
     pub fn operation_store(mut self, store: Arc<dyn OperationStore>) -> Self {
         self.operation_store = Some(store);
+        self
+    }
+
+    pub fn payload_store(mut self, store: Arc<dyn OperationPayloadStore>) -> Self {
+        self.payload_store = Some(store);
         self
     }
 
@@ -413,6 +420,16 @@ impl ArcanumEngineBuilder {
         }
     }
 
+    /// Resolve the durable operation-payload store. A builder-supplied store
+    /// always wins; otherwise inline payloads are staged under a local,
+    /// non-public filesystem root (matching the local snapshot-store default).
+    fn resolve_payload_store(&self) -> Arc<dyn OperationPayloadStore> {
+        if let Some(store) = &self.payload_store {
+            return store.clone();
+        }
+        Arc::new(LocalOperationPayloadStore::new("/tmp/arcanum-payloads"))
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
 
@@ -420,6 +437,7 @@ impl ArcanumEngineBuilder {
         // submission persists Accepted here and every worker persists Running +
         // the terminal report here.
         let operation_store = self.resolve_operation_store().await?;
+        let payload_store = self.resolve_payload_store();
 
         // Resolved unconditionally (not just when pipeline workers are wired) so an
         // unknown provider name in enrichment config always fails build().
@@ -493,6 +511,7 @@ impl ArcanumEngineBuilder {
             events.clone(),
             audit.clone(),
             operation_store.clone(),
+            payload_store.clone(),
         ));
 
         // Per-job deps resolver: enables per-collection chunker overrides and
@@ -594,7 +613,7 @@ impl ArcanumEngineBuilder {
             for _ in 0..self.config.ingestion.worker_pool_size {
                 let worker = IngestionWorker::new(
                     registry.clone(), deps.clone(), emitter.clone(), queue.clone(),
-                    operation_store.clone(),
+                    operation_store.clone(), Some(payload_store.clone()),
                 ).with_resolver(deps_resolver.clone());
                 tokio::spawn(async move {
                     while let Some(_) = worker.process_next().await {}

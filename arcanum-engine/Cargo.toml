@@ -27,6 +27,8 @@ uuid               = { workspace = true }
 chrono             = { workspace = true }
 sha2               = "0.10"
 hex                = "0.4"
+bytes              = "1"
+futures            = "0.3"
 
 [dev-dependencies]
 tokio    = { workspace = true }

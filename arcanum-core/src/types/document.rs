@@ -19,6 +19,7 @@ impl DocumentId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct CollectionId(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

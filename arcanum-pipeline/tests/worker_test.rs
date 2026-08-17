@@ -108,9 +108,10 @@ async fn test_worker_processes_task_to_completion() {
         force: false,
         content: None,
         mime_hint: None,
+        payload_locator: None,
     };
 
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), store).await;
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), store, None).await;
     assert!(result.is_ok(), "worker task failed: {:?}", result.err());
 }
 
@@ -145,9 +146,10 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
         force: false,
         content: None,
         mime_hint: None,
+        payload_locator: None,
     };
 
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), store).await;
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), store, None).await;
     assert!(result.is_err(), "open circuit breaker should cause task failure");
     let err_str = result.unwrap_err().to_string();
     assert!(err_str.contains("circuit"), "error should mention circuit: {}", err_str);
@@ -246,9 +248,10 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
         force: true,
         content: None,
         mime_hint: None,
+        payload_locator: None,
     };
 
-    run_task(task, registry, deps, Arc::new(NoopEmitter), store).await.unwrap();
+    run_task(task, registry, deps, Arc::new(NoopEmitter), store, None).await.unwrap();
     assert_eq!(call_count.load(Ordering::SeqCst), 1,
         "invalidation should fire once for force-reingest");
 }
@@ -378,9 +381,10 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
         force: false,
         content: None,
         mime_hint: None,
+        payload_locator: None,
     };
 
-    run_task(task, registry, deps, Arc::new(NoopEmitter), store).await.unwrap();
+    run_task(task, registry, deps, Arc::new(NoopEmitter), store, None).await.unwrap();
     assert_eq!(call_count.load(Ordering::SeqCst), 1,
         "invalidation should fire once for a genuine content change, not just force");
 }
@@ -431,9 +435,10 @@ async fn test_worker_fails_when_no_preprocessor_configured() {
         force: false,
         content: None,
         mime_hint: None,
+        payload_locator: None,
     };
 
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), store).await;
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), store, None).await;
     assert!(result.is_err(), "task should fail when no preprocessor is configured");
     let err_str = result.unwrap_err().to_string();
     assert!(err_str.contains("no preprocessor configured"), "unexpected error: {}", err_str);
@@ -488,9 +493,10 @@ async fn test_worker_reports_partial_success_for_non_core_stage_failure() {
         force: false,
         content: None,
         mime_hint: None,
+        payload_locator: None,
     };
 
-    let result = run_task(task, registry, deps, emitter.clone(), store).await;
+    let result = run_task(task, registry, deps, emitter.clone(), store, None).await;
     assert!(result.is_ok(), "non-core stage failure must not abort the task: {:?}", result.err());
 
     let events = emitter.0.lock().unwrap();

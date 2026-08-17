@@ -159,6 +159,7 @@ fn task(op_id: OperationId, source_uri: &str, content: Option<&[u8]>) -> Ingesti
         force: false,
         content: content.map(|b| b.to_vec()),
         mime_hint: Some("text/plain".to_string()),
+        payload_locator: None,
     }
 }
 
@@ -188,6 +189,7 @@ async fn durable_completion_new_ingestion_persists_succeeded_with_content_uri() 
         stub_deps(),
         noop_emitter(),
         store.clone(),
+        None,
     )
     .await
     .expect("run_task");
@@ -310,6 +312,7 @@ async fn durable_completion_unchanged_content_returns_existing_snapshot_uri() {
         deps,
         noop_emitter(),
         store.clone(),
+        None,
     )
     .await
     .expect("run_task");
@@ -355,6 +358,7 @@ async fn durable_completion_worker_persists_failed_with_safe_error_and_dispositi
         deps,
         noop_emitter(),
         store.clone(),
+        None,
     )
     .await;
     assert!(result.is_err(), "open circuit breaker should fail the task");
@@ -408,6 +412,7 @@ async fn durable_completion_failed_operation_is_terminal_and_not_re_enqueued() {
         deps,
         noop_emitter(),
         store.clone(),
+        None,
     )
     .await;
     assert!(result.is_err(), "open circuit breaker should fail the task");
@@ -476,11 +481,13 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
             force: false,
             content: Some(b"boom".to_vec()),
             mime_hint: Some("text/plain".to_string()),
+            payload_locator: None,
         },
         registry,
         stub_deps(),
         noop_emitter(),
         store.clone(),
+        None,
     )
     .await;
     assert!(result.is_err(), "core load failure should fail the task");

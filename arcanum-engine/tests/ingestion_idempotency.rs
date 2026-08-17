@@ -10,9 +10,10 @@
 use arcanum_engine::audit::AuditLogger;
 use arcanum_engine::event_bus::EventBus;
 use arcanum_engine::services::ingestion::{IngestionService, IngestRequest};
-use arcanum_core::traits::{OperationStore, ProgressEmitter};
+use arcanum_core::traits::{OperationPayloadStore, OperationStore, ProgressEmitter};
 use arcanum_core::types::{CollectionId, IngestionOutcome, OperationStatus};
 use arcanum_ingestion::operations::sqlite::SqliteOperationStore;
+use arcanum_ingestion::LocalOperationPayloadStore;
 use arcanum_middleware::BoundedQueue;
 use arcanum_pipeline::{worker::IngestionWorker, ArcanumPipelineRegistry, PipelineDeps};
 use std::sync::Arc;
@@ -145,6 +146,8 @@ async fn ingestion_idempotency_lost_event_recovery_returns_terminal_report() {
     let queue = Arc::new(BoundedQueue::new("ingestion", 16));
     let events = Arc::new(EventBus::new());
     let audit = Arc::new(AuditLogger::new());
+    let payload_store: Arc<dyn OperationPayloadStore> =
+        Arc::new(LocalOperationPayloadStore::new(dir.path().join("payloads")));
 
     // No event subscribers are ever attached: the WebSocket bus is best-effort,
     // and terminal truth must come from the store, not the bus.
@@ -153,6 +156,7 @@ async fn ingestion_idempotency_lost_event_recovery_returns_terminal_report() {
         events.clone(),
         audit.clone(),
         store.clone(),
+        payload_store.clone(),
     );
 
     let req = IngestRequest {
@@ -186,12 +190,19 @@ async fn ingestion_idempotency_lost_event_recovery_returns_terminal_report() {
         noop_emitter(),
         queue.clone(),
         store.clone(),
+        Some(payload_store.clone()),
     );
     let processed = worker.process_next().await.expect("one task was enqueued");
     processed.expect("task processed cleanly");
 
     // A NEW service over the SAME store observes the terminal report.
-    let _service2 = IngestionService::new_from_parts(queue, events, audit, store.clone());
+    let _service2 = IngestionService::new_from_parts(
+        queue,
+        events,
+        audit,
+        store.clone(),
+        payload_store,
+    );
     let operation = store
         .get(&op_id)
         .await

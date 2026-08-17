@@ -6,12 +6,13 @@ use crate::{
     registry::ArcanumPipelineRegistry,
 };
 use arcanum_core::{
-    traits::{OperationStore, ProgressEmitter, Source},
+    traits::{OperationPayloadStore, OperationStore, ProgressEmitter, Source},
     types::{IngestionProgressReport, IngestionReport, IngestionStatus, IngestionTask},
     ArcanumError, Result,
 };
 use arcanum_middleware::BoundedQueue;
 use chrono::Utc;
+use futures::StreamExt;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -22,6 +23,7 @@ pub struct IngestionWorker {
     emitter:  Arc<dyn ProgressEmitter>,
     queue:    Arc<BoundedQueue<IngestionTask>>,
     operations: Arc<dyn OperationStore>,
+    payload_store: Option<Arc<dyn OperationPayloadStore>>,
     resolver: Option<Arc<dyn arcanum_core::traits::IngestionDepsOverrideResolver>>,
 }
 
@@ -32,8 +34,9 @@ impl IngestionWorker {
         emitter:  Arc<dyn ProgressEmitter>,
         queue:    Arc<BoundedQueue<IngestionTask>>,
         operations: Arc<dyn OperationStore>,
+        payload_store: Option<Arc<dyn OperationPayloadStore>>,
     ) -> Self {
-        Self { registry, deps, emitter, queue, operations, resolver: None }
+        Self { registry, deps, emitter, queue, operations, payload_store, resolver: None }
     }
 
     /// Attach a per-job resolver. Workers without a resolver use the shared base deps.
@@ -57,6 +60,7 @@ impl IngestionWorker {
                 deps,
                 self.emitter.clone(),
                 self.operations.clone(),
+                self.payload_store.clone(),
             )
             .await,
         )
@@ -141,13 +145,14 @@ fn sanitize_error_message(code: &str) -> String {
 /// `Failed` (with a safe, redacted error) BEFORE any event is emitted. A
 /// terminal `Failed` operation is final — the worker never re-enqueues a retry
 /// for it.
-#[instrument(skip(task, registry, deps, emitter, operations), fields(source_uri = %task.source_uri), err)]
+#[instrument(skip(task, registry, deps, emitter, operations, payload_store), fields(source_uri = %task.source_uri), err)]
 pub async fn run_task(
     task:      IngestionTask,
     registry:  Arc<ArcanumPipelineRegistry>,
     deps:      Arc<PipelineDeps>,
     emitter:   Arc<dyn ProgressEmitter>,
     operations: Arc<dyn OperationStore>,
+    payload_store: Option<Arc<dyn OperationPayloadStore>>,
 ) -> Result<()> {
     let operation_id       = task.operation_id.clone();
     let source_uri         = task.source_uri.clone();
@@ -167,13 +172,33 @@ pub async fn run_task(
     // including a missing snapshot/version needed to build a Succeeded report —
     // becomes a Failed report so the store is always consistent.
     let outcome = async {
-        let source = match &task.content {
-            Some(bytes) => Source::Raw {
+        let source = match (&task.content, &task.payload_locator) {
+            (Some(bytes), _) => Source::Raw {
                 content: bytes.clone(),
                 mime_hint: task.mime_hint.clone(),
                 uri: source_uri.clone(),
             },
-            None => Source::from_uri(&source_uri)?,
+            // The payload was staged durably before create_or_get; resolve it
+            // from the OperationPayloadStore so an Accepted operation's content
+            // survives a process restart (the queue is in-memory, the store is
+            // not).
+            (None, Some(locator)) => {
+                let store = payload_store.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                    stage: "worker".into(),
+                    message: "task carries a payload_locator but no payload store is configured".into(),
+                })?;
+                let mut stream = store.open(locator).await?;
+                let mut buf = Vec::new();
+                while let Some(chunk) = stream.next().await {
+                    buf.extend_from_slice(&chunk?);
+                }
+                Source::Raw {
+                    content: buf,
+                    mime_hint: task.mime_hint.clone(),
+                    uri: source_uri.clone(),
+                }
+            }
+            (None, None) => Source::from_uri(&source_uri)?,
         };
         let state  = Arc::new(Mutex::new(IngestionState::new(source, collection_id.clone())));
         let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;

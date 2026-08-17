@@ -1,7 +1,9 @@
-use axum::{extract::{State, Json}, http::{StatusCode, HeaderMap}, response::{IntoResponse, Response}};
+use axum::{extract::{State, Json, Path, Query as UrlQuery, Multipart}, http::{StatusCode, HeaderMap}, response::{IntoResponse, Response}};
 use serde::Deserialize;
 use std::sync::Arc;
-use arcanum_core::types::{Query, CollectionId};
+use uuid::Uuid;
+use arcanum_core::types::{Query, CollectionId, IngestionSubmission, OperationId};
+use arcanum_core::ArcanumError;
 use arcanum_engine::ArcanumEngine;
 use arcanum_chunk_eval::{inspect, InspectRequest, BenchmarkJob, run_benchmark};
 use metrics::{counter, histogram};
@@ -169,6 +171,267 @@ pub async fn upload(
     let status = if response.status() == StatusCode::ACCEPTED { "ok" } else { "error" };
     counter!("arcanum_requests_total", "endpoint" => "upload", "status" => status).increment(1);
     histogram!("arcanum_request_duration_seconds", "endpoint" => "upload").record(elapsed);
+    response
+}
+
+/// DELETE /api/v1/collections/{collectionId}/sources?source_uri=<encoded>
+#[derive(Deserialize)]
+pub struct DeleteSourceParams {
+    pub source_uri: String,
+}
+
+/// GET /api/v1/ingestion-operations?idempotency_key=KEY — a single required
+/// query value. serde rejects a missing field AND a duplicate field, so the
+/// "exactly one query value" rule is enforced at deserialization.
+#[derive(Deserialize)]
+pub struct IdempotencyQuery {
+    pub idempotency_key: String,
+}
+
+fn bad_request(msg: impl Into<String>) -> Response {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg.into() }))).into_response()
+}
+
+/// Redacted error mapping for the durable operation routes: only safe codes are
+/// surfaced — never internal stack or connection details.
+fn operation_error_response(e: &ArcanumError) -> Response {
+    match e {
+        ArcanumError::Conflict(_) => (StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": "idempotency key already used by a different submission" }))).into_response(),
+        ArcanumError::NotFound(_) => (StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "operation not found" }))).into_response(),
+        ArcanumError::QueueFull => (StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "ingestion queue is full" }))).into_response(),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": "internal error" }))).into_response(),
+    }
+}
+
+/// Parse a multipart submission body into an `IngestionSubmission`.
+///
+/// Accepted shapes (the submission type documents payload XOR
+/// `payload_locator`):
+/// - `metadata` JSON part + `payload` binary part — inline bytes staged by the
+///   ingestion service before `create_or_get`.
+/// - `metadata` JSON part with inline `payload` bytes, or with a
+///   `payload_locator` naming a retrievable durable location.
+async fn parse_operation_parts(
+    multipart: &mut Multipart,
+    max_upload_bytes: usize,
+) -> Result<IngestionSubmission, Response> {
+    let mut submission: Option<IngestionSubmission> = None;
+    let mut payload: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| bad_request(format!("invalid multipart: {e}")))?
+    {
+        match field.name() {
+            Some("metadata") => {
+                if submission.is_some() {
+                    return Err(bad_request("duplicate metadata part"));
+                }
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| bad_request(format!("read metadata: {e}")))?;
+                let sub = serde_json::from_slice(&bytes)
+                    .map_err(|e| bad_request(format!("invalid metadata JSON: {e}")))?;
+                submission = Some(sub);
+            }
+            Some("payload") => {
+                if payload.is_some() {
+                    return Err(bad_request("duplicate payload part"));
+                }
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| bad_request(format!("read payload: {e}")))?;
+                if bytes.len() > max_upload_bytes {
+                    return Err((StatusCode::PAYLOAD_TOO_LARGE,
+                        Json(serde_json::json!({ "error": "payload exceeds the configured maximum upload size" }))).into_response());
+                }
+                payload = Some(bytes.to_vec());
+            }
+            _ => {}
+        }
+    }
+    let mut submission = submission.ok_or_else(|| bad_request("missing metadata part"))?;
+    if let Some(bytes) = payload {
+        if submission.payload_locator.is_some() {
+            return Err(bad_request("payload part and metadata payload_locator are mutually exclusive"));
+        }
+        submission.payload = Some(bytes);
+    } else if submission.payload.is_none() && submission.payload_locator.is_none() {
+        return Err(bad_request("submission requires inline payload or a payload_locator"));
+    }
+    Ok(submission)
+}
+
+/// POST /api/v1/ingestion-operations — durable, idempotent submission.
+/// 202 for a new operation; 200 for an idempotent replay; 409 on conflicting
+/// reuse of an idempotency key.
+#[tracing::instrument(skip_all)]
+pub async fn submit_operation(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        let submission = match parse_operation_parts(&mut multipart, eng.config.ingestion.max_upload_bytes).await {
+            Ok(s) => s,
+            Err(r) => return r,
+        };
+        if !eng.auth.can_access_collection(&claims, &submission.collection_id.0) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
+        match eng.ingestion.submit_operation(submission, false, &claims.user_id).await {
+            Ok((op_id, is_new)) => {
+                let status = if is_new { StatusCode::ACCEPTED } else { StatusCode::OK };
+                (status, Json(serde_json::json!({
+                    "operation_id": op_id.0.to_string(),
+                    "status": "accepted",
+                    "resource": format!("/api/v1/ingestion-operations/{}", op_id.0),
+                }))).into_response()
+            }
+            Err(e) => operation_error_response(&e),
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::ACCEPTED || response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "submit_operation", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "submit_operation").record(elapsed);
+    response
+}
+
+/// GET /api/v1/ingestion-operations/{id} — canonical durable operation document.
+#[tracing::instrument(skip_all)]
+pub async fn get_operation(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Path(id): Path<Uuid>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        let operation = match eng.ingestion.operations().get(&OperationId(id)).await {
+            Ok(Some(op)) => op,
+            Ok(None) => return operation_error_response(&ArcanumError::NotFound("operation".into())),
+            Err(e) => return operation_error_response(&e),
+        };
+        if !eng.auth.can_access_collection(&claims, &operation.submission.collection_id.0) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
+        (StatusCode::OK, Json(operation)).into_response()
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "get_operation", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "get_operation").record(elapsed);
+    response
+}
+
+/// GET /api/v1/ingestion-operations?idempotency_key=KEY — requires EXACTLY one
+/// query value; collection access is enforced against the resolved operation.
+#[tracing::instrument(skip_all)]
+pub async fn list_operation_by_idempotency(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    UrlQuery(params): UrlQuery<IdempotencyQuery>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        let operation = match eng.ingestion.operations().get_by_idempotency(&params.idempotency_key).await {
+            Ok(Some(op)) => op,
+            Ok(None) => return operation_error_response(&ArcanumError::NotFound("operation".into())),
+            Err(e) => return operation_error_response(&e),
+        };
+        if !eng.auth.can_access_collection(&claims, &operation.submission.collection_id.0) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
+        (StatusCode::OK, Json(operation)).into_response()
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "list_operation_by_idempotency", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "list_operation_by_idempotency").record(elapsed);
+    response
+}
+
+/// DELETE /api/v1/collections/{collectionId}/sources?source_uri=<encoded> —
+/// idempotent removal of every entry for the stable source URI within one
+/// collection. Uses the existing `delete_by_source_uri` contracts on the
+/// vector, graph, and tree stores and marks the collection-scoped document
+/// versions deleted per the version-store contract. Repeating removal for an
+/// absent source is a no-op success.
+#[tracing::instrument(skip_all)]
+pub async fn delete_collection_source(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Path(collection_id): Path<String>,
+    UrlQuery(params): UrlQuery<DeleteSourceParams>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        if !eng.auth.can_access_collection(&claims, &collection_id) {
+            return (StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        }
+        if let Some(store) = eng.vector_store.as_ref() {
+            if let Err(e) = store.delete_by_source_uri(&collection_id, &params.source_uri).await {
+                tracing::warn!(collection = %collection_id, err = %e, "vector source removal failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "internal error" }))).into_response();
+            }
+        }
+        if let Some(store) = eng.graph_store.as_ref() {
+            if let Err(e) = store.delete_by_source_uri(&collection_id, &params.source_uri).await {
+                tracing::warn!(collection = %collection_id, err = %e, "graph source removal failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "internal error" }))).into_response();
+            }
+        }
+        if let Some(store) = eng.tree_store.as_ref() {
+            if let Err(e) = store.delete_by_source_uri(&collection_id, &params.source_uri).await {
+                tracing::warn!(collection = %collection_id, err = %e, "tree source removal failed");
+                return (StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "internal error" }))).into_response();
+            }
+        }
+        if let Err(e) = eng.version_store.delete_by_source_uri(&collection_id, &params.source_uri).await {
+            tracing::warn!(collection = %collection_id, err = %e, "version source removal failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": "internal error" }))).into_response();
+        }
+        StatusCode::NO_CONTENT.into_response()
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::NO_CONTENT { "ok" } else { "error" };
+    counter!("arcanum_requests_total", "endpoint" => "delete_collection_source", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "delete_collection_source").record(elapsed);
     response
 }
 

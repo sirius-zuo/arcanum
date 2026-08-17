@@ -1,4 +1,4 @@
-use axum::{Router, routing::{get, post}, http::Method};
+use axum::{Router, routing::{get, post}, extract::DefaultBodyLimit, http::Method};
 use arcanum_core::config::ArcanumConfig;
 use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
 use std::sync::Arc;
@@ -36,6 +36,22 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/api/v1/search", post(api::search))
         .route("/api/v1/ingest",    post(api::ingest))
         .route("/api/v1/graph",     get(graph::get_graph))
+        // Durable ingestion operations (Plan 05 Task 4). The multipart body
+        // limit is a coarse safety net; the handler enforces the payload-part
+        // limit precisely from engine.config.ingestion.max_upload_bytes.
+        .route(
+            "/api/v1/ingestion-operations",
+            post(api::submit_operation)
+                .get(api::list_operation_by_idempotency)
+                .layer(DefaultBodyLimit::max(
+                    config.ingestion.max_upload_bytes.saturating_add(1024 * 1024),
+                )),
+        )
+        .route("/api/v1/ingestion-operations/:id", get(api::get_operation))
+        .route(
+            "/api/v1/collections/:collection_id/sources",
+            axum::routing::delete(api::delete_collection_source),
+        )
         // Chunk eval
         .route("/api/v1/chunk/inspect",    post(api::chunk_inspect))
         .route("/api/v1/chunk/benchmark",  post(api::chunk_benchmark))
