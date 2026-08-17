@@ -3,19 +3,23 @@
 //! Plan Task 3, Step 3: the pipeline worker marks the operation `Running`
 //! before preprocessing, persists the terminal report (`Succeeded` with the
 //! original content URI, `Unchanged` with the existing version's snapshot URI,
-//! or `Failed` with a safe error + partial-output disposition) BEFORE emitting
-//! any event, and the result is durable across a fresh store instance over the
-//! same storage.
+//! or `Failed` with a safe, redacted error) BEFORE emitting any event, and the
+//! result is durable across a fresh store instance over the same storage. A
+//! terminal `Failed` operation is final — the worker never re-enqueues a retry.
 
 use arcanum_core::traits::{DocumentVersionStore, OperationStore, ProgressEmitter};
 use arcanum_core::types::{
     CollectionId, DocumentEntry, DocumentId, DocumentVersion, IngestionOutcome,
-    IngestionSubmission, IngestionTask, OperationId, OperationStatus, PartialOutputDisposition,
-    VersioningPolicy, VersionStatus,
+    IngestionSubmission, IngestionTask, OperationId, OperationStatus, VersioningPolicy,
+    VersionStatus,
 };
+use arcanum_core::ArcanumError;
 use arcanum_ingestion::operations::sqlite::SqliteOperationStore;
-use arcanum_middleware::BoundedQueue;
-use arcanum_pipeline::{worker::run_task, ArcanumPipelineRegistry, PipelineDeps};
+use arcanum_pipeline::{
+    dag::{PipelineDAG, PipelineStage},
+    worker::run_task,
+    ArcanumPipelineRegistry, PipelineDeps,
+};
 use std::sync::Arc;
 
 fn noop_emitter() -> Arc<dyn ProgressEmitter> {
@@ -183,7 +187,6 @@ async fn durable_completion_new_ingestion_persists_succeeded_with_content_uri() 
         Arc::new(ArcanumPipelineRegistry::default()),
         stub_deps(),
         noop_emitter(),
-        Arc::new(BoundedQueue::new("test", 10)),
         store.clone(),
     )
     .await
@@ -306,7 +309,6 @@ async fn durable_completion_unchanged_content_returns_existing_snapshot_uri() {
         Arc::new(ArcanumPipelineRegistry::default()),
         deps,
         noop_emitter(),
-        Arc::new(BoundedQueue::new("test", 10)),
         store.clone(),
     )
     .await
@@ -352,7 +354,6 @@ async fn durable_completion_worker_persists_failed_with_safe_error_and_dispositi
         Arc::new(ArcanumPipelineRegistry::default()),
         deps,
         noop_emitter(),
-        Arc::new(BoundedQueue::new("test", 10)),
         store.clone(),
     )
     .await;
@@ -372,8 +373,141 @@ async fn durable_completion_worker_persists_failed_with_safe_error_and_dispositi
         "an embedding outage is transient and must be marked retryable"
     );
     assert_eq!(
-        report.partial_output_disposition,
-        Some(PartialOutputDisposition::Discarded),
-        "failed report must record how partial outputs were handled"
+        report.partial_output_disposition, None,
+        "failed report has no cleanup mechanism, so the disposition must be honest None"
+    );
+}
+
+/// A terminal `Failed` operation must NOT be re-enqueued for retry: once the
+/// failure is persisted, the worker no longer pushes a retry back onto the
+/// queue, and the durable store refuses any re-processing transition
+/// (`Accepted -> Running`). The operation stays terminal `Failed`.
+#[tokio::test]
+async fn durable_completion_failed_operation_is_terminal_and_not_re_enqueued() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = open_store(&dir, "terminal.db").await;
+    let created = store
+        .create_or_get(&submission("raw://doc-e", "idem-terminal"))
+        .await
+        .expect("create_or_get");
+    let op_id = created.operation.operation_id.clone();
+
+    // Force a deterministic core failure: open the embedding circuit breaker
+    // so the "embed" stage errors and the pipeline aborts.
+    let deps = {
+        let base = stub_deps();
+        for _ in 0..5 {
+            base.embedding_cb.record_failure();
+        }
+        base
+    };
+
+    let result = run_task(
+        task(op_id.clone(), "raw://doc-e", Some(b"boom")),
+        Arc::new(ArcanumPipelineRegistry::default()),
+        deps,
+        noop_emitter(),
+        store.clone(),
+    )
+    .await;
+    assert!(result.is_err(), "open circuit breaker should fail the task");
+
+    // Terminal Failed is persisted.
+    let op = store.get(&op_id).await.expect("get").expect("op exists");
+    assert_eq!(op.status, OperationStatus::Failed);
+    assert!(op.terminal_report.is_some(), "terminal report must be persisted");
+
+    // A retry-shaped re-run (the old worker re-enqueue path) is rejected by
+    // the durable guard: a terminal Failed cannot transition back to Running.
+    let mark_err = store.mark_running(&op_id, chrono::Utc::now()).await;
+    assert!(mark_err.is_err(), "terminal Failed must not be markable Running");
+    let op = store.get(&op_id).await.expect("get").expect("op exists");
+    assert_eq!(
+        op.status,
+        OperationStatus::Failed,
+        "operation must remain terminal Failed after a rejected re-run"
+    );
+}
+
+/// A failed pipeline whose underlying error embeds a connection URL and a
+/// filesystem path must persist a SANITIZED message: the durable
+/// `SafeOperationError.message` is served verbatim over the query API (Task 4)
+/// and must never leak `https://…`, hostnames, or `/path/…` tokens.
+#[tokio::test]
+async fn durable_completion_failed_message_sanitizes_url_and_path() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = open_store(&dir, "sanitized.db").await;
+    let created = store
+        .create_or_get(&submission("raw://doc-f", "idem-sanitized"))
+        .await
+        .expect("create_or_get");
+    let op_id = created.operation.operation_id.clone();
+
+    // A core "load" stage that fails with a Storage error embedding a URL and
+    // a filesystem path — the exact shape of sqlx/reqwest failures.
+    let mut registry = ArcanumPipelineRegistry::new();
+    registry.register("failing_load", Arc::new(|_state, _deps| {
+        PipelineDAG::new().add_stage(PipelineStage {
+            id: "load",
+            deps: vec![],
+            run: Arc::new(|_ctx| {
+                Box::pin(async move {
+                    Err(ArcanumError::Storage(
+                        "load failed: GET https://data.example.com/private/doc.pdf \
+                         -> connection refused; temp file /var/lib/arcanum/cache/x.db"
+                            .to_string(),
+                    ))
+                })
+            }),
+        })
+    }));
+    let registry = Arc::new(registry);
+
+    let result = run_task(
+        IngestionTask {
+            operation_id: op_id.clone(),
+            source_uri: "raw://doc-f".into(),
+            collection_id: CollectionId("col1".into()),
+            pipeline_template: "failing_load".into(),
+            attempt: 0,
+            force: false,
+            content: Some(b"boom".to_vec()),
+            mime_hint: Some("text/plain".to_string()),
+        },
+        registry,
+        stub_deps(),
+        noop_emitter(),
+        store.clone(),
+    )
+    .await;
+    assert!(result.is_err(), "core load failure should fail the task");
+
+    let op = store.get(&op_id).await.expect("get").expect("op exists");
+    assert_eq!(op.status, OperationStatus::Failed);
+    let report = op.terminal_report.expect("terminal report persisted");
+    let err = report.error.expect("failed report must carry a safe error");
+    assert_eq!(err.code, "STORAGE_FAILURE");
+    assert!(!err.retryable, "a storage failure is not transient");
+
+    let msg = &err.message;
+    assert!(
+        !msg.contains("https://"),
+        "persisted message must not contain the connection URL: {msg}"
+    );
+    assert!(
+        !msg.contains("data.example.com"),
+        "persisted message must not contain the hostname: {msg}"
+    );
+    assert!(
+        !msg.contains("/var/lib/arcanum/cache"),
+        "persisted message must not contain the filesystem path: {msg}"
+    );
+    assert!(
+        msg.contains("STORAGE_FAILURE"),
+        "persisted message must keep the stable error code prefix: {msg}"
+    );
+    assert!(
+        msg.contains("[redacted]"),
+        "persisted message must mark the redacted tokens: {msg}"
     );
 }

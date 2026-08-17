@@ -52,6 +52,16 @@ fn submission_hash(submission: &IngestionSubmission) -> Result<String> {
     Ok(hex::encode(digest))
 }
 
+/// Reconstruct the operation as a durable store would serve it over a read
+/// path: `submission.payload` is never returned (payload bytes are only kept
+/// in the DB for idempotency hashing, never surfaced). The full submission
+/// stays stored internally so `create_or_get` conflict hashing still works.
+fn as_queried(stored: &StoredOperation) -> IngestionOperation {
+    let mut operation = stored.operation.clone();
+    operation.submission.payload = None;
+    operation
+}
+
 /// Mirrors the transition guards of the durable adapters:
 /// `Accepted -> Running | Failed`, `Running -> Succeeded` (with content URI) |
 /// `Failed`, and idempotent reapplication of an IDENTICAL terminal report.
@@ -89,7 +99,7 @@ impl OperationStore for InMemoryOperationStore {
                 .ok_or_else(|| ArcanumError::Storage("idempotency key row vanished".into()))?;
             if stored.submission_hash == hash {
                 return Ok(CreateOperationResult {
-                    operation: stored.operation.clone(),
+                    operation: as_queried(stored),
                     is_new: false,
                 });
             }
@@ -151,7 +161,7 @@ impl OperationStore for InMemoryOperationStore {
 
     async fn get(&self, id: &OperationId) -> Result<Option<IngestionOperation>> {
         let data = self.data.lock().unwrap();
-        Ok(data.by_id.get(id).map(|s| s.operation.clone()))
+        Ok(data.by_id.get(id).map(as_queried))
     }
 
     async fn get_by_idempotency(&self, key: &str) -> Result<Option<IngestionOperation>> {
@@ -160,6 +170,6 @@ impl OperationStore for InMemoryOperationStore {
             .by_key
             .get(key)
             .and_then(|id| data.by_id.get(id))
-            .map(|s| s.operation.clone()))
+            .map(as_queried))
     }
 }

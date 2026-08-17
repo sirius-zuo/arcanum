@@ -7,10 +7,7 @@ use crate::{
 };
 use arcanum_core::{
     traits::{OperationStore, ProgressEmitter, Source},
-    types::{
-        IngestionProgressReport, IngestionReport, IngestionStatus, IngestionTask,
-        PartialOutputDisposition,
-    },
+    types::{IngestionProgressReport, IngestionReport, IngestionStatus, IngestionTask},
     ArcanumError, Result,
 };
 use arcanum_middleware::BoundedQueue;
@@ -59,7 +56,6 @@ impl IngestionWorker {
                 self.registry.clone(),
                 deps,
                 self.emitter.clone(),
-                self.queue.clone(),
                 self.operations.clone(),
             )
             .await,
@@ -127,23 +123,51 @@ fn classify_error(err: &ArcanumError) -> (&'static str, bool) {
     }
 }
 
+/// Best-effort detector for tokens that embed URIs, hostnames, or file paths.
+/// These must never survive into a persisted `SafeOperationError.message`
+/// (Task 4 serves it verbatim over the query API).
+fn looks_sensitive_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(|c: char| {
+        matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | '"' | '\'')
+    });
+    let lower = trimmed.to_ascii_lowercase();
+    lower.contains("://")
+        || lower.starts_with('/')
+        || lower.starts_with("./")
+        || lower.starts_with("../")
+        || lower.ends_with(".db")
+}
+
+/// Produce a safe, redacted message for a durable `SafeOperationError`: the
+/// stable error code prefix plus the underlying text with URI/path-looking
+/// tokens stripped. No connection URL, hostname, or filesystem path survives.
+fn sanitize_error_message(err: &ArcanumError) -> String {
+    let (code, _) = classify_error(err);
+    let scrubbed = err
+        .to_string()
+        .split_whitespace()
+        .map(|tok| if looks_sensitive_token(tok) { "[redacted]" } else { tok })
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{code}: {scrubbed}")
+}
+
 /// Free function for running a single ingestion task without a full queue.
 ///
 /// Persists every transition to the `OperationStore`: `Accepted -> Running`
 /// before preprocessing, then a terminal `Succeeded` (with the original-content
 /// URI, or the existing version's snapshot URI for unchanged content) or
-/// `Failed` (with a safe error + partial-output disposition) BEFORE any event
-/// is emitted.
-#[instrument(skip(task, registry, deps, emitter, queue, operations), fields(source_uri = %task.source_uri), err)]
+/// `Failed` (with a safe, redacted error) BEFORE any event is emitted. A
+/// terminal `Failed` operation is final — the worker never re-enqueues a retry
+/// for it.
+#[instrument(skip(task, registry, deps, emitter, operations), fields(source_uri = %task.source_uri), err)]
 pub async fn run_task(
     task:      IngestionTask,
     registry:  Arc<ArcanumPipelineRegistry>,
     deps:      Arc<PipelineDeps>,
     emitter:   Arc<dyn ProgressEmitter>,
-    queue:     Arc<BoundedQueue<IngestionTask>>,
     operations: Arc<dyn OperationStore>,
 ) -> Result<()> {
-    let task_attempt       = task.attempt;
     let operation_id       = task.operation_id.clone();
     let source_uri         = task.source_uri.clone();
     let collection_id      = task.collection_id.clone();
@@ -206,6 +230,58 @@ pub async fn run_task(
 
     match outcome {
         Ok((final_ctx, skipped, report, state)) => {
+            // Build the live-progress payload BEFORE persisting the terminal
+            // report. Every fallible computation happens here so `complete` is
+            // the last operation that can fail and the durable state can never
+            // disagree with the returned result. A progress-report build failure
+            // is logged and skipped (the durable Succeeded report is the truth).
+            let progress: Option<IngestionProgressReport> = if skipped {
+                None
+            } else {
+                let built = async {
+                    let state_lock = state.lock().await;
+                    let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "worker".into(),
+                        message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
+                    })?;
+                    let content_hash = doc.content_hash();
+                    let failed_stages: Vec<String> = final_ctx
+                        .get(crate::dag::CTX_STAGE_FAILURES)
+                        .and_then(|v| v.as_array())
+                        .map(|arr| arr.iter()
+                            .filter_map(|f| f["stage"].as_str().map(String::from))
+                            .collect())
+                        .unwrap_or_default();
+                    let status = if failed_stages.is_empty() {
+                        IngestionStatus::Success
+                    } else {
+                        IngestionStatus::PartialSuccess { failed_stages }
+                    };
+                    Ok::<_, ArcanumError>(IngestionProgressReport {
+                        operation_id:         operation_id.clone(),
+                        source_uri:           source_uri.clone(),
+                        pipeline_template:    pipeline_template.clone(),
+                        stage_results:        vec![],
+                        total_chunks:         state_lock.chunks.len(),
+                        total_vectors:        state_lock.vectors.len(),
+                        document_fingerprint: content_hash,
+                        status,
+                    })
+                }
+                .await;
+                match built {
+                    Ok(p) => Some(p),
+                    Err(err) => {
+                        tracing::warn!(
+                            op_id = %operation_id.0,
+                            err = ?err,
+                            "pipeline succeeded but the live progress report could not be built"
+                        );
+                        None
+                    }
+                }
+            };
+
             // Persist the terminal report BEFORE emitting any live event.
             if let Err(err) = operations.complete(&report).await {
                 metrics::counter!("arcanum_ingest_docs_total",
@@ -229,56 +305,30 @@ pub async fn run_task(
             deps.cache_invalidator
                 .invalidate_document(&source_uri, &collection_id)
                 .await;
-            let state_lock = state.lock().await;
-            let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
-                stage: "worker".into(),
-                message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
-            })?;
-            let content_hash = doc.content_hash();
-            let failed_stages: Vec<String> = final_ctx
-                .get(crate::dag::CTX_STAGE_FAILURES)
-                .and_then(|v| v.as_array())
-                .map(|arr| arr.iter()
-                    .filter_map(|f| f["stage"].as_str().map(String::from))
-                    .collect())
-                .unwrap_or_default();
-            let status = if failed_stages.is_empty() {
-                IngestionStatus::Success
-            } else {
-                IngestionStatus::PartialSuccess { failed_stages }
-            };
-            let progress = IngestionProgressReport {
-                operation_id:         operation_id.clone(),
-                source_uri:           source_uri.clone(),
-                pipeline_template:    pipeline_template.clone(),
-                stage_results:        vec![],
-                total_chunks:         state_lock.chunks.len(),
-                total_vectors:        state_lock.vectors.len(),
-                document_fingerprint: content_hash,
-                status,
-            };
-            emitter.emit("ingestion:progress", serde_json::json!({
-                "operation_id": operation_id.0,
-                "status": "completed",
-                "report": serde_json::to_value(&progress).unwrap_or_default(),
-            })).await;
+            if let Some(progress) = progress {
+                emitter.emit("ingestion:progress", serde_json::json!({
+                    "operation_id": operation_id.0,
+                    "status": "completed",
+                    "report": serde_json::to_value(&progress).unwrap_or_default(),
+                })).await;
+            }
             Ok(())
         }
         Err(e) => {
             metrics::counter!("arcanum_ingest_docs_total",
                 "source" => source_uri.clone(), "status" => "error").increment(1);
 
-            // Persist the terminal failure BEFORE the retry is (possibly)
-            // re-enqueued; the store is authoritative regardless of retry. The
-            // failure is best-effort here so a store hiccup does not mask the
+            // Persist the terminal failure BEFORE surfacing the error; the store
+            // is authoritative. `Failed` is terminal — the worker never
+            // re-enqueues a retry for it, so the operation is not reprocessed.
+            // The persist is best-effort so a store hiccup does not mask the
             // original pipeline error.
             let (code, retryable) = classify_error(&e);
-            let failed = IngestionReport::failed_with_disposition(
+            let failed = IngestionReport::failed(
                 operation_id.clone(),
                 code,
-                e.to_string(),
+                sanitize_error_message(&e),
                 retryable,
-                Some(PartialOutputDisposition::Discarded),
             );
             if let Err(complete_err) = operations.complete(&failed).await {
                 tracing::warn!(
@@ -286,21 +336,6 @@ pub async fn run_task(
                     err = %complete_err,
                     "failed to persist terminal failure for operation"
                 );
-            }
-
-            if deps.retry_policy.should_retry(task_attempt) {
-                tokio::time::sleep(deps.retry_policy.delay_for_attempt(task_attempt)).await;
-                let retry_task = IngestionTask {
-                    operation_id:      operation_id.clone(),
-                    source_uri:        source_uri.clone(),
-                    collection_id:     collection_id.clone(),
-                    pipeline_template: pipeline_template.clone(),
-                    attempt:           task_attempt + 1,
-                    force:             force,
-                    content:           task.content.clone(),
-                    mime_hint:         task.mime_hint.clone(),
-                };
-                let _ = queue.push(retry_task).await;
             }
             Err(e)
         }

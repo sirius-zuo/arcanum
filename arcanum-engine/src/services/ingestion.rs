@@ -125,9 +125,9 @@ impl IngestionService {
 
 /// Derive a stable idempotency key from the logical submission so identical
 /// re-submissions replay to the SAME operation while a change in the logical
-/// source, collection, template, force intent, or inline payload creates a
-/// distinct one. The key is a SHA-256 digest so it is stable across process
-/// restarts (it is stored in the durable `OperationStore`).
+/// source, collection, template, force intent, MIME hint, or inline payload
+/// creates a distinct one. The key is a SHA-256 digest so it is stable across
+/// process restarts (it is stored in the durable `OperationStore`).
 fn derive_idempotency_key(req: &IngestRequest) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
@@ -138,6 +138,10 @@ fn derive_idempotency_key(req: &IngestRequest) -> String {
     hasher.update(req.pipeline_template.as_deref().unwrap_or("standard").as_bytes());
     hasher.update(b"\0");
     hasher.update([req.force as u8]);
+    hasher.update(b"\0");
+    if let Some(mime_hint) = &req.mime_hint {
+        hasher.update(mime_hint.as_bytes());
+    }
     hasher.update(b"\0");
     if let Some(content) = &req.content {
         hasher.update(content);
@@ -169,6 +173,8 @@ mod tests {
         different_source.source_uri = "s3://b/other".into();
         let mut forced = base.clone();
         forced.force = true;
+        let mut different_mime = base.clone();
+        different_mime.mime_hint = Some("application/pdf".into());
 
         assert_eq!(derive_idempotency_key(&base), derive_idempotency_key(&same));
         assert_ne!(
@@ -180,6 +186,11 @@ mod tests {
             derive_idempotency_key(&different_source)
         );
         assert_ne!(derive_idempotency_key(&base), derive_idempotency_key(&forced));
+        assert_ne!(
+            derive_idempotency_key(&base),
+            derive_idempotency_key(&different_mime),
+            "a different MIME hint must yield a distinct idempotency key"
+        );
     }
 
     #[tokio::test]
