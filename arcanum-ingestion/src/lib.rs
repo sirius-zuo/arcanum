@@ -2,6 +2,12 @@ pub mod detection;
 pub mod sanitizer;
 pub use detection::MimeDetector;
 
+pub mod operations;
+pub use operations::{
+    LocalFsObjectStore, LocalOperationPayloadStore, PostgresOperationStore, S3ObjectStore,
+    S3OperationPayloadStore, SqliteOperationStore,
+};
+
 pub mod loaders;
 pub mod preprocessors;
 pub mod enrichment;
