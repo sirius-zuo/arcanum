@@ -429,10 +429,11 @@ async fn durable_completion_failed_operation_is_terminal_and_not_re_enqueued() {
     );
 }
 
-/// A failed pipeline whose underlying error embeds a connection URL and a
-/// filesystem path must persist a SANITIZED message: the durable
-/// `SafeOperationError.message` is served verbatim over the query API (Task 4)
-/// and must never leak `https://…`, hostnames, or `/path/…` tokens.
+/// A failed pipeline whose underlying error embeds a connection URL, a bare
+/// `host:port` fragment, a hostname, and a filesystem path must persist a
+/// FULLY GENERIC message: the durable `SafeOperationError.message` is served
+/// verbatim over the query API (Task 4), so the worker must never reproduce
+/// ANY of the underlying error's text — only the stable code prefix.
 #[tokio::test]
 async fn durable_completion_failed_message_sanitizes_url_and_path() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -443,8 +444,9 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
         .expect("create_or_get");
     let op_id = created.operation.operation_id.clone();
 
-    // A core "load" stage that fails with a Storage error embedding a URL and
-    // a filesystem path — the exact shape of sqlx/reqwest failures.
+    // A core "load" stage that fails with a Storage error embedding a URL, a
+    // bare `host:port`, and a filesystem path — the exact shape of
+    // sqlx/reqwest failures.
     let mut registry = ArcanumPipelineRegistry::new();
     registry.register("failing_load", Arc::new(|_state, _deps| {
         PipelineDAG::new().add_stage(PipelineStage {
@@ -454,7 +456,8 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
                 Box::pin(async move {
                     Err(ArcanumError::Storage(
                         "load failed: GET https://data.example.com/private/doc.pdf \
-                         -> connection refused; temp file /var/lib/arcanum/cache/x.db"
+                         -> connection refused at db.example.com:5432; \
+                         temp file /var/lib/arcanum/cache/x.db"
                             .to_string(),
                     ))
                 })
@@ -490,6 +493,13 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
     assert!(!err.retryable, "a storage failure is not transient");
 
     let msg = &err.message;
+    // The message keeps the stable code prefix…
+    assert!(
+        msg.contains("STORAGE_FAILURE"),
+        "persisted message must keep the stable error code prefix: {msg}"
+    );
+    // …but reproduces NONE of the underlying error's text: no URL, hostname,
+    // bare `host:port`, or filesystem path.
     assert!(
         !msg.contains("https://"),
         "persisted message must not contain the connection URL: {msg}"
@@ -499,15 +509,17 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
         "persisted message must not contain the hostname: {msg}"
     );
     assert!(
-        !msg.contains("/var/lib/arcanum/cache"),
+        !msg.contains("db.example.com") && !msg.contains("5432"),
+        "persisted message must not contain the bare host:port fragment: {msg}"
+    );
+    assert!(
+        !msg.contains("/var/lib/arcanum/cache") && !msg.contains("x.db"),
         "persisted message must not contain the filesystem path: {msg}"
     );
-    assert!(
-        msg.contains("STORAGE_FAILURE"),
-        "persisted message must keep the stable error code prefix: {msg}"
-    );
-    assert!(
-        msg.contains("[redacted]"),
-        "persisted message must mark the redacted tokens: {msg}"
+    // The message IS the generic safe phrase — no heuristic can regress.
+    assert_eq!(
+        msg,
+        "STORAGE_FAILURE: pipeline stage failed",
+        "persisted message must be the generic safe phrase built only from the code"
     );
 }

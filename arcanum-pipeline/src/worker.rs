@@ -123,33 +123,14 @@ fn classify_error(err: &ArcanumError) -> (&'static str, bool) {
     }
 }
 
-/// Best-effort detector for tokens that embed URIs, hostnames, or file paths.
-/// These must never survive into a persisted `SafeOperationError.message`
-/// (Task 4 serves it verbatim over the query API).
-fn looks_sensitive_token(token: &str) -> bool {
-    let trimmed = token.trim_matches(|c: char| {
-        matches!(c, '(' | ')' | '[' | ']' | ',' | ';' | '"' | '\'')
-    });
-    let lower = trimmed.to_ascii_lowercase();
-    lower.contains("://")
-        || lower.starts_with('/')
-        || lower.starts_with("./")
-        || lower.starts_with("../")
-        || lower.ends_with(".db")
-}
-
-/// Produce a safe, redacted message for a durable `SafeOperationError`: the
-/// stable error code prefix plus the underlying text with URI/path-looking
-/// tokens stripped. No connection URL, hostname, or filesystem path survives.
-fn sanitize_error_message(err: &ArcanumError) -> String {
-    let (code, _) = classify_error(err);
-    let scrubbed = err
-        .to_string()
-        .split_whitespace()
-        .map(|tok| if looks_sensitive_token(tok) { "[redacted]" } else { tok })
-        .collect::<Vec<_>>()
-        .join(" ");
-    format!("{code}: {scrubbed}")
+/// Produce a fully generic safe message for a durable `SafeOperationError`.
+/// The message is built ONLY from the stable error code — the underlying
+/// error text is never reproduced, so no connection URL, hostname, filesystem
+/// path, or bare `host:port` token can leak into the persisted report (Task 4
+/// serves it verbatim over the query API). The code plus the `retryable` flag
+/// already convey the failure class and recoverability.
+fn sanitize_error_message(code: &str) -> String {
+    format!("{code}: pipeline stage failed")
 }
 
 /// Free function for running a single ingestion task without a full queue.
@@ -327,7 +308,7 @@ pub async fn run_task(
             let failed = IngestionReport::failed(
                 operation_id.clone(),
                 code,
-                sanitize_error_message(&e),
+                sanitize_error_message(code),
                 retryable,
             );
             if let Err(complete_err) = operations.complete(&failed).await {
