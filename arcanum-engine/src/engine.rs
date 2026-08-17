@@ -1,13 +1,13 @@
 use arcanum_core::{
-    config::{ArcanumConfig, OrchestrationMode as CfgMode},
+    config::{ArcanumConfig, MetadataBackend, OrchestrationMode as CfgMode},
     traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
              CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
-             SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
-             Preprocessor, Reranker},
+             OperationStore, SnapshotStore, DocumentVersionStore, ChunkMetadataStore,
+             EvidenceResolver, GcWorker, Preprocessor, Reranker},
     types::{RetrievalStrategy, EnrichIntent},
     Result, ArcanumError,
 };
-use arcanum_ingestion::LocalSnapshotStore;
+use arcanum_ingestion::{LocalSnapshotStore, PostgresOperationStore, SqliteOperationStore};
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader,
@@ -146,6 +146,7 @@ pub struct ArcanumEngineBuilder {
     version_store: Option<Arc<dyn DocumentVersionStore>>,
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    operation_store: Option<Arc<dyn OperationStore>>,
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
     experiment_store: Option<Arc<dyn ExperimentStore>>,
@@ -173,6 +174,7 @@ impl Default for ArcanumEngineBuilder {
             version_store: None,
             snapshot_store: None,
             chunk_metadata_store: None,
+            operation_store: None,
             evidence: None,
             gc_worker: None,
             experiment_store: None,
@@ -278,6 +280,11 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn operation_store(mut self, store: Arc<dyn OperationStore>) -> Self {
+        self.operation_store = Some(store);
+        self
+    }
+
     pub fn evidence(mut self, resolver: Arc<dyn EvidenceResolver>) -> Self {
         self.evidence = Some(resolver);
         self
@@ -356,8 +363,63 @@ impl ArcanumEngineBuilder {
         Ok(Some(Arc::new(dispatcher)))
     }
 
+    /// Resolve the durable operation store. A builder-supplied store always
+    /// wins; otherwise the store is wired from configuration so durable
+    /// operation state is initialized before any submission is accepted.
+    ///
+    /// Production (Postgres) requires `storage.database_url` and fails if the
+    /// store cannot initialize. A local Sqlite configuration with a
+    /// `sqlite://` database_url opens a durable Sqlite store; a bare default
+    /// (no durable backend configured) falls back to an in-memory store so
+    /// development and tests stay hermetic.
+    async fn resolve_operation_store(&self) -> Result<Arc<dyn OperationStore>> {
+        if let Some(store) = &self.operation_store {
+            return Ok(store.clone());
+        }
+        match self.config.storage.metadata_backend {
+            MetadataBackend::Postgres => {
+                let url = self.config.storage.database_url.clone().ok_or_else(|| {
+                    ArcanumError::Config(
+                        "storage.database_url is required to initialize the Postgres operation store"
+                            .into(),
+                    )
+                })?;
+                Ok(Arc::new(
+                    PostgresOperationStore::new(&url).await.map_err(|e| {
+                        ArcanumError::Config(format!(
+                            "failed to initialize Postgres operation store: {e}"
+                        ))
+                    })?,
+                ) as Arc<dyn OperationStore>)
+            }
+            MetadataBackend::Sqlite => match &self.config.storage.database_url {
+                Some(url) if url.starts_with("sqlite:") => Ok(Arc::new(
+                    SqliteOperationStore::open(url).await.map_err(|e| {
+                        ArcanumError::Config(format!(
+                            "failed to initialize Sqlite operation store: {e}"
+                        ))
+                    })?,
+                ) as Arc<dyn OperationStore>),
+                _ => {
+                    tracing::warn!(
+                        "no durable operation store configured (Sqlite backend without a \
+                         sqlite database_url); using an in-memory store — operation state \
+                         will not survive restart"
+                    );
+                    Ok(Arc::new(arcanum_core::traits::InMemoryOperationStore::new())
+                        as Arc<dyn OperationStore>)
+                }
+            },
+        }
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
+
+        // Resolve the durable operation store before the queue is shared: every
+        // submission persists Accepted here and every worker persists Running +
+        // the terminal report here.
+        let operation_store = self.resolve_operation_store().await?;
 
         // Resolved unconditionally (not just when pipeline workers are wired) so an
         // unknown provider name in enrichment config always fails build().
@@ -430,6 +492,7 @@ impl ArcanumEngineBuilder {
             queue.clone(),
             events.clone(),
             audit.clone(),
+            operation_store.clone(),
         ));
 
         // Per-job deps resolver: enables per-collection chunker overrides and
@@ -531,6 +594,7 @@ impl ArcanumEngineBuilder {
             for _ in 0..self.config.ingestion.worker_pool_size {
                 let worker = IngestionWorker::new(
                     registry.clone(), deps.clone(), emitter.clone(), queue.clone(),
+                    operation_store.clone(),
                 ).with_resolver(deps_resolver.clone());
                 tokio::spawn(async move {
                     while let Some(_) = worker.process_next().await {}

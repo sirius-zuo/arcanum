@@ -3,6 +3,7 @@ use uuid::Uuid;
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use super::document::CollectionId;
+use crate::ArcanumError;
 
 /// Stable identifier for a durable ingestion operation. This is what Core
 /// receives on submission and later queries by.
@@ -88,6 +89,77 @@ pub struct IngestionReport {
     pub error:                       Option<SafeOperationError>,
     /// How partial outputs were handled when `status` is `Failed`.
     pub partial_output_disposition:  Option<PartialOutputDisposition>,
+}
+
+impl IngestionReport {
+    /// Terminal success for new or changed content. The report MUST carry the
+    /// version-specific original-content URI produced by the pipeline.
+    pub fn succeeded(operation_id: OperationId, content_uri: String) -> Self {
+        Self {
+            operation_id,
+            status: OperationStatus::Succeeded,
+            outcome: Some(IngestionOutcome::Ingested),
+            content_uri: Some(content_uri),
+            error: None,
+            partial_output_disposition: None,
+        }
+    }
+
+    /// Terminal success for deduplicated (unchanged) content. `content_uri` is
+    /// the EXISTING version's snapshot URI, not a fresh one.
+    pub fn unchanged(operation_id: OperationId, content_uri: String) -> Self {
+        Self {
+            operation_id,
+            status: OperationStatus::Succeeded,
+            outcome: Some(IngestionOutcome::Unchanged),
+            content_uri: Some(content_uri),
+            error: None,
+            partial_output_disposition: None,
+        }
+    }
+
+    /// Terminal failure with a safe, redacted error and no partial-output
+    /// disposition recorded (nothing was written yet, or the caller does not
+    /// track it).
+    pub fn failed(operation_id: OperationId, code: &str, message: String, retryable: bool) -> Self {
+        Self::failed_with_disposition(operation_id, code, message, retryable, None)
+    }
+
+    /// Terminal failure that also records how partially-written outputs were
+    /// handled when the operation failed mid-pipeline.
+    pub fn failed_with_disposition(
+        operation_id: OperationId,
+        code: &str,
+        message: String,
+        retryable: bool,
+        disposition: Option<PartialOutputDisposition>,
+    ) -> Self {
+        Self {
+            operation_id,
+            status: OperationStatus::Failed,
+            outcome: None,
+            content_uri: None,
+            error: Some(SafeOperationError {
+                code: code.to_string(),
+                message,
+                retryable,
+            }),
+            partial_output_disposition: disposition,
+        }
+    }
+
+    /// Terminal failure recorded when a submission was durably persisted but
+    /// the queue refused the task (e.g. the queue is full). The operation is
+    /// `Failed` with code `QUEUE_REJECTED`; a full queue is transient and thus
+    /// retryable.
+    pub fn queue_rejected(operation: IngestionOperation, err: &ArcanumError) -> Self {
+        Self::failed(
+            operation.operation_id,
+            "QUEUE_REJECTED",
+            format!("work was not enqueued: {err}"),
+            matches!(err, ArcanumError::QueueFull),
+        )
+    }
 }
 
 /// What Core submits to start a durable ingestion operation. The logical

@@ -6,11 +6,15 @@ use crate::{
     registry::ArcanumPipelineRegistry,
 };
 use arcanum_core::{
-    traits::{ProgressEmitter, Source},
-    types::{IngestionProgressReport, IngestionStatus, IngestionTask},
+    traits::{OperationStore, ProgressEmitter, Source},
+    types::{
+        IngestionProgressReport, IngestionReport, IngestionStatus, IngestionTask,
+        PartialOutputDisposition,
+    },
     ArcanumError, Result,
 };
 use arcanum_middleware::BoundedQueue;
+use chrono::Utc;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::instrument;
@@ -20,6 +24,7 @@ pub struct IngestionWorker {
     deps:     Arc<PipelineDeps>,
     emitter:  Arc<dyn ProgressEmitter>,
     queue:    Arc<BoundedQueue<IngestionTask>>,
+    operations: Arc<dyn OperationStore>,
     resolver: Option<Arc<dyn arcanum_core::traits::IngestionDepsOverrideResolver>>,
 }
 
@@ -29,8 +34,9 @@ impl IngestionWorker {
         deps:     Arc<PipelineDeps>,
         emitter:  Arc<dyn ProgressEmitter>,
         queue:    Arc<BoundedQueue<IngestionTask>>,
+        operations: Arc<dyn OperationStore>,
     ) -> Self {
-        Self { registry, deps, emitter, queue, resolver: None }
+        Self { registry, deps, emitter, queue, operations, resolver: None }
     }
 
     /// Attach a per-job resolver. Workers without a resolver use the shared base deps.
@@ -54,6 +60,7 @@ impl IngestionWorker {
                 deps,
                 self.emitter.clone(),
                 self.queue.clone(),
+                self.operations.clone(),
             )
             .await,
         )
@@ -97,14 +104,44 @@ impl IngestionWorker {
     }
 }
 
+/// Classify an internal pipeline error into a stable, safe error code and a
+/// retryability hint for the durable `SafeOperationError`. Codes are redacted —
+/// no internal stack or connection details — and only transient infrastructure
+/// failures (embedding, enrichment, ingestion, pipeline, full queue) are
+/// retryable.
+fn classify_error(err: &ArcanumError) -> (&'static str, bool) {
+    match err {
+        ArcanumError::Storage(_) => ("STORAGE_FAILURE", false),
+        ArcanumError::Embedding(_) => ("EMBEDDING_FAILURE", true),
+        ArcanumError::Enrichment(_) => ("ENRICHMENT_FAILURE", true),
+        ArcanumError::Ingestion(_) => ("INGESTION_FAILURE", true),
+        ArcanumError::Retrieval(_) => ("RETRIEVAL_FAILURE", true),
+        ArcanumError::Config(_) => ("CONFIG_ERROR", false),
+        ArcanumError::Auth(_) => ("AUTH_ERROR", false),
+        ArcanumError::NotFound(_) => ("NOT_FOUND", false),
+        ArcanumError::AlreadyExists(_) => ("ALREADY_EXISTS", false),
+        ArcanumError::Conflict(_) => ("CONFLICT", false),
+        ArcanumError::QueueFull => ("QUEUE_FULL", true),
+        ArcanumError::Pipeline { .. } => ("PIPELINE_FAILURE", true),
+        ArcanumError::Other(_) => ("INTERNAL_ERROR", false),
+    }
+}
+
 /// Free function for running a single ingestion task without a full queue.
-#[instrument(skip(task, registry, deps, emitter, queue), fields(source_uri = %task.source_uri), err)]
+///
+/// Persists every transition to the `OperationStore`: `Accepted -> Running`
+/// before preprocessing, then a terminal `Succeeded` (with the original-content
+/// URI, or the existing version's snapshot URI for unchanged content) or
+/// `Failed` (with a safe error + partial-output disposition) BEFORE any event
+/// is emitted.
+#[instrument(skip(task, registry, deps, emitter, queue, operations), fields(source_uri = %task.source_uri), err)]
 pub async fn run_task(
     task:      IngestionTask,
     registry:  Arc<ArcanumPipelineRegistry>,
     deps:      Arc<PipelineDeps>,
     emitter:   Arc<dyn ProgressEmitter>,
     queue:     Arc<BoundedQueue<IngestionTask>>,
+    operations: Arc<dyn OperationStore>,
 ) -> Result<()> {
     let task_attempt       = task.attempt;
     let operation_id       = task.operation_id.clone();
@@ -113,23 +150,68 @@ pub async fn run_task(
     let pipeline_template  = task.pipeline_template.clone();
     let force              = task.force;
 
-    let source = match &task.content {
-        Some(bytes) => Source::Raw {
-            content: bytes.clone(),
-            mime_hint: task.mime_hint.clone(),
-            uri: source_uri.clone(),
-        },
-        None => Source::from_uri(&source_uri)?,
-    };
-    let state  = Arc::new(Mutex::new(IngestionState::new(source, collection_id.clone())));
-    let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;
+    // Persist Accepted -> Running BEFORE doing any work so a restart can see
+    // that the operation was picked up.
+    if let Err(err) = operations.mark_running(&operation_id, Utc::now()).await {
+        metrics::counter!("arcanum_ingest_docs_total",
+            "source" => source_uri.clone(), "status" => "error").increment(1);
+        return Err(err);
+    }
 
-    let mut initial_ctx = crate::dag::StageContext::default();
-    initial_ctx.insert(CTX_FORCE.to_string(), serde_json::json!(force));
-    match DagExecutor::execute(&dag, initial_ctx).await {
-        Ok(final_ctx) => {
-            let skipped = final_ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false);
+    // Run the pipeline and build the durable terminal report. Any failure —
+    // including a missing snapshot/version needed to build a Succeeded report —
+    // becomes a Failed report so the store is always consistent.
+    let outcome = async {
+        let source = match &task.content {
+            Some(bytes) => Source::Raw {
+                content: bytes.clone(),
+                mime_hint: task.mime_hint.clone(),
+                uri: source_uri.clone(),
+            },
+            None => Source::from_uri(&source_uri)?,
+        };
+        let state  = Arc::new(Mutex::new(IngestionState::new(source, collection_id.clone())));
+        let dag    = registry.build(&pipeline_template, state.clone(), &deps)?;
+
+        let mut initial_ctx = crate::dag::StageContext::default();
+        initial_ctx.insert(CTX_FORCE.to_string(), serde_json::json!(force));
+        let final_ctx = DagExecutor::execute(&dag, initial_ctx).await?;
+
+        let skipped = final_ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false);
+
+        let report = {
             let state_lock = state.lock().await;
+            if skipped {
+                // Deduplication reported unchanged content: return the EXISTING
+                // collection-scoped version's snapshot URI, never a fresh one.
+                let latest = deps.version_store.get_latest(&source_uri, &collection_id.0).await?
+                    .ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "worker".into(),
+                        message: "dedup reported unchanged content but no prior version exists".into(),
+                    })?;
+                IngestionReport::unchanged(operation_id.clone(), latest.snapshot_uri.clone())
+            } else {
+                // New or changed content: the snapshot stage produced the durable
+                // original-content URI.
+                let snapshot_uri = state_lock.snapshot_uri.clone().ok_or_else(|| ArcanumError::Pipeline {
+                    stage: "worker".into(),
+                    message: "pipeline succeeded but snapshot_uri is None — cannot compute content URI".into(),
+                })?;
+                IngestionReport::succeeded(operation_id.clone(), snapshot_uri)
+            }
+        }; // state_lock dropped before `state` is returned
+
+        Ok::<_, ArcanumError>((final_ctx, skipped, report, state))
+    }.await;
+
+    match outcome {
+        Ok((final_ctx, skipped, report, state)) => {
+            // Persist the terminal report BEFORE emitting any live event.
+            if let Err(err) = operations.complete(&report).await {
+                metrics::counter!("arcanum_ingest_docs_total",
+                    "source" => source_uri.clone(), "status" => "error").increment(1);
+                return Err(err);
+            }
 
             if skipped {
                 emitter.emit("ingestion:progress", serde_json::json!({
@@ -137,52 +219,75 @@ pub async fn run_task(
                     "status": "skipped",
                     "reason": "content_unchanged",
                 })).await;
-            } else {
-                // Covers force (dedup always sets __replace, never __skip,
-                // for a forced task), a genuine content change (dedup's
-                // hash mismatch), and a brand-new document (harmless no-op
-                // — nothing was cached under this source_uri yet).
-                deps.cache_invalidator
-                    .invalidate_document(&source_uri, &collection_id)
-                    .await;
-                let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
-                    stage: "worker".into(),
-                    message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
-                })?;
-                let content_hash = doc.content_hash();
-                let failed_stages: Vec<String> = final_ctx
-                    .get(crate::dag::CTX_STAGE_FAILURES)
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter()
-                        .filter_map(|f| f["stage"].as_str().map(String::from))
-                        .collect())
-                    .unwrap_or_default();
-                let status = if failed_stages.is_empty() {
-                    IngestionStatus::Success
-                } else {
-                    IngestionStatus::PartialSuccess { failed_stages }
-                };
-                let report = IngestionProgressReport {
-                    operation_id:         operation_id.clone(),
-                    source_uri:           source_uri.clone(),
-                    pipeline_template:    pipeline_template.clone(),
-                    stage_results:        vec![],
-                    total_chunks:         state_lock.chunks.len(),
-                    total_vectors:        state_lock.vectors.len(),
-                    document_fingerprint: content_hash,
-                    status,
-                };
-                emitter.emit("ingestion:progress", serde_json::json!({
-                    "operation_id": operation_id.0,
-                    "status": "completed",
-                    "report": serde_json::to_value(&report).unwrap_or_default(),
-                })).await;
+                return Ok(());
             }
+
+            // Covers force (dedup always sets __replace, never __skip,
+            // for a forced task), a genuine content change (dedup's
+            // hash mismatch), and a brand-new document (harmless no-op
+            // — nothing was cached under this source_uri yet).
+            deps.cache_invalidator
+                .invalidate_document(&source_uri, &collection_id)
+                .await;
+            let state_lock = state.lock().await;
+            let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
+                stage: "worker".into(),
+                message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
+            })?;
+            let content_hash = doc.content_hash();
+            let failed_stages: Vec<String> = final_ctx
+                .get(crate::dag::CTX_STAGE_FAILURES)
+                .and_then(|v| v.as_array())
+                .map(|arr| arr.iter()
+                    .filter_map(|f| f["stage"].as_str().map(String::from))
+                    .collect())
+                .unwrap_or_default();
+            let status = if failed_stages.is_empty() {
+                IngestionStatus::Success
+            } else {
+                IngestionStatus::PartialSuccess { failed_stages }
+            };
+            let progress = IngestionProgressReport {
+                operation_id:         operation_id.clone(),
+                source_uri:           source_uri.clone(),
+                pipeline_template:    pipeline_template.clone(),
+                stage_results:        vec![],
+                total_chunks:         state_lock.chunks.len(),
+                total_vectors:        state_lock.vectors.len(),
+                document_fingerprint: content_hash,
+                status,
+            };
+            emitter.emit("ingestion:progress", serde_json::json!({
+                "operation_id": operation_id.0,
+                "status": "completed",
+                "report": serde_json::to_value(&progress).unwrap_or_default(),
+            })).await;
             Ok(())
         }
         Err(e) => {
             metrics::counter!("arcanum_ingest_docs_total",
                 "source" => source_uri.clone(), "status" => "error").increment(1);
+
+            // Persist the terminal failure BEFORE the retry is (possibly)
+            // re-enqueued; the store is authoritative regardless of retry. The
+            // failure is best-effort here so a store hiccup does not mask the
+            // original pipeline error.
+            let (code, retryable) = classify_error(&e);
+            let failed = IngestionReport::failed_with_disposition(
+                operation_id.clone(),
+                code,
+                e.to_string(),
+                retryable,
+                Some(PartialOutputDisposition::Discarded),
+            );
+            if let Err(complete_err) = operations.complete(&failed).await {
+                tracing::warn!(
+                    op_id = %operation_id.0,
+                    err = %complete_err,
+                    "failed to persist terminal failure for operation"
+                );
+            }
+
             if deps.retry_policy.should_retry(task_attempt) {
                 tokio::time::sleep(deps.retry_policy.delay_for_attempt(task_attempt)).await;
                 let retry_task = IngestionTask {

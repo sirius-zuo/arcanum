@@ -1,5 +1,25 @@
 use arcanum_pipeline::PipelineDeps;
+use arcanum_core::traits::{InMemoryOperationStore, OperationStore};
+use arcanum_core::types::{CollectionId, IngestionSubmission, OperationId};
 use std::sync::Arc;
+
+/// Create an `Accepted` operation in `store` so the worker can persist the
+/// `Running` and terminal transitions (the store is the system of record).
+async fn create_op(store: &Arc<dyn OperationStore>, source_uri: &str) -> OperationId {
+    let created = store
+        .create_or_get(&IngestionSubmission {
+            idempotency_key: format!("idem-{}", source_uri),
+            logical_source_uri: source_uri.to_string(),
+            mime_hint: None,
+            collection_id: CollectionId("col1".to_string()),
+            pipeline_configuration: serde_json::json!({ "template": "standard" }),
+            payload: None,
+            payload_locator: None,
+        })
+        .await
+        .expect("create_or_get");
+    created.operation.operation_id
+}
 
 fn stub_deps() -> Arc<PipelineDeps> {
     use arcanum_ingestion::{LoaderRegistry, RawLoader};
@@ -65,7 +85,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
 async fn test_worker_processes_task_to_completion() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task};
     use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_core::types::{CollectionId, IngestionTask};
     use arcanum_middleware::BoundedQueue;
     use std::sync::Arc;
 
@@ -78,9 +98,11 @@ async fn test_worker_processes_task_to_completion() {
     let deps = stub_deps();
     let registry = Arc::new(ArcanumPipelineRegistry::default());
     let queue = Arc::new(BoundedQueue::new("test", 10));
+    let store: Arc<dyn OperationStore> = Arc::new(InMemoryOperationStore::new());
+    let op_id = create_op(&store, "raw://test").await;
 
     let task = IngestionTask {
-        operation_id: OperationId::new(),
+        operation_id: op_id,
         source_uri: "raw://test".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
@@ -90,7 +112,7 @@ async fn test_worker_processes_task_to_completion() {
         mime_hint: None,
     };
 
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue, store).await;
     assert!(result.is_ok(), "worker task failed: {:?}", result.err());
 }
 
@@ -98,7 +120,7 @@ async fn test_worker_processes_task_to_completion() {
 async fn test_embed_stage_blocked_by_open_circuit_breaker() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task};
     use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_core::types::{CollectionId, IngestionTask};
     use arcanum_middleware::BoundedQueue;
 
     struct NoopEmitter;
@@ -116,8 +138,10 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
     let queue = Arc::new(BoundedQueue::new("test", 10));
+    let store: Arc<dyn OperationStore> = Arc::new(InMemoryOperationStore::new());
+    let op_id = create_op(&store, "raw://test-cb").await;
     let task = IngestionTask {
-        operation_id: OperationId::new(),
+        operation_id: op_id,
         source_uri: "raw://test-cb".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
@@ -127,7 +151,7 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
         mime_hint: None,
     };
 
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue, store).await;
     assert!(result.is_err(), "open circuit breaker should cause task failure");
     let err_str = result.unwrap_err().to_string();
     assert!(err_str.contains("circuit"), "error should mention circuit: {}", err_str);
@@ -137,7 +161,7 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
 async fn test_worker_invalidates_cache_on_force_reingest() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::{ProgressEmitter, CacheInvalidator};
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId, PerBackendChunkers};
+    use arcanum_core::types::{CollectionId, IngestionTask, PerBackendChunkers};
     use arcanum_middleware::{BoundedQueue, CircuitBreaker, RetryPolicy};
     use arcanum_ingestion::LoaderRegistry;
     use arcanum_ingestion::RawLoader;
@@ -216,8 +240,10 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
     let queue = Arc::new(BoundedQueue::new("test", 10));
+    let store: Arc<dyn OperationStore> = Arc::new(InMemoryOperationStore::new());
+    let op_id = create_op(&store, "raw://test-force").await;
     let task = IngestionTask {
-        operation_id: OperationId::new(),
+        operation_id: op_id,
         source_uri: "raw://test-force".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
@@ -227,7 +253,7 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
         mime_hint: None,
     };
 
-    run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await.unwrap();
+    run_task(task, registry, deps, Arc::new(NoopEmitter), queue, store).await.unwrap();
     assert_eq!(call_count.load(Ordering::SeqCst), 1,
         "invalidation should fire once for force-reingest");
 }
@@ -236,7 +262,7 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
 async fn test_worker_invalidates_cache_on_genuine_content_change_without_force() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::{ProgressEmitter, CacheInvalidator, DocumentVersionStore};
-    use arcanum_core::types::{CollectionId, DocumentEntry, DocumentId, DocumentVersion, IngestionTask, OperationId, PerBackendChunkers, VersioningPolicy};
+    use arcanum_core::types::{CollectionId, DocumentEntry, DocumentId, DocumentVersion, IngestionTask, PerBackendChunkers, VersioningPolicy};
     use arcanum_middleware::{BoundedQueue, CircuitBreaker, RetryPolicy};
     use arcanum_ingestion::LoaderRegistry;
     use arcanum_ingestion::RawLoader;
@@ -347,8 +373,10 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
     let queue = Arc::new(BoundedQueue::new("test", 10));
+    let store: Arc<dyn OperationStore> = Arc::new(InMemoryOperationStore::new());
+    let op_id = create_op(&store, "raw://test-changed").await;
     let task = IngestionTask {
-        operation_id: OperationId::new(),
+        operation_id: op_id,
         source_uri: "raw://test-changed".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
@@ -358,7 +386,7 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
         mime_hint: None,
     };
 
-    run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await.unwrap();
+    run_task(task, registry, deps, Arc::new(NoopEmitter), queue, store).await.unwrap();
     assert_eq!(call_count.load(Ordering::SeqCst), 1,
         "invalidation should fire once for a genuine content change, not just force");
 }
@@ -367,7 +395,7 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
 async fn test_worker_fails_when_no_preprocessor_configured() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_core::types::{CollectionId, IngestionTask};
     use arcanum_middleware::BoundedQueue;
 
     struct NoopEmitter;
@@ -400,8 +428,10 @@ async fn test_worker_fails_when_no_preprocessor_configured() {
 
     let registry = Arc::new(ArcanumPipelineRegistry::default());
     let queue = Arc::new(BoundedQueue::new("test", 10));
+    let store: Arc<dyn OperationStore> = Arc::new(InMemoryOperationStore::new());
+    let op_id = create_op(&store, "raw://test-no-preprocessor").await;
     let task = IngestionTask {
-        operation_id: OperationId::new(),
+        operation_id: op_id,
         source_uri: "raw://test-no-preprocessor".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
@@ -411,7 +441,7 @@ async fn test_worker_fails_when_no_preprocessor_configured() {
         mime_hint: None,
     };
 
-    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue).await;
+    let result = run_task(task, registry, deps, Arc::new(NoopEmitter), queue, store).await;
     assert!(result.is_err(), "task should fail when no preprocessor is configured");
     let err_str = result.unwrap_err().to_string();
     assert!(err_str.contains("no preprocessor configured"), "unexpected error: {}", err_str);
@@ -424,7 +454,7 @@ async fn test_worker_reports_partial_success_for_non_core_stage_failure() {
         templates::standard,
     };
     use arcanum_core::traits::ProgressEmitter;
-    use arcanum_core::types::{CollectionId, IngestionTask, OperationId};
+    use arcanum_core::types::{CollectionId, IngestionTask};
     use arcanum_core::ArcanumError;
     use arcanum_middleware::BoundedQueue;
     use std::sync::Mutex as StdMutex;
@@ -457,8 +487,10 @@ async fn test_worker_reports_partial_success_for_non_core_stage_failure() {
 
     let emitter = Arc::new(CapturingEmitter::default());
     let queue = Arc::new(BoundedQueue::new("test", 10));
+    let store: Arc<dyn OperationStore> = Arc::new(InMemoryOperationStore::new());
+    let op_id = create_op(&store, "raw://test-partial-success").await;
     let task = IngestionTask {
-        operation_id: OperationId::new(),
+        operation_id: op_id,
         source_uri: "raw://test-partial-success".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard_with_enrich_failure".into(),
@@ -468,7 +500,7 @@ async fn test_worker_reports_partial_success_for_non_core_stage_failure() {
         mime_hint: None,
     };
 
-    let result = run_task(task, registry, deps, emitter.clone(), queue).await;
+    let result = run_task(task, registry, deps, emitter.clone(), queue, store).await;
     assert!(result.is_ok(), "non-core stage failure must not abort the task: {:?}", result.err());
 
     let events = emitter.0.lock().unwrap();
