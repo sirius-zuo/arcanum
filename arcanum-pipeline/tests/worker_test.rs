@@ -73,7 +73,6 @@ fn stub_deps() -> Arc<PipelineDeps> {
         snapshot_store:    Arc::new(arcanum_core::traits::InMemorySnapshotStore::new()),
         chunk_metadata:    None,
         bm25_index:        None,
-        retry_policy: arcanum_middleware::RetryPolicy::default(),
         cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(vec![])),
         embedding_cb:      Arc::new(arcanum_middleware::CircuitBreaker::new("embedding", 5, std::time::Duration::from_secs(30))),
         vector_store_cb:   Arc::new(arcanum_middleware::CircuitBreaker::new("vector_store", 5, std::time::Duration::from_secs(30))),
@@ -104,7 +103,6 @@ async fn test_worker_processes_task_to_completion() {
         source_uri: "raw://test".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
-        attempt: 0,
         force: false,
         content: None,
         mime_hint: None,
@@ -142,7 +140,6 @@ async fn test_embed_stage_blocked_by_open_circuit_breaker() {
         source_uri: "raw://test-cb".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
-        attempt: 0,
         force: false,
         content: None,
         mime_hint: None,
@@ -160,7 +157,7 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::{ProgressEmitter, CacheInvalidator};
     use arcanum_core::types::{CollectionId, IngestionTask, PerBackendChunkers};
-    use arcanum_middleware::{CircuitBreaker, RetryPolicy};
+    use arcanum_middleware::CircuitBreaker;
     use arcanum_ingestion::LoaderRegistry;
     use arcanum_ingestion::RawLoader;
     use std::time::Duration;
@@ -229,7 +226,6 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
         snapshot_store:    Arc::new(arcanum_core::traits::InMemorySnapshotStore::new()),
         chunk_metadata:    None,
         bm25_index:        None,
-        retry_policy:      RetryPolicy::default(),
         cache_invalidator: broadcaster,
         embedding_cb:      Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30))),
         vector_store_cb:   Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30))),
@@ -244,7 +240,6 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
         source_uri: "raw://test-force".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
-        attempt: 0,
         force: true,
         content: None,
         mime_hint: None,
@@ -261,7 +256,7 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
     use arcanum_pipeline::{ArcanumPipelineRegistry, worker::run_task, PipelineDeps};
     use arcanum_core::traits::{ProgressEmitter, CacheInvalidator, DocumentVersionStore};
     use arcanum_core::types::{CollectionId, DocumentEntry, DocumentId, DocumentVersion, IngestionTask, PerBackendChunkers, VersioningPolicy};
-    use arcanum_middleware::{CircuitBreaker, RetryPolicy};
+    use arcanum_middleware::CircuitBreaker;
     use arcanum_ingestion::LoaderRegistry;
     use arcanum_ingestion::RawLoader;
     use std::time::Duration;
@@ -362,7 +357,6 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
         snapshot_store:    Arc::new(arcanum_core::traits::InMemorySnapshotStore::new()),
         chunk_metadata:    None,
         bm25_index:        None,
-        retry_policy:      RetryPolicy::default(),
         cache_invalidator: broadcaster,
         embedding_cb:      Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30))),
         vector_store_cb:   Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30))),
@@ -377,7 +371,6 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
         source_uri: "raw://test-changed".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
-        attempt: 0,
         force: false,
         content: None,
         mime_hint: None,
@@ -417,7 +410,6 @@ async fn test_worker_fails_when_no_preprocessor_configured() {
         snapshot_store:    base.snapshot_store.clone(),
         chunk_metadata:    base.chunk_metadata.clone(),
         bm25_index:        base.bm25_index.clone(),
-        retry_policy:      base.retry_policy.clone(),
         cache_invalidator: base.cache_invalidator.clone(),
         embedding_cb:      base.embedding_cb.clone(),
         vector_store_cb:   base.vector_store_cb.clone(),
@@ -431,7 +423,6 @@ async fn test_worker_fails_when_no_preprocessor_configured() {
         source_uri: "raw://test-no-preprocessor".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard".into(),
-        attempt: 0,
         force: false,
         content: None,
         mime_hint: None,
@@ -489,7 +480,6 @@ async fn test_worker_reports_partial_success_for_non_core_stage_failure() {
         source_uri: "raw://test-partial-success".into(),
         collection_id: CollectionId("col1".into()),
         pipeline_template: "standard_with_enrich_failure".into(),
-        attempt: 0,
         force: false,
         content: None,
         mime_hint: None,

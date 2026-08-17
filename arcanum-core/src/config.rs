@@ -88,8 +88,6 @@ pub enum OrchestrationMode {
 pub struct IngestionConfig {
     pub worker_pool_size:    usize,
     pub queue_capacity:      usize,
-    pub retry_max_attempts:  u32,
-    pub retry_base_delay_ms: u64,
     /// Maximum accepted size for an inline operation payload submitted to
     /// `POST /api/v1/ingestion-operations` (and used to bound multipart
     /// payload staging). Payloads larger than this are rejected with 413.
@@ -110,8 +108,6 @@ impl Default for IngestionConfig {
         Self {
             worker_pool_size:    4,
             queue_capacity:      10_000,
-            retry_max_attempts:  3,
-            retry_base_delay_ms: 1_000,
             max_upload_bytes:    default_max_upload_bytes(),
             chunking: PerBackendChunkConfig::default(),
             docling: None,
@@ -483,8 +479,6 @@ log_level = "info"
 [ingestion]
 worker_pool_size = 8
 queue_capacity = 5000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 "#).unwrap();
         let cfg = ArcanumConfig::from_file(f.path()).unwrap();
         assert_eq!(cfg.ingestion.worker_pool_size, 8);
@@ -536,8 +530,6 @@ retry_base_delay_ms = 1000
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "http"
@@ -558,8 +550,6 @@ timeout_secs = 300
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "cli"
@@ -579,8 +569,6 @@ command = "docling"
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "http"
@@ -602,8 +590,6 @@ poll_interval_ms = 3000
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         assert!(cfg.ingestion.docling.is_none());
@@ -617,8 +603,6 @@ retry_base_delay_ms = 1000
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "http"

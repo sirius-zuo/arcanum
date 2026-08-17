@@ -3,7 +3,7 @@ use arcanum_core::traits::{TextEnricher, Embedder, VectorStore, GraphStore, Tree
                             ChunkMetadataStore, Preprocessor};
 use arcanum_core::types::{PerBackendChunkers, ShadowContext};
 use arcanum_ingestion::LoaderRegistry;
-use arcanum_middleware::{RetryPolicy, CircuitBreaker};
+use arcanum_middleware::CircuitBreaker;
 use arcanum_vector::Bm25Index;
 use std::sync::Arc;
 
@@ -22,7 +22,6 @@ pub struct PipelineDeps {
     pub snapshot_store:    Arc<dyn SnapshotStore>,
     pub chunk_metadata:    Option<Arc<dyn ChunkMetadataStore>>,
     pub bm25_index:        Option<Arc<Bm25Index>>,
-    pub retry_policy:      RetryPolicy,
     pub cache_invalidator: Arc<CacheInvalidationBroadcaster>,
     pub embedding_cb:      Arc<CircuitBreaker>,
     pub vector_store_cb:   Arc<CircuitBreaker>,

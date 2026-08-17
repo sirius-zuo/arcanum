@@ -116,7 +116,6 @@ fn stub_deps() -> Arc<PipelineDeps> {
         snapshot_store: Arc::new(arcanum_core::traits::InMemorySnapshotStore::new()),
         chunk_metadata: None,
         bm25_index: None,
-        retry_policy: arcanum_middleware::RetryPolicy::default(),
         cache_invalidator: Arc::new(arcanum_core::traits::CacheInvalidationBroadcaster::new(
             vec![],
         )),

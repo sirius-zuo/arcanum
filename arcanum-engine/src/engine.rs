@@ -12,7 +12,7 @@ use arcanum_graph::GraphQueryPlanner;
 use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
                         RawLoader, FileLoader, HttpLoader,
                         DoclingPreprocessor, DoclingBackend, PostgresChunkMetadataStore, PostgresExperimentStore};
-use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
+use arcanum_middleware::{CircuitBreaker, BoundedQueue};
 use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
 use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
                         VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
@@ -599,11 +599,6 @@ impl ArcanumEngineBuilder {
                 snapshot_store:    snapshot_store.clone(),
                 chunk_metadata:    chunk_metadata_store.clone(),
                 bm25_index:        self.bm25_index.clone(),
-                retry_policy:      RetryPolicy::new(
-                    self.config.ingestion.retry_max_attempts,
-                    self.config.ingestion.retry_base_delay_ms,
-                    5_000,
-                ),
                 cache_invalidator: Arc::new(CacheInvalidationBroadcaster::new(invalidators.clone())),
                 embedding_cb:      embedding_cb.clone(),
                 vector_store_cb:   vector_store_cb.clone(),

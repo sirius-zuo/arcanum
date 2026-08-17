@@ -86,7 +86,6 @@ impl IngestionWorker {
                     snapshot_store:    self.deps.snapshot_store.clone(),
                     chunk_metadata:    self.deps.chunk_metadata.clone(),
                     bm25_index:        self.deps.bm25_index.clone(),
-                    retry_policy:      self.deps.retry_policy.clone(),
                     cache_invalidator: self.deps.cache_invalidator.clone(),
                     embedding_cb:      self.deps.embedding_cb.clone(),
                     vector_store_cb:   self.deps.vector_store_cb.clone(),

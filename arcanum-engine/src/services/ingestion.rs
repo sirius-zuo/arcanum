@@ -153,7 +153,6 @@ impl IngestionService {
             source_uri: submission.logical_source_uri.clone(),
             collection_id: submission.collection_id.clone(),
             pipeline_template,
-            attempt: 0,
             force,
             // Inline payload was staged durably; the task carries only the
             // locator and the worker resolves `Source::Raw` from the store.

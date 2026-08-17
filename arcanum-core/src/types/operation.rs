@@ -23,7 +23,6 @@ pub struct IngestionTask {
     pub source_uri:        String,
     pub collection_id:     CollectionId,
     pub pipeline_template: String,
-    pub attempt:           u32,
     pub force:             bool,
     /// Inline content for direct uploads. When present, the worker builds
     /// `Source::Raw` from these bytes instead of resolving `source_uri`.
