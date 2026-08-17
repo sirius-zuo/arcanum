@@ -6,6 +6,9 @@
 //!   - duplicate idempotency returns the SAME operation id (`is_new = false`)
 //!   - conflicting reuse of an idempotency key fails (typed conflict)
 //!   - `Accepted -> Running -> Succeeded`
+//!   - `Running -> Succeeded` WITHOUT a content URI is rejected (the operation
+//!     stays `Running`)
+//!   - `Running -> Failed` (error + partial-output disposition persisted)
 //!   - `Accepted -> Failed`
 //!   - terminal-state immutability (identical report reapply idempotent,
 //!     a different report or any other transition conflicts)
@@ -52,6 +55,20 @@ fn succeeded_report(operation_id: &arcanum_core::types::OperationId) -> Ingestio
         status: OperationStatus::Succeeded,
         outcome: Some(IngestionOutcome::Ingested),
         content_uri: Some("s3://arcanum/raw/document-a/version-1".to_string()),
+        error: None,
+        partial_output_disposition: None,
+    }
+}
+
+/// A `Succeeded` report that (illegally) omits the original-content URI. A
+/// successful report is terminal truth for the content URI, so the store must
+/// reject it.
+fn succeeded_report_without_uri(operation_id: &arcanum_core::types::OperationId) -> IngestionReport {
+    IngestionReport {
+        operation_id: operation_id.clone(),
+        status: OperationStatus::Succeeded,
+        outcome: Some(IngestionOutcome::Ingested),
+        content_uri: None,
         error: None,
         partial_output_disposition: None,
     }
@@ -120,6 +137,30 @@ where
         .expect("exists");
     assert_eq!(running.status, OperationStatus::Running);
 
+    // 4a. A `Running -> Succeeded` report WITHOUT a content URI is rejected:
+    //     a successful report is terminal truth and must carry the URI. The
+    //     operation stays `Running`.
+    let no_uri_report = succeeded_report_without_uri(&op_id);
+    let err = store
+        .complete(&no_uri_report)
+        .await
+        .expect_err("succeeded without content_uri must be rejected");
+    assert!(is_conflict(&err), "expected conflict, got {err}");
+    let still_running = store
+        .get(&op_id)
+        .await
+        .expect("get still-running")
+        .expect("exists");
+    assert_eq!(
+        still_running.status,
+        OperationStatus::Running,
+        "rejected report must not change the operation status"
+    );
+    assert!(
+        still_running.terminal_report.is_none(),
+        "rejected report must not become terminal truth"
+    );
+
     let report = succeeded_report(&op_id);
     store.complete(&report).await.expect("complete succeeded");
     let succeeded = store
@@ -183,6 +224,39 @@ where
             .unwrap()
             .code,
         "QUEUE_REJECTED"
+    );
+
+    // 6b. Running -> Failed: a worker picked the operation up, then reported
+    //     failure. `Failed` is persisted with the error and the partial-output
+    //     disposition, and get-by-id returns it.
+    let key3 = format!("idem-run-fail-{}", uuid::Uuid::new_v4());
+    let sub3 = submission(&key3, "https://example.com/document-c", "col-c");
+    let created3 = store.create_or_get(&sub3).await.expect("create_or_get #3");
+    let op3_id = created3.operation.operation_id.clone();
+    store
+        .mark_running(&op3_id, Utc::now())
+        .await
+        .expect("mark_running #3");
+    let run_fail_report = failed_report(&op3_id);
+    store
+        .complete(&run_fail_report)
+        .await
+        .expect("complete failed from running");
+    let run_failed = store
+        .get(&op3_id)
+        .await
+        .expect("get run-failed")
+        .expect("exists");
+    assert_eq!(run_failed.status, OperationStatus::Failed);
+    let run_failed_report = run_failed.terminal_report.as_ref().expect("terminal report");
+    assert_eq!(
+        run_failed_report.error.as_ref().expect("error").code,
+        "QUEUE_REJECTED"
+    );
+    assert_eq!(
+        run_failed_report.partial_output_disposition,
+        Some(PartialOutputDisposition::Discarded),
+        "failed report must persist the partial-output disposition"
     );
 
     // 7. get-by-idempotency-key returns the same operation.

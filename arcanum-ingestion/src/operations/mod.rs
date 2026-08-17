@@ -55,7 +55,10 @@ pub(crate) fn status_str(s: &OperationStatus) -> &'static str {
 /// Validates a terminal transition per the plan:
 /// - `Accepted -> Failed` (e.g. queue rejected before a worker picks it up) is
 ///   valid; `Accepted -> Running` is handled by `mark_running`.
-/// - `Running -> Succeeded | Failed` are valid.
+/// - `Running -> Succeeded | Failed` are valid, but a `Running -> Succeeded`
+///   report MUST carry the original-content URI (`content_uri`): a successful
+///   report is terminal truth for where the content lives, and persisting one
+///   without it would make `None` terminal truth.
 /// - Re-applying the IDENTICAL terminal report on a terminal operation is
 ///   idempotent.
 /// - Any other transition — including a different terminal report on a terminal
@@ -67,7 +70,13 @@ pub(crate) fn validate_transition(
     let next = &report.status;
     match (&current.status, next) {
         (OperationStatus::Accepted, OperationStatus::Running | OperationStatus::Failed) => Ok(()),
-        (OperationStatus::Running, OperationStatus::Succeeded | OperationStatus::Failed) => Ok(()),
+        (OperationStatus::Running, OperationStatus::Succeeded) if report.content_uri.is_some() => {
+            Ok(())
+        }
+        (OperationStatus::Running, OperationStatus::Succeeded) => Err(ArcanumError::Conflict(
+            "succeeded report must carry content_uri".to_string(),
+        )),
+        (OperationStatus::Running, OperationStatus::Failed) => Ok(()),
         (OperationStatus::Succeeded | OperationStatus::Failed, st)
             if st == &current.status && current.terminal_report.as_ref() == Some(report) =>
         {
