@@ -5,7 +5,10 @@ use crate::{
 use arcanum_core::{
     traits::{ChunkMetadataStore, DocumentVersionStore, SnapshotStore, *},
     types::*,
-    types::{ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
+    types::{
+        ChunkBackend, ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus,
+        VersioningPolicy,
+    },
     ArcanumError,
 };
 use arcanum_ingestion::{ContextEnricher, EntityExtractor, LoaderRegistry, MimeDetector};
@@ -779,6 +782,9 @@ pub fn make_vector_write_stage(
                                     document_id: doc_id.clone(),
                                     collection_id: collection_id.0.clone(),
                                     version_num,
+                                    backend: ChunkBackend::Vector,
+                                    text: chunk.chunk.text.clone(),
+                                    chunk_index: chunk.chunk.position.index,
                                     source_uri: chunk.chunk.provenance.source_uri.clone(),
                                     snapshot_uri: chunk.chunk.provenance.snapshot_uri.clone(),
                                     canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),

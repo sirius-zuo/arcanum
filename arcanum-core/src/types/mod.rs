@@ -13,7 +13,7 @@ pub use chunk_config::{
 pub use document::*;
 pub use enrichment::*;
 pub use evidence::{
-    ChunkMetadataRecord, EvidenceKind, GcReport, ProofChain, ProofNode, RawSourceRef,
+    ChunkBackend, ChunkMetadataRecord, EvidenceKind, GcReport, ProofChain, ProofNode, RawSourceRef,
 };
 pub use graph::*;
 pub use operation::*;
