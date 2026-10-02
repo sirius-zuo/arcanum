@@ -94,7 +94,7 @@ Embeds the query and performs approximate nearest-neighbour search over stored c
 Full-text retrieval via an embedded Tantivy engine. Collection-isolated: each `Bm25Retriever` instance is scoped to a single collection, preventing cross-collection data leakage at the type level.
 
 ### 3 — Graph-Augmented
-Extracts entity names from the query, traverses a knowledge graph (Neo4j or in-memory) up to a configurable hop depth, and then performs a vector search filtered to the retrieved entity contexts. Effective for relationship-heavy domains.
+Extracts entity names from the query, traverses a knowledge graph (Neo4j or in-memory) up to a configurable hop depth, and returns the chunks that mention the matched entities, ranked by hop distance (nearer entities score higher). Effective for relationship-heavy domains.
 
 ### 4 — RAPTOR (Hierarchical Tree)
 Builds a recursive summarisation tree over ingested chunks using K-means clustering. At query time, traversal spans all levels (coarse-to-fine), with level-weighted cosine scoring. Handles abstractive questions that require document-level reasoning, not just chunk-level matches.

@@ -221,8 +221,8 @@ lexical, graph or tree is enabled without a chunk registry.)
 1. `ArcanumEngineBuilder::build` adds `VectorRetriever` and
    `ColBertRetriever` in the same `if let (Some(vector_store),
    Some(embedder))` guard (`ColBertRetriever::new` needs exactly those two
-   deps); `GraphRetriever` iff `graph_store`/`vector_store`/`embedder`/
-   `enricher` are all `Some`; `RaptorRetriever` iff `tree_store`/`embedder`
+   deps); `GraphRetriever` iff `graph_store`/`enricher` are both `Some`
+   (it hydrates through the chunk registry and needs no vector store or embedder); `RaptorRetriever` iff `tree_store`/`embedder`
    are `Some`; `Bm25Retriever::new_global` iff `bm25_index` is `Some`;
    each addition increments an `arcanum_active_retrievers` gauge.
 2. `OrchestratorMode::Static` is built as the fixed pair `[Vector, Bm25]`
