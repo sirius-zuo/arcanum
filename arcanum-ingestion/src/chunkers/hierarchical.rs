@@ -1,4 +1,5 @@
-use arcanum_core::{traits::Chunker, types::*, ArcanumError, Result};
+use super::{line_spans, trimmed_span};
+use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
 use metrics;
 use tracing::instrument;
@@ -18,13 +19,12 @@ impl HierarchicalChunker {
 }
 
 fn build_chunk(
-    text: String,
     doc: &RawDocument,
     index: usize,
     title: String,
     source_text: &str,
-    cursor: &mut usize,
-) -> Result<Chunk> {
+    span: (usize, usize),
+) -> Chunk {
     let mut metadata = std::collections::HashMap::new();
     if !title.is_empty() {
         metadata.insert(
@@ -32,26 +32,16 @@ fn build_chunk(
             serde_json::Value::String(title),
         );
     }
-    let start = source_text[*cursor..]
-        .find(&text)
-        .map(|p| p + *cursor)
-        .ok_or_else(|| {
-            ArcanumError::Ingestion(format!(
-                "hierarchical chunker: section text not found in source after byte {}",
-                *cursor
-            ))
-        })?;
-    let end = start + text.len();
-    *cursor = end;
-    Ok(Chunk {
+    let (start, end) = trimmed_span(source_text, span.0, span.1).unwrap_or((span.0, span.0));
+    Chunk {
         id: ChunkId::new(),
-        text,
+        text: source_text[start..end].to_string(),
         document_id: doc.id.clone(),
         collection_id: CollectionId("default".into()),
         position: ChunkPosition { start, end, index },
         metadata: ChunkMetadata(metadata),
         provenance: Default::default(),
-    })
+    }
 }
 
 #[async_trait]
@@ -59,44 +49,49 @@ impl Chunker for HierarchicalChunker {
     #[instrument(skip(self, doc), fields(chunker = "hierarchical", input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content).to_string();
-        let mut sections: Vec<(String, String)> = Vec::new();
+        // (title, body byte span). Spans come from line positions, so they stay
+        // valid for any line ending.
+        let mut sections: Vec<(String, (usize, usize))> = Vec::new();
         let mut current_title = String::new();
-        let mut current_body: Vec<String> = Vec::new();
+        let mut body: Option<(usize, usize)> = None;
+        let mut next_body_start = 0usize;
 
-        for line in text.lines() {
+        for (ls, le) in line_spans(&text) {
+            let line = &text[ls..le];
             if line.starts_with("### ") || line.starts_with("## ") || line.starts_with("# ") {
-                if !current_body.is_empty() || !current_title.is_empty() {
-                    sections.push((current_title.clone(), current_body.join("\n")));
+                if body.is_some() || !current_title.is_empty() {
+                    sections.push((
+                        current_title.clone(),
+                        body.unwrap_or((next_body_start, next_body_start)),
+                    ));
                 }
                 current_title = line.trim_start_matches('#').trim().to_string();
-                current_body = Vec::new();
+                body = None;
+                next_body_start = le;
             } else {
-                current_body.push(line.to_string());
+                body = Some(match body {
+                    Some((s, _)) => (s, le),
+                    None => (ls, le),
+                });
             }
         }
-        if !current_body.is_empty() || !current_title.is_empty() {
-            sections.push((current_title, current_body.join("\n")));
+        if body.is_some() || !current_title.is_empty() {
+            sections.push((
+                current_title,
+                body.unwrap_or((next_body_start, next_body_start)),
+            ));
         }
 
         if sections.is_empty() {
-            sections.push(("".to_string(), text.clone()));
+            sections.push(("".to_string(), (0, text.len())));
         }
 
         let mut chunks: Vec<Chunk> = Vec::new();
-        let mut cursor = 0usize;
-        for (i, (title, body)) in sections.into_iter().enumerate() {
-            let body_trimmed = body.trim().to_string();
-            if body_trimmed.is_empty() && title.is_empty() {
+        for (i, (title, span)) in sections.into_iter().enumerate() {
+            if text[span.0..span.1].trim().is_empty() && title.is_empty() {
                 continue;
             }
-            chunks.push(build_chunk(
-                body_trimmed,
-                doc,
-                i,
-                title,
-                &text,
-                &mut cursor,
-            )?);
+            chunks.push(build_chunk(doc, i, title, &text, span));
         }
         tracing::Span::current().record("chunk_count", chunks.len());
         metrics::histogram!("arcanum_chunk_count", "chunker" => "hierarchical")

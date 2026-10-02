@@ -59,10 +59,7 @@ impl Bm25Index {
     /// Runs `f` on the shared writer. Any error rolls the writer back: after a
     /// failed commit Tantivy otherwise keeps accepting writes that never become
     /// searchable. A poisoned mutex is recovered and rolled back the same way.
-    fn with_writer(
-        &self,
-        f: impl FnOnce(&mut IndexWriter) -> tantivy::Result<()>,
-    ) -> Result<()> {
+    fn with_writer(&self, f: impl FnOnce(&mut IndexWriter) -> tantivy::Result<()>) -> Result<()> {
         let mut writer = self.writer.lock().unwrap_or_else(|p| {
             let mut w = p.into_inner();
             let _ = w.rollback();

@@ -133,7 +133,11 @@ fn writes_succeed_after_a_failed_commit() {
     idx.index_chunks("col", "u3", &[(after.clone(), "bravo text".into())])
         .unwrap();
     let hits = idx.search("col", "bravo", 5).unwrap();
-    assert_eq!(hits.len(), 1, "write after a failed commit must be searchable");
+    assert_eq!(
+        hits.len(),
+        1,
+        "write after a failed commit must be searchable"
+    );
     assert_eq!(hits[0].0, after);
     assert!(idx.search("col", "lost", 5).unwrap().is_empty());
     assert_eq!(idx.search("col", "alpha", 5).unwrap()[0].0, before);
