@@ -729,23 +729,19 @@ impl ArcanumEngineBuilder {
                 .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
             retriever_count += 2;
         }
-        if let (Some(gs), Some(vs), Some(emb), Some(resolved_enricher)) = (
-            &self.graph_store,
-            &self.vector_store,
-            &self.embedder,
-            &enricher,
-        ) {
+        if let (Some(gs), Some(resolved_enricher), Some(cms)) =
+            (&self.graph_store, &enricher, &chunk_metadata_store)
+        {
             // Use the resolved (possibly per-intent-routing) enricher, not the raw
             // builder field, so GraphQueryPlanner's ExtractEntities calls honor
             // entity_extraction_provider routing like ingestion does.
             let planner: Arc<dyn arcanum_core::traits::GraphPlanner> =
                 Arc::new(GraphQueryPlanner::new(resolved_enricher.clone(), 2));
             orchestrator = orchestrator.add_retriever(Arc::new(GraphRetriever::new(
-                gs.clone(),
-                vs.clone(),
                 planner,
-                emb.clone(),
-                2,
+                gs.clone(),
+                Arc::new(arcanum_graph::HopDecayScorer::new(2)),
+                cms.clone(),
             )));
             retriever_count += 1;
         }

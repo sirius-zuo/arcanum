@@ -8,7 +8,7 @@ use arcanum_core::traits::{ChunkMetadataStore, EvidenceResolver, Retriever, Tree
 use arcanum_core::types::RetrievalStrategy;
 use arcanum_core::types::{ChunkKind, CollectionId, Query};
 use arcanum_evidence::resolver::DefaultEvidenceResolver;
-use arcanum_graph::GraphQueryPlanner;
+use arcanum_graph::{GraphQueryPlanner, HopDecayScorer};
 use arcanum_retrieval::{
     Bm25Retriever, GraphRetriever, RaptorRetriever, RrfFusion, VectorRetriever,
 };
@@ -23,15 +23,13 @@ fn query(text: &str, top_k: usize) -> Query {
 }
 
 #[tokio::test]
-#[ignore = "fixed by Task 14"]
 async fn graph_retrieval_returns_source_chunks() {
     let fx = ingest_fixture().await;
     let retriever = GraphRetriever::new(
-        fx.graph_store.clone(),
-        fx.vector_store.clone(),
         Arc::new(GraphQueryPlanner::new(Arc::new(ScriptedEnricher), 2)),
-        Arc::new(KeywordEmbedder),
-        2,
+        fx.graph_store.clone(),
+        Arc::new(HopDecayScorer::new(2)),
+        fx.chunk_metadata.clone(),
     );
     let results = retriever
         .retrieve(&query("What does Acme Corp build?", 5))
