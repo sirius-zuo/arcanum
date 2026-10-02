@@ -757,9 +757,10 @@ impl ArcanumEngineBuilder {
             )));
             retriever_count += 1;
         }
-        if let Some(bm25) = &self.bm25_index {
+        if let (Some(bm25), Some(cms)) = (&self.bm25_index, &chunk_metadata_store) {
             orchestrator = orchestrator.add_retriever(Arc::new(Bm25Retriever::new_global(
                 bm25.clone() as Arc<dyn LexicalIndex>,
+                cms.clone(),
             )));
             retriever_count += 1;
         }

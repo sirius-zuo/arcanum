@@ -1,3 +1,4 @@
+use crate::hydrate::hydrate;
 use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
@@ -8,31 +9,37 @@ use tracing::instrument;
 /// Each instance owns one collection's index. Requests for a different
 /// collection_id are denied, preventing cross-collection data leakage.
 ///
-/// KNOWN LIMITATION: Tantivy's search returns only the stored `id` string
-/// (the chunk's store_id), not a full IndexedChunk. Until a metadata lookup
-/// is wired in (via SqliteMetadataStore), the returned chunks have a stub
-/// DocumentId derived from the store_id rather than the canonical one.
-/// Do NOT use the returned DocumentId/ChunkId as authoritative identifiers
-/// until this is resolved.
+/// The lexical index returns only scored chunk ids; text, document id and
+/// provenance are hydrated from the chunk metadata registry.
 pub struct Bm25Retriever {
     collection_id: Option<CollectionId>, // None = accept any collection
     index: Arc<dyn LexicalIndex>,
+    chunk_metadata: Arc<dyn ChunkMetadataStore>,
 }
 
 impl Bm25Retriever {
     /// Collection-scoped: rejects queries for other collections.
-    pub fn new(collection_id: CollectionId, index: Arc<dyn LexicalIndex>) -> Self {
+    pub fn new(
+        collection_id: CollectionId,
+        index: Arc<dyn LexicalIndex>,
+        chunk_metadata: Arc<dyn ChunkMetadataStore>,
+    ) -> Self {
         Self {
             collection_id: Some(collection_id),
             index,
+            chunk_metadata,
         }
     }
 
-    /// Global: serves any collection (index is not partitioned by collection).
-    pub fn new_global(index: Arc<dyn LexicalIndex>) -> Self {
+    /// Global: serves any collection (the index filters by collection per query).
+    pub fn new_global(
+        index: Arc<dyn LexicalIndex>,
+        chunk_metadata: Arc<dyn ChunkMetadataStore>,
+    ) -> Self {
         Self {
             collection_id: None,
             index,
+            chunk_metadata,
         }
     }
 }
@@ -54,37 +61,17 @@ impl Retriever for Bm25Retriever {
             }
         }
 
-        let raw = self
+        let hits = self
             .index
             .search(&query_cid.0, &query.text, query.top_k)
             .await?;
-        let collection_id = query_cid.clone();
-        Ok(raw
-            .into_iter()
-            .map(|(chunk_id, score)| RetrievedChunk {
-                indexed_chunk: IndexedChunk {
-                    chunk: Chunk {
-                        id: chunk_id.clone(),
-                        text: String::new(),
-                        document_id: DocumentId::new(),
-                        collection_id: collection_id.clone(),
-                        position: ChunkPosition {
-                            start: 0,
-                            end: 0,
-                            index: 0,
-                        },
-                        metadata: ChunkMetadata::default(),
-                        provenance: Default::default(),
-                    },
-                    vector: Vector(vec![]),
-                    token_vectors: None,
-                    store_id: chunk_id.0.to_string(),
-                },
-                score,
-                strategy: RetrievalStrategy::Bm25,
-                kind: ChunkKind::Source,
-            })
-            .collect())
+        hydrate(
+            self.chunk_metadata.as_ref(),
+            &hits,
+            &query_cid.0,
+            RetrievalStrategy::Bm25,
+        )
+        .await
     }
 
     fn strategy(&self) -> RetrievalStrategy {
@@ -111,15 +98,62 @@ mod tests {
         }
     }
 
+    fn record(text: &str, document_id: DocumentId) -> ChunkMetadataRecord {
+        ChunkMetadataRecord {
+            chunk_id: ChunkId::new(),
+            document_id,
+            collection_id: "col1".into(),
+            version_num: 1,
+            backend: ChunkBackend::Lexical,
+            text: text.into(),
+            chunk_index: 2,
+            source_uri: "file://x.txt".into(),
+            snapshot_uri: "file:///snap/x/1.raw".into(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 10,
+            offset_end: 10 + text.len(),
+            ingested_at: chrono::Utc::now(),
+        }
+    }
+
     #[tokio::test]
     async fn test_bm25_retriever_uses_lexical_index_trait() {
+        let rec = record("hello world", DocumentId::new());
+        let store = Arc::new(InMemoryChunkMetadataStore::new());
+        store.put(&rec).await.unwrap();
         let index: Arc<dyn LexicalIndex> = Arc::new(FakeLexicalIndex {
-            hits: vec![(ChunkId::new(), 0.9)],
+            hits: vec![(rec.chunk_id.clone(), 0.9)],
         });
-        let retriever = Bm25Retriever::new(CollectionId("col1".into()), index);
+        let retriever = Bm25Retriever::new(CollectionId("col1".into()), index, store);
         let query = Query::new("hello").with_collection(CollectionId("col1".into()));
         let result = retriever.retrieve(&query).await.unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].score, 0.9);
+    }
+
+    #[tokio::test]
+    async fn bm25_returns_registry_text_and_document_id() {
+        let doc_id = DocumentId::new();
+        let rec = record("registry source text", doc_id.clone());
+        let store = Arc::new(InMemoryChunkMetadataStore::new());
+        store.put(&rec).await.unwrap();
+        let index: Arc<dyn LexicalIndex> = Arc::new(FakeLexicalIndex {
+            hits: vec![(rec.chunk_id.clone(), 1.5), (ChunkId::new(), 1.0)],
+        });
+        let retriever = Bm25Retriever::new_global(index, store);
+        let query = Query::new("registry").with_collection(CollectionId("col1".into()));
+        let result = retriever.retrieve(&query).await.unwrap();
+        assert_eq!(result.len(), 1, "unresolved id must be skipped");
+        let c = &result[0].indexed_chunk.chunk;
+        assert_eq!(c.id, rec.chunk_id);
+        assert_eq!(c.text, "registry source text");
+        assert_eq!(c.document_id, doc_id);
+        assert_eq!(
+            (c.position.start, c.position.end, c.position.index),
+            (10, 30, 2)
+        );
     }
 }
