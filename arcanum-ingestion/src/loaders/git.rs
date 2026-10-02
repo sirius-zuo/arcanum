@@ -7,6 +7,12 @@ use async_trait::async_trait;
 use tracing::instrument;
 
 pub struct GitLoader;
+impl Default for GitLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl GitLoader {
     pub fn new() -> Self {
         Self

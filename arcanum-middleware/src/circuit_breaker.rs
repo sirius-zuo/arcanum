@@ -1,4 +1,3 @@
-use metrics;
 use std::{
     sync::atomic::{AtomicU32, AtomicU8, Ordering},
     sync::Arc,

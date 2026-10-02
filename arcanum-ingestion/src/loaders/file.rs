@@ -8,6 +8,12 @@ use tracing::instrument;
 
 pub struct FileLoader;
 
+impl Default for FileLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileLoader {
     pub fn new() -> Self {
         Self

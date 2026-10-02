@@ -5,6 +5,12 @@ use tracing::instrument;
 #[derive(Debug)]
 pub struct EvalService {}
 
+impl Default for EvalService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EvalService {
     pub fn new() -> Self {
         Self {}

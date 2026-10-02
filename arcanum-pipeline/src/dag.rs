@@ -32,6 +32,12 @@ pub struct PipelineDAG {
     pub stages: Vec<PipelineStage>,
 }
 
+impl Default for PipelineDAG {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PipelineDAG {
     pub fn new() -> Self {
         Self { stages: vec![] }

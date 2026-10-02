@@ -4,6 +4,12 @@ use metrics;
 use tracing::instrument;
 
 pub struct PropositionalChunker;
+impl Default for PropositionalChunker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PropositionalChunker {
     pub fn new() -> Self {
         Self
@@ -16,7 +22,7 @@ impl Chunker for PropositionalChunker {
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content);
         let props: Vec<&str> = text
-            .split(|c| matches!(c, '.' | '!' | '?' | '\n'))
+            .split(['.', '!', '?', '\n'])
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
             .collect();

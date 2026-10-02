@@ -11,6 +11,12 @@ use uuid::Uuid;
 #[serde(transparent)]
 pub struct OperationId(pub Uuid);
 
+impl Default for OperationId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl OperationId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

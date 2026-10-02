@@ -1,5 +1,4 @@
 use arcanum_core::{ArcanumError, Result};
-use metrics;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 use tracing::instrument;

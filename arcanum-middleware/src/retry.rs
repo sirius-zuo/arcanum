@@ -78,10 +78,10 @@ mod tests {
 
     #[test]
     fn test_retry_policy_cap_grows_with_attempt() {
-        let policy = RetryPolicy::new(5, 100, 10_000);
+        let _policy = RetryPolicy::new(5, 100, 10_000);
         // cap(0)=100, cap(1)=200, cap(2)=400 — verify caps grow
-        let cap0 = 100u64.min(10_000);
-        let cap1 = 200u64.min(10_000);
+        let cap0 = 100u64;
+        let cap1 = 200u64;
         assert!(cap1 > cap0);
     }
 }

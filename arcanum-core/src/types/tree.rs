@@ -5,6 +5,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeNodeId(pub Uuid);
 
+impl Default for TreeNodeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TreeNodeId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

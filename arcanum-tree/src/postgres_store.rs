@@ -81,7 +81,7 @@ impl TreeStore for PgTreeStore {
         let centroid_json = node
             .cluster_centroid
             .as_ref()
-            .map(|c| serde_json::to_value(c))
+            .map(serde_json::to_value)
             .transpose()
             .map_err(|e| ArcanumError::Storage(format!("serialize centroid: {}", e)))?;
         let children_json = serde_json::to_value(&node.children)
@@ -261,7 +261,7 @@ fn row_to_node(row: PgTreeNodeRow) -> Result<TreeNode> {
         .map_err(|e| ArcanumError::Storage(format!("deserialize vector: {}", e)))?;
     let cluster_centroid: Option<Vector> = row
         .centroid
-        .map(|c| serde_json::from_value(c))
+        .map(serde_json::from_value)
         .transpose()
         .map_err(|e| ArcanumError::Storage(format!("deserialize centroid: {}", e)))?;
     let children: Vec<TreeNodeId> = serde_json::from_value(row.children)

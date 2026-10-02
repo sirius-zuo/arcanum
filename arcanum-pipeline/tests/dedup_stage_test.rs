@@ -226,11 +226,11 @@ async fn dedup_stage_new_document_proceeds_normally() {
         .await
         .unwrap();
     assert!(
-        ctx.get(CTX_SKIP).is_none(),
+        !ctx.contains_key(CTX_SKIP),
         "new document should not be skipped"
     );
     assert!(
-        ctx.get(CTX_REPLACE).is_none(),
+        !ctx.contains_key(CTX_REPLACE),
         "new document should not trigger replace"
     );
 }
@@ -267,11 +267,11 @@ async fn dedup_stage_new_version_store_is_treated_as_new() {
         .await
         .unwrap();
     assert!(
-        ctx.get(CTX_SKIP).is_none(),
+        !ctx.contains_key(CTX_SKIP),
         "NoOp store should treat as new document"
     );
     assert!(
-        ctx.get(CTX_REPLACE).is_none(),
+        !ctx.contains_key(CTX_REPLACE),
         "NoOp store should not trigger replace"
     );
 }

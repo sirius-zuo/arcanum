@@ -12,6 +12,12 @@ pub struct ChunkRegistry {
     factories: HashMap<String, Factory>,
 }
 
+impl Default for ChunkRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChunkRegistry {
     pub fn new() -> Self {
         Self {

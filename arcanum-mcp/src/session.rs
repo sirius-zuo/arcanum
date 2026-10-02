@@ -29,6 +29,12 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, McpSession>>>,
 }
 
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Self {
         Self {

@@ -657,7 +657,7 @@ mod tests {
                 .add_version(DocumentVersion {
                     document_id: DocumentId::new(),
                     version_num: 1,
-                    source_uri: uri.clone().into(),
+                    source_uri: (*uri).into(),
                     collection_id: "test-list".into(),
                     content_hash: format!("hash-{}", i),
                     snapshot_uri: format!("file:///snap/{}.raw", i),

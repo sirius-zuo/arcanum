@@ -138,7 +138,7 @@ impl ExperimentStore for InMemoryExperimentStore {
             .filter(|(_, e)| e.status == ExperimentStatus::Active)
             .map(|(k, e)| {
                 (
-                    k.rsplitn(2, ':').nth(1).unwrap_or("").to_string(),
+                    k.rsplit_once(':').map(|x| x.0).unwrap_or("").to_string(),
                     e.clone(),
                 )
             })

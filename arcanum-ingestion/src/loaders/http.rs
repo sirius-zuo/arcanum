@@ -10,6 +10,12 @@ pub struct HttpLoader {
     client: reqwest::Client,
 }
 
+impl Default for HttpLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HttpLoader {
     pub fn new() -> Self {
         Self {

@@ -45,11 +45,7 @@ pub async fn inspect(text: &str, strategies: &[ChunkStrategyConfig]) -> Result<V
             .map(|c| {
                 let char_count = c.text.chars().count();
                 let token_estimate = char_count / 4;
-                let overlap_chars = if c.position.start < prev_end {
-                    prev_end - c.position.start
-                } else {
-                    0
-                };
+                let overlap_chars = prev_end.saturating_sub(c.position.start);
                 prev_end = c.position.end;
                 AnnotatedChunk {
                     text: c.text.clone(),

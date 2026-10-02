@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ChunkProvenance {
     pub document_version: u32,
     pub source_uri: String,
@@ -14,20 +14,6 @@ pub struct ChunkProvenance {
     pub block_ids: Vec<String>,
 }
 
-impl Default for ChunkProvenance {
-    fn default() -> Self {
-        Self {
-            document_version: 0,
-            source_uri: String::new(),
-            snapshot_uri: String::new(),
-            canonical_uri: None,
-            page: None,
-            section: None,
-            block_ids: vec![],
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum VersionStatus {
     Active,
@@ -35,17 +21,14 @@ pub enum VersionStatus {
     Deleted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum VersioningPolicy {
+    #[default]
     Replace,
     AppendOnly,
-    RetentionBased { days: u32 },
-}
-
-impl Default for VersioningPolicy {
-    fn default() -> Self {
-        Self::Replace
-    }
+    RetentionBased {
+        days: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -1,6 +1,5 @@
-use arcanum_core::traits::{Chunker, GraphStore, Source, TextEnricher};
+use arcanum_core::traits::{Chunker, GraphStore, Source};
 use arcanum_core::types::*;
-use arcanum_core::types::{EnrichRequest, EnrichedText};
 use arcanum_ingestion::{FixedSizeChunker, SemanticChunker};
 use arcanum_pipeline::{
     ingestion_state::IngestionState,

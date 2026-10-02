@@ -163,7 +163,7 @@ mod tests {
                 chunk: Chunk {
                     id: ChunkId(uuid),
                     text: format!("chunk_{}", id_suffix),
-                    document_id: doc_id.unwrap_or(DocumentId::new()),
+                    document_id: doc_id.unwrap_or_default(),
                     collection_id: CollectionId("col".into()),
                     position: ChunkPosition {
                         start: 0,

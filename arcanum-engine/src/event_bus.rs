@@ -8,6 +8,12 @@ pub struct EventBus {
     senders: RwLock<HashMap<String, broadcast::Sender<Value>>>,
 }
 
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventBus {
     pub fn new() -> Self {
         Self {

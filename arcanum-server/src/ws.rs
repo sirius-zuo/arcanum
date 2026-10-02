@@ -48,8 +48,8 @@ fn extract_and_validate_ws_token(
         proto
             .to_str()
             .unwrap_or("")
-            .splitn(2, ',')
-            .nth(1)
+            .split_once(',')
+            .map(|x| x.1)
             .unwrap_or("")
             .trim()
             .to_string()

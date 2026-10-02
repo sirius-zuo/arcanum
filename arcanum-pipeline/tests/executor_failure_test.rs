@@ -42,9 +42,9 @@ async fn non_core_failure_records_and_skips_dependents() {
     let out = DagExecutor::execute(&dag, StageContext::default())
         .await
         .expect("non-core failure must not abort the pipeline");
-    assert!(out.get("ran:load").is_some());
+    assert!(out.contains_key("ran:load"));
     assert!(
-        out.get("ran:graph_write").is_none(),
+        !out.contains_key("ran:graph_write"),
         "dependent of failed stage must be skipped"
     );
     let failures = out

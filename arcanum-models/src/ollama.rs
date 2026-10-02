@@ -1,6 +1,5 @@
 use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
-use metrics;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 

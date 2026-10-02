@@ -4,17 +4,12 @@ use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc};
 use tokio::sync::RwLock;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum RuntimeMode {
+    #[default]
     Development,
     Production,
     Enterprise,
-}
-
-impl Default for RuntimeMode {
-    fn default() -> Self {
-        Self::Development
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -232,18 +227,10 @@ impl Default for AdminConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerConfig {
     /// Origins allowed for CORS. Empty = deny all cross-origin requests (fail-closed).
     pub cors_allowed_origins: Vec<String>,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self {
-            cors_allowed_origins: vec![],
-        }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

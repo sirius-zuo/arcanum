@@ -18,9 +18,7 @@ impl Chunker for SemanticChunker {
     #[instrument(skip(self, doc), fields(chunker = "semantic", max_chars = self.max_chars, input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content);
-        let sentences: Vec<&str> = text
-            .split_inclusive(|c| matches!(c, '.' | '!' | '?'))
-            .collect();
+        let sentences: Vec<&str> = text.split_inclusive(['.', '!', '?']).collect();
         let mut chunks = vec![];
         let mut current = String::new();
         let mut start = 0usize;

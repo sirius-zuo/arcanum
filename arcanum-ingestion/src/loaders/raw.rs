@@ -7,6 +7,12 @@ use async_trait::async_trait;
 
 pub struct RawLoader;
 
+impl Default for RawLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RawLoader {
     pub fn new() -> Self {
         Self

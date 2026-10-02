@@ -224,10 +224,8 @@ pub fn make_snapshot_stage(
 
                 // Apply versioning policy.
                 let policy = version_store.get_versioning_policy(&collection_id).await?;
-                if matches!(policy, VersioningPolicy::Replace) {
-                    if latest.is_some() {
-                        version_store.supersede_active(&doc_id).await?;
-                    }
+                if matches!(policy, VersioningPolicy::Replace) && latest.is_some() {
+                    version_store.supersede_active(&doc_id).await?;
                 }
 
                 // Persist raw bytes + canonical sidecar.
@@ -759,7 +757,7 @@ pub fn make_vector_write_stage(
 
                 let indexed: Vec<IndexedChunk> = chunks
                     .into_iter()
-                    .zip(vectors.into_iter())
+                    .zip(vectors)
                     .map(|(chunk, vector)| IndexedChunk {
                         chunk,
                         vector,
@@ -875,6 +873,70 @@ pub fn make_register_version_stage(
     }
 }
 
+pub fn make_raptor_build_stage(
+    state: Arc<Mutex<IngestionState>>,
+    tree_store: Arc<dyn TreeStore>,
+    max_depth: u32,
+    enricher: Option<Arc<dyn TextEnricher>>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "raptor_build",
+        deps: vec!["tree_embed"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let tree_store = tree_store.clone();
+            let enricher = enricher.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
+                let (leaves, collection_id, source_uri) = {
+                    let g = state.lock().await;
+                    // Use tree-specific chunks and embeddings when available (per-backend chunkers).
+                    // Fall back to primary vector chunks only when tree backend uses the same
+                    // chunker and tree_chunks was not separately populated (backward-compatible).
+                    let (chunks, vectors) =
+                        if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
+                            (g.tree_chunks.clone(), g.tree_vectors.clone())
+                        } else {
+                            (g.chunks.clone(), g.vectors.clone())
+                        };
+                    if chunks.len() != vectors.len() {
+                        return Err(arcanum_core::ArcanumError::Pipeline {
+                            stage: "raptor_build".into(),
+                            message: format!(
+                                "chunk/vector count mismatch: {} chunks vs {} vectors — \
+                                 ensure make_tree_embed_stage runs before make_raptor_build_stage",
+                                chunks.len(),
+                                vectors.len()
+                            ),
+                        });
+                    }
+                    let leaves: Vec<(ChunkId, String, Vector)> = chunks
+                        .into_iter()
+                        .zip(vectors)
+                        .map(|(chunk, vec)| (chunk.id, chunk.text, vec))
+                        .collect();
+                    let source_uri = g.doc.as_ref()
+                        .map(|d| d.source_uri.clone())
+                        .unwrap_or_else(|| {
+                            tracing::warn!(stage = "raptor_build", "doc is None — tree nodes will have empty source_uri and cannot be cleaned up by source");
+                            String::new()
+                        });
+                    (leaves, g.collection_id.clone(), source_uri)
+                };
+                let mut builder = RaptorBuilder::new(tree_store, max_depth);
+                if let Some(enricher) = enricher {
+                    builder = builder.with_enricher(enricher);
+                }
+                builder.build(&collection_id.0, &source_uri, leaves).await?;
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
 #[cfg(test)]
 mod test_chunk_source_uri {
     use super::*;
@@ -964,69 +1026,5 @@ mod test_chunk_source_uri {
             .and_then(|v| v.as_bool())
             .unwrap_or(false));
         // No panic means add_version was not called.
-    }
-}
-
-pub fn make_raptor_build_stage(
-    state: Arc<Mutex<IngestionState>>,
-    tree_store: Arc<dyn TreeStore>,
-    max_depth: u32,
-    enricher: Option<Arc<dyn TextEnricher>>,
-) -> PipelineStage {
-    PipelineStage {
-        id: "raptor_build",
-        deps: vec!["tree_embed"],
-        run: Arc::new(move |ctx| {
-            let state = state.clone();
-            let tree_store = tree_store.clone();
-            let enricher = enricher.clone();
-            Box::pin(async move {
-                tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
-                if skip(&ctx) {
-                    return Ok(ctx);
-                }
-                let (leaves, collection_id, source_uri) = {
-                    let g = state.lock().await;
-                    // Use tree-specific chunks and embeddings when available (per-backend chunkers).
-                    // Fall back to primary vector chunks only when tree backend uses the same
-                    // chunker and tree_chunks was not separately populated (backward-compatible).
-                    let (chunks, vectors) =
-                        if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
-                            (g.tree_chunks.clone(), g.tree_vectors.clone())
-                        } else {
-                            (g.chunks.clone(), g.vectors.clone())
-                        };
-                    if chunks.len() != vectors.len() {
-                        return Err(arcanum_core::ArcanumError::Pipeline {
-                            stage: "raptor_build".into(),
-                            message: format!(
-                                "chunk/vector count mismatch: {} chunks vs {} vectors — \
-                                 ensure make_tree_embed_stage runs before make_raptor_build_stage",
-                                chunks.len(),
-                                vectors.len()
-                            ),
-                        });
-                    }
-                    let leaves: Vec<(ChunkId, String, Vector)> = chunks
-                        .into_iter()
-                        .zip(vectors.into_iter())
-                        .map(|(chunk, vec)| (chunk.id, chunk.text, vec))
-                        .collect();
-                    let source_uri = g.doc.as_ref()
-                        .map(|d| d.source_uri.clone())
-                        .unwrap_or_else(|| {
-                            tracing::warn!(stage = "raptor_build", "doc is None — tree nodes will have empty source_uri and cannot be cleaned up by source");
-                            String::new()
-                        });
-                    (leaves, g.collection_id.clone(), source_uri)
-                };
-                let mut builder = RaptorBuilder::new(tree_store, max_depth);
-                if let Some(enricher) = enricher {
-                    builder = builder.with_enricher(enricher);
-                }
-                builder.build(&collection_id.0, &source_uri, leaves).await?;
-                Ok(ctx)
-            })
-        }),
     }
 }

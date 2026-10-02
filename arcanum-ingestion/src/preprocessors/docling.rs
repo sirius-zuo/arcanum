@@ -219,7 +219,7 @@ impl DoclingPreprocessor {
             let md = Self::extract_md_from_str(&body)?;
             let canonical = self.extract_canonical_from_str(&body);
             if let Some(ref canon) = canonical {
-                if let Some(mut w) = self.canonicals.write().ok() {
+                if let Ok(mut w) = self.canonicals.write() {
                     let _ = w.insert(doc.id.clone(), canon.clone());
                 }
             }
@@ -339,7 +339,7 @@ impl DoclingPreprocessor {
         let md = Self::extract_md_from_str(&body)?;
         let canonical = self.extract_canonical_from_str(&body);
         if let Some(ref canon) = canonical {
-            if let Some(mut w) = self.canonicals.write().ok() {
+            if let Ok(mut w) = self.canonicals.write() {
                 let _ = w.insert(doc.id.clone(), canon.clone());
             }
         }
@@ -457,7 +457,7 @@ impl Preprocessor for DoclingPreprocessor {
     }
 
     fn set_canonical(&self, doc_id: &DocumentId, canonical: serde_json::Value) {
-        if let Some(mut w) = self.canonicals.write().ok() {
+        if let Ok(mut w) = self.canonicals.write() {
             let _ = w.insert(doc_id.clone(), canonical);
         }
     }

@@ -5,6 +5,12 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityId(pub Uuid);
 
+impl Default for EntityId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EntityId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

@@ -13,6 +13,12 @@ pub struct CollectionManager {
     collections: RwLock<HashMap<String, CollectionMeta>>,
 }
 
+impl Default for CollectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CollectionManager {
     pub fn new() -> Self {
         Self {

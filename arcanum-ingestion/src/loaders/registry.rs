@@ -9,6 +9,12 @@ pub struct LoaderRegistry {
     loaders: Vec<Arc<dyn DocumentLoader>>,
 }
 
+impl Default for LoaderRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoaderRegistry {
     pub fn new() -> Self {
         Self { loaders: vec![] }

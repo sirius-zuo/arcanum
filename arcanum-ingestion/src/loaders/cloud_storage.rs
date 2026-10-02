@@ -7,6 +7,12 @@ use async_trait::async_trait;
 use tracing::instrument;
 
 pub struct CloudStorageLoader;
+impl Default for CloudStorageLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CloudStorageLoader {
     pub fn new() -> Self {
         Self

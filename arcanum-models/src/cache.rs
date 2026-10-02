@@ -59,7 +59,7 @@ impl EmbeddingCache {
                 Ok(Some(Vector(floats)))
             }
         };
-        let hit = result.as_ref().map_or(false, |v| v.is_some());
+        let hit = result.as_ref().is_ok_and(|v| v.is_some());
         metrics::counter!("arcanum_cache_ops_total", "op" => "embed_get", "result" => if hit { "hit" } else { "miss" }).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "redis", "operation" => "embed_cache_get").record(start.elapsed().as_secs_f64());
         tracing::Span::current().record("cache_hit", hit);

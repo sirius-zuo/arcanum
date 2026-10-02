@@ -26,7 +26,7 @@ impl HybridIndexManager {
     #[instrument(skip(self, chunk_id), fields(collection_id = collection), err)]
     pub async fn delete_chunk(&self, collection: &str, chunk_id: &ChunkId) -> Result<()> {
         self.vector_store
-            .delete(collection, &[chunk_id.clone()])
+            .delete(collection, std::slice::from_ref(chunk_id))
             .await?;
         self.bm25.delete_document(&chunk_id.0.to_string())?;
         Ok(())
@@ -36,7 +36,5 @@ impl HybridIndexManager {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn test_hybrid_manager_types_compile() {
-        assert!(true);
-    }
+    fn test_hybrid_manager_types_compile() {}
 }

@@ -368,8 +368,7 @@ mod tests {
         let err = resolver
             .resolve_tree_node(&TreeNodeId::new())
             .await
-            .err()
-            .expect("must error");
+            .expect_err("must error");
         assert!(err.to_string().contains("tree backend not configured"));
     }
 

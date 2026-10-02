@@ -17,6 +17,12 @@ pub struct IngestionSourceService {
     sources: Arc<RwLock<Vec<IngestionSource>>>,
 }
 
+impl Default for IngestionSourceService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IngestionSourceService {
     pub fn new() -> Self {
         Self {

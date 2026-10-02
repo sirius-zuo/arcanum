@@ -6,6 +6,12 @@ use arcanum_core::{
 use async_trait::async_trait;
 
 pub struct ConnectorLoader;
+impl Default for ConnectorLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnectorLoader {
     pub fn new() -> Self {
         Self

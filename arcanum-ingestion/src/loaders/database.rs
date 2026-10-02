@@ -7,6 +7,12 @@ use async_trait::async_trait;
 use tracing::instrument;
 
 pub struct DatabaseLoader;
+impl Default for DatabaseLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DatabaseLoader {
     pub fn new() -> Self {
         Self

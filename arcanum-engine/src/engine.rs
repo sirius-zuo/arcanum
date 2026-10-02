@@ -142,6 +142,7 @@ fn compose_embedder(
     )))
 }
 
+#[derive(Default)]
 pub struct ArcanumEngineBuilder {
     config: ArcanumConfig,
     auth_secret: Option<String>,
@@ -166,36 +167,6 @@ pub struct ArcanumEngineBuilder {
     reranker: Option<Arc<dyn Reranker>>,
     dedup_threshold: Option<f32>,
     additional_embedders: Vec<Arc<dyn Embedder>>,
-}
-
-impl Default for ArcanumEngineBuilder {
-    fn default() -> Self {
-        Self {
-            config: ArcanumConfig::default(),
-            auth_secret: None,
-            vector_store: None,
-            embedder: None,
-            enricher: None,
-            named_enrichers: HashMap::new(),
-            graph_store: None,
-            tree_store: None,
-            secret_store: None,
-            bm25_index: None,
-            version_store: None,
-            snapshot_store: None,
-            chunk_metadata_store: None,
-            operation_store: None,
-            payload_store: None,
-            evidence: None,
-            gc_worker: None,
-            experiment_store: None,
-            preprocessor_overrides: Vec::new(),
-            query_transformer: None,
-            reranker: None,
-            dedup_threshold: None,
-            additional_embedders: Vec::new(),
-        }
-    }
 }
 
 impl ArcanumEngineBuilder {
@@ -686,7 +657,7 @@ impl ArcanumEngineBuilder {
                     Some(payload_store.clone()),
                 )
                 .with_resolver(deps_resolver.clone());
-                tokio::spawn(async move { while let Some(_) = worker.process_next().await {} });
+                tokio::spawn(async move { while worker.process_next().await.is_some() {} });
             }
         } else {
             tracing::warn!(
@@ -1012,8 +983,7 @@ mod tests {
             .enricher(Arc::new(TaggingEnricher("default")))
             .build()
             .await
-            .err()
-            .expect("must fail");
+            .expect_err("must fail");
         assert!(
             err.to_string().contains("no-such-provider"),
             "error should name the unknown provider: {}",
@@ -1550,8 +1520,7 @@ mod tests {
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
-            .err()
-            .expect("build must fail on mismatched embedder dimensions");
+            .expect_err("build must fail on mismatched embedder dimensions");
         let msg = err.to_string();
         assert!(
             msg.contains("dimension"),
@@ -1587,8 +1556,9 @@ mod tests {
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .build()
             .await
-            .err()
-            .expect("build must fail when additional embedders are set but no primary embedder is");
+            .expect_err(
+                "build must fail when additional embedders are set but no primary embedder is",
+            );
         assert!(
             err.to_string()
                 .contains("additional embedders require a primary"),

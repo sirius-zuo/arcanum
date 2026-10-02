@@ -454,7 +454,7 @@ impl GraphStore for Neo4jStore {
             let canonical_id: Option<String> = row
                 .get("canonical_id")
                 .ok()
-                .and_then(|s: String| if s.is_empty() { None } else { Some(s) });
+                .filter(|s: &String| !s.is_empty());
             let source_uri: String = row
                 .get("source_uri")
                 .map_err(|e| ArcanumError::Storage(format!("get source_uri: {}", e)))?;

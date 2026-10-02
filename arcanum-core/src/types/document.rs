@@ -4,6 +4,12 @@ use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkId(pub Uuid);
+impl Default for ChunkId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChunkId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
@@ -12,6 +18,12 @@ impl ChunkId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DocumentId(pub Uuid);
+impl Default for DocumentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())

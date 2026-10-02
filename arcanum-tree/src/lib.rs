@@ -9,6 +9,12 @@ pub struct InMemoryTreeStore {
     created: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
+impl Default for InMemoryTreeStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryTreeStore {
     pub fn new() -> Self {
         Self {

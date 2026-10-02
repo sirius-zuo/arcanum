@@ -75,7 +75,7 @@ mod tests {
     use super::*;
     use arcanum_core::{
         traits::TextEnricher,
-        types::{EnrichRequest, EnrichedText, Query},
+        types::{EnrichRequest, EnrichedText},
     };
     use async_trait::async_trait;
 

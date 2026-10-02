@@ -43,7 +43,7 @@ async fn test_mode_c_runs_all_strategies() {
         .add_retriever(Arc::new(StubRetriever(RetrievalStrategy::Vector)))
         .add_retriever(Arc::new(StubRetriever(RetrievalStrategy::Bm25)));
     let results = orch.retrieve(&Query::new("test")).await.unwrap();
-    assert!(results.chunks.len() >= 1);
+    assert!(!results.chunks.is_empty());
 }
 
 /// Returns one chunk per retrieve() call, with a distinct document_id derived

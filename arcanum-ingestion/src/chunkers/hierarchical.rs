@@ -5,6 +5,12 @@ use tracing::instrument;
 
 pub struct HierarchicalChunker;
 
+impl Default for HierarchicalChunker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HierarchicalChunker {
     pub fn new() -> Self {
         Self
