@@ -4,9 +4,10 @@
 
 `arcanum-retrieval` turns a `Query` into a `RetrievalResult`.
 `orchestrator.rs`'s `RetrievalOrchestrator::retrieve` runs an optional
-query-transform fan-out, a configurable subset of five strategy
+query-transform fan-out, a configurable subset of four independent strategy
 `Retriever` implementations (`VectorRetriever`, `Bm25Retriever`,
-`GraphRetriever`, `RaptorRetriever`, `ColBertRetriever`, all in `strategies/`)
+`GraphRetriever`, `RaptorRetriever`, all in `strategies/`) plus
+`ColBertRetriever`, a re-rank variant of Vector,
 in parallel per query, merges hits with `fusion.rs`'s `RrfFusion`, then
 pipes the result through `reranker.rs`'s `Reranker`, an optional
 `processor.rs::Deduplicator` pass, and always `processor.rs
@@ -213,7 +214,10 @@ opt-in, defaulting to pre-2.6 behavior.)
    real `InMemoryGraphStore` and `GraphQueryPlanner`), reachable only
    because both crates sit in `[dev-dependencies]`.
 
-**3. Which of the five strategies the engine actually wires**
+**3. Which of the strategies the engine actually wires**
+(Backend independence: BM25, Graph and RAPTOR hydrate hits from the chunk
+registry, and `ArcanumEngineBuilder::build` returns an error when
+lexical, graph or tree is enabled without a chunk registry.)
 1. `ArcanumEngineBuilder::build` adds `VectorRetriever` and
    `ColBertRetriever` in the same `if let (Some(vector_store),
    Some(embedder))` guard (`ColBertRetriever::new` needs exactly those two
