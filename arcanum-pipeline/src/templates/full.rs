@@ -83,6 +83,7 @@ pub fn builder() -> TemplateBuilder {
                 state.clone(),
                 ext.clone(),
                 gs.clone(),
+                deps.chunk_metadata.clone(),
             ));
         }
 
@@ -97,6 +98,7 @@ pub fn builder() -> TemplateBuilder {
                 ts.clone(),
                 DEFAULT_RAPTOR_DEPTH,
                 deps.context_enricher.clone(),
+                deps.chunk_metadata.clone(),
             ));
         }
 

@@ -194,3 +194,198 @@ async fn registry_write_failure_fails_vector_write() {
     let state = new_state();
     assert!(run_standard(&deps, &state).await.is_err());
 }
+
+// ---- graph and tree lines register their own chunks ----
+
+struct OneEntityEnricher;
+#[async_trait]
+impl arcanum_core::traits::TextEnricher for OneEntityEnricher {
+    async fn enrich(&self, req: EnrichRequest) -> arcanum_core::Result<EnrichedText> {
+        match req.intent {
+            EnrichIntent::ExtractEntities => Ok(EnrichedText(
+                serde_json::json!({
+                    "entities": [{"name": "Thing", "entity_type": "ORG"}],
+                    "relations": []
+                })
+                .to_string(),
+            )),
+            _ => Ok(EnrichedText("summary".into())),
+        }
+    }
+}
+
+struct CapturingGraph {
+    entities: StdMutex<Vec<Entity>>,
+    fail: bool,
+}
+#[async_trait]
+impl arcanum_core::traits::GraphStore for CapturingGraph {
+    async fn upsert_entities(&self, _: &str, e: Vec<Entity>) -> arcanum_core::Result<()> {
+        if self.fail {
+            return Err(ArcanumError::Storage("graph write failed".into()));
+        }
+        self.entities.lock().unwrap().extend(e);
+        Ok(())
+    }
+    async fn upsert_relations(&self, _: &str, _: Vec<Relation>) -> arcanum_core::Result<()> {
+        Ok(())
+    }
+    async fn query(
+        &self,
+        _: &str,
+        _: &arcanum_core::traits::GraphQuery,
+    ) -> arcanum_core::Result<Vec<Entity>> {
+        Ok(vec![])
+    }
+    async fn get_relations(&self, _: &EntityId) -> arcanum_core::Result<Vec<Relation>> {
+        Ok(vec![])
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> {
+        Ok(())
+    }
+}
+
+struct EmptyChunker;
+#[async_trait]
+impl Chunker for EmptyChunker {
+    async fn chunk(&self, _: &RawDocument) -> arcanum_core::Result<Vec<Chunk>> {
+        Ok(vec![])
+    }
+}
+
+/// Full-template deps with a graph store, tree store and registry; `tree_chunker` overrides
+/// the tree line's chunker.
+fn full_deps(
+    graph: Arc<CapturingGraph>,
+    tree: Arc<arcanum_tree::InMemoryTreeStore>,
+    registry: Arc<InMemoryChunkMetadataStore>,
+    tree_chunker: Option<Arc<dyn Chunker>>,
+) -> Arc<PipelineDeps> {
+    let store = Arc::new(CapturingStore {
+        captured: StdMutex::new(vec![]),
+        fail: false,
+    });
+    let mut d = Arc::try_unwrap(deps(store, Some(registry as Arc<dyn ChunkMetadataStore>)))
+        .ok()
+        .unwrap();
+    d.entity_extractor = Some(Arc::new(OneEntityEnricher));
+    d.context_enricher = Some(Arc::new(OneEntityEnricher));
+    d.graph_store = Some(graph);
+    d.tree_store = Some(tree);
+    if let Some(c) = tree_chunker {
+        d.chunkers.tree = c;
+    }
+    Arc::new(d)
+}
+
+async fn run_full(
+    deps: &Arc<PipelineDeps>,
+    state: &Arc<Mutex<IngestionState>>,
+) -> arcanum_core::Result<()> {
+    let dag = ArcanumPipelineRegistry::default()
+        .build("full", state.clone(), deps)
+        .unwrap();
+    DagExecutor::execute(&dag, Default::default())
+        .await
+        .map(|_| ())
+}
+
+async fn leaf_ids(tree: &arcanum_tree::InMemoryTreeStore) -> Vec<ChunkId> {
+    use arcanum_core::traits::TreeStore;
+    tree.get_level("col1", 0)
+        .await
+        .unwrap()
+        .into_iter()
+        .flat_map(|n| n.leaf_chunk_ids)
+        .collect()
+}
+
+#[tokio::test]
+async fn graph_line_registers_graph_chunks() {
+    let graph = Arc::new(CapturingGraph {
+        entities: StdMutex::new(vec![]),
+        fail: false,
+    });
+    let registry = Arc::new(InMemoryChunkMetadataStore::new());
+    let deps = full_deps(
+        graph.clone(),
+        Arc::new(arcanum_tree::InMemoryTreeStore::new()),
+        registry.clone(),
+        None,
+    );
+    run_full(&deps, &new_state()).await.unwrap();
+
+    let entities = graph.entities.lock().unwrap().clone();
+    assert!(!entities.is_empty());
+    for id in entities.iter().flat_map(|e| e.source_chunks.iter()) {
+        let row = registry.get(id).await.unwrap().expect("graph chunk row");
+        assert_eq!(row.backend, ChunkBackend::Graph);
+    }
+}
+
+#[tokio::test]
+async fn graph_write_failure_leaves_no_graph_rows() {
+    let graph = Arc::new(CapturingGraph {
+        entities: StdMutex::new(vec![]),
+        fail: true,
+    });
+    let registry = Arc::new(InMemoryChunkMetadataStore::new());
+    let deps = full_deps(
+        graph,
+        Arc::new(arcanum_tree::InMemoryTreeStore::new()),
+        registry.clone(),
+        None,
+    );
+    let _ = run_full(&deps, &new_state()).await;
+    assert!(registry
+        .get_all()
+        .await
+        .iter()
+        .all(|r| r.backend != ChunkBackend::Graph));
+}
+
+#[tokio::test]
+async fn tree_line_registers_tree_chunks() {
+    let tree = Arc::new(arcanum_tree::InMemoryTreeStore::new());
+    let registry = Arc::new(InMemoryChunkMetadataStore::new());
+    let deps = full_deps(
+        Arc::new(CapturingGraph {
+            entities: StdMutex::new(vec![]),
+            fail: false,
+        }),
+        tree.clone(),
+        registry.clone(),
+        None,
+    );
+    run_full(&deps, &new_state()).await.unwrap();
+
+    let ids = leaf_ids(&tree).await;
+    assert!(!ids.is_empty());
+    for id in ids {
+        let row = registry.get(&id).await.unwrap().expect("tree chunk row");
+        assert_eq!(row.backend, ChunkBackend::Tree);
+    }
+}
+
+#[tokio::test]
+async fn raptor_build_skips_when_tree_chunks_empty() {
+    let tree = Arc::new(arcanum_tree::InMemoryTreeStore::new());
+    let registry = Arc::new(InMemoryChunkMetadataStore::new());
+    let deps = full_deps(
+        Arc::new(CapturingGraph {
+            entities: StdMutex::new(vec![]),
+            fail: false,
+        }),
+        tree.clone(),
+        registry.clone(),
+        Some(Arc::new(EmptyChunker)),
+    );
+    run_full(&deps, &new_state()).await.unwrap();
+
+    assert!(leaf_ids(&tree).await.is_empty());
+    assert!(registry
+        .get_all()
+        .await
+        .iter()
+        .all(|r| r.backend != ChunkBackend::Tree));
+}

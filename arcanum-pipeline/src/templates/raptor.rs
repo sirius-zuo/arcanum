@@ -79,6 +79,7 @@ pub fn builder() -> TemplateBuilder {
                         tree_store.clone(),
                         DEFAULT_RAPTOR_DEPTH,
                         deps.context_enricher.clone(),
+                        deps.chunk_metadata.clone(),
                     )),
                 state,
                 deps,

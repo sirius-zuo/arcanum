@@ -640,14 +640,16 @@ pub fn make_entity_extract_stage(
     state: Arc<Mutex<IngestionState>>,
     enricher: Arc<dyn TextEnricher>,
     graph_store: Arc<dyn GraphStore>,
+    chunk_metadata: Option<Arc<dyn ChunkMetadataStore>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "entity_extract",
-        deps: vec!["graph_chunk"],
+        deps: vec!["graph_chunk", "snapshot"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let enricher = enricher.clone();
             let gs = graph_store.clone();
+            let cms = chunk_metadata.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "entity_extract", "executing entity_extract stage");
                 if skip(&ctx) {
@@ -674,8 +676,26 @@ pub fn make_entity_extract_stage(
                     all_entities.extend(entities);
                     all_relations.extend(relations);
                 }
+                // Build records first (validates offsets) but persist them only after both graph
+                // writes succeed, so a failed graph write leaves no registry rows.
+                let records = if cms.is_some() {
+                    let (doc_id, version_num, doc_text) =
+                        registration_inputs(&state, "entity_extract").await?;
+                    Some(build_chunk_records(
+                        &chunks,
+                        ChunkBackend::Graph,
+                        &doc_id,
+                        version_num,
+                        &doc_text,
+                    )?)
+                } else {
+                    None
+                };
                 gs.upsert_entities(&collection_id.0, all_entities).await?;
                 gs.upsert_relations(&collection_id.0, all_relations).await?;
+                if let (Some(cms), Some(records)) = (&cms, records) {
+                    register_chunks(cms.as_ref(), &records).await?;
+                }
                 Ok(ctx)
             })
         }),
@@ -904,30 +924,28 @@ pub fn make_raptor_build_stage(
     tree_store: Arc<dyn TreeStore>,
     max_depth: u32,
     enricher: Option<Arc<dyn TextEnricher>>,
+    chunk_metadata: Option<Arc<dyn ChunkMetadataStore>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "raptor_build",
-        deps: vec!["tree_embed"],
+        deps: vec!["tree_embed", "snapshot"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let tree_store = tree_store.clone();
             let enricher = enricher.clone();
+            let cms = chunk_metadata.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
                 if skip(&ctx) {
                     return Ok(ctx);
                 }
-                let (leaves, collection_id, source_uri) = {
+                let (tree_chunks, leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
-                    // Use tree-specific chunks and embeddings when available (per-backend chunkers).
-                    // Fall back to primary vector chunks only when tree backend uses the same
-                    // chunker and tree_chunks was not separately populated (backward-compatible).
-                    let (chunks, vectors) =
-                        if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
-                            (g.tree_chunks.clone(), g.tree_vectors.clone())
-                        } else {
-                            (g.chunks.clone(), g.vectors.clone())
-                        };
+                    // The tree line is independent: it uses only its own chunks and vectors.
+                    if g.tree_chunks.is_empty() {
+                        return Ok(ctx);
+                    }
+                    let (chunks, vectors) = (g.tree_chunks.clone(), g.tree_vectors.clone());
                     if chunks.len() != vectors.len() {
                         return Err(arcanum_core::ArcanumError::Pipeline {
                             stage: "raptor_build".into(),
@@ -940,7 +958,8 @@ pub fn make_raptor_build_stage(
                         });
                     }
                     let leaves: Vec<(ChunkId, String, Vector)> = chunks
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .zip(vectors)
                         .map(|(chunk, vec)| (chunk.id, chunk.text, vec))
                         .collect();
@@ -950,13 +969,29 @@ pub fn make_raptor_build_stage(
                             tracing::warn!(stage = "raptor_build", "doc is None — tree nodes will have empty source_uri and cannot be cleaned up by source");
                             String::new()
                         });
-                    (leaves, g.collection_id.clone(), source_uri)
+                    (chunks, leaves, g.collection_id.clone(), source_uri)
                 };
                 let mut builder = RaptorBuilder::new(tree_store, max_depth);
                 if let Some(enricher) = enricher {
                     builder = builder.with_enricher(enricher);
                 }
+                let records = if cms.is_some() {
+                    let (doc_id, version_num, doc_text) =
+                        registration_inputs(&state, "raptor_build").await?;
+                    Some(build_chunk_records(
+                        &tree_chunks,
+                        ChunkBackend::Tree,
+                        &doc_id,
+                        version_num,
+                        &doc_text,
+                    )?)
+                } else {
+                    None
+                };
                 builder.build(&collection_id.0, &source_uri, leaves).await?;
+                if let (Some(cms), Some(records)) = (&cms, records) {
+                    register_chunks(cms.as_ref(), &records).await?;
+                }
                 Ok(ctx)
             })
         }),

@@ -82,7 +82,6 @@ async fn raptor_leaf_results_carry_provenance_and_offsets() {
 }
 
 #[tokio::test]
-#[ignore = "fixed by Task 8"]
 async fn resolve_tree_node_reaches_tree_chunks() {
     let fx = ingest_fixture().await;
     let resolver = DefaultEvidenceResolver::new(

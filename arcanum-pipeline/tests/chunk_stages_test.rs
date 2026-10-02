@@ -192,7 +192,7 @@ async fn entity_extract_is_noop_when_graph_chunks_empty() {
 
     let upsert_count = Arc::new(AtomicUsize::new(0));
     let graph_store = Arc::new(CountingGraphStore(upsert_count.clone()));
-    let stage = make_entity_extract_stage(state.clone(), Arc::new(NoopEnricher), graph_store);
+    let stage = make_entity_extract_stage(state.clone(), Arc::new(NoopEnricher), graph_store, None);
     (stage.run)(std::collections::HashMap::new()).await.unwrap();
 
     assert_eq!(
@@ -401,7 +401,7 @@ async fn raptor_build_uses_tree_vectors_not_vector_embeddings() {
         .unwrap();
 
     // Then run raptor_build_stage
-    let raptor_stage = make_raptor_build_stage(state.clone(), tree_store, 1, None);
+    let raptor_stage = make_raptor_build_stage(state.clone(), tree_store, 1, None, None);
     (raptor_stage.run)(std::collections::HashMap::new())
         .await
         .unwrap();

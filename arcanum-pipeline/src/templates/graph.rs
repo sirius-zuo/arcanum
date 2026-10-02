@@ -56,6 +56,7 @@ pub fn builder() -> TemplateBuilder {
                         state.clone(),
                         extractor.clone(),
                         graph_store.clone(),
+                        deps.chunk_metadata.clone(),
                     ))
                     .add_stage(make_embed_stage(
                         state.clone(),
