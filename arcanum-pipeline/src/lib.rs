@@ -2,6 +2,7 @@ pub mod dag;
 pub mod deps;
 pub mod executor;
 pub mod ingestion_state;
+mod registration;
 pub mod registry;
 pub mod stage_failure;
 pub mod stages;

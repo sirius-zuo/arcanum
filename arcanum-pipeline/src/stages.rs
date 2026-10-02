@@ -1,14 +1,12 @@
 use crate::{
     dag::{PipelineStage, StageContext, CTX_FORCE, CTX_REPLACE, CTX_SKIP},
+    registration::{build_chunk_records, register_chunks, registration_inputs},
     IngestionState,
 };
 use arcanum_core::{
     traits::{ChunkMetadataStore, DocumentVersionStore, SnapshotStore, *},
     types::*,
-    types::{
-        ChunkBackend, ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus,
-        VersioningPolicy,
-    },
+    types::{ChunkBackend, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
     ArcanumError,
 };
 use arcanum_ingestion::{ContextEnricher, EntityExtractor, LoaderRegistry, MimeDetector};
@@ -309,6 +307,49 @@ pub fn make_preprocess_stage(
     }
 }
 
+/// Stamp the stable snapshot identity onto freshly chunked output: the document id, the
+/// collection id and provenance. Loaders assign a fresh `DocumentId` on every ingest, so the
+/// chunkers' own `document_id` is not stable; the snapshot's is. Fails the stage if the
+/// snapshot has not populated its fields.
+async fn stamp_snapshot_identity(
+    state: &Mutex<IngestionState>,
+    doc: &RawDocument,
+    chunks: &mut [Chunk],
+    stage: &str,
+) -> Result<(), ArcanumError> {
+    let (collection_id, document_id, version_num, snapshot_uri, canonical_uri) = {
+        let g = state.lock().await;
+        (
+            g.collection_id.clone(),
+            g.snapshot_document_id.clone(),
+            g.snapshot_version_num,
+            g.snapshot_uri.clone(),
+            g.canonical_uri.clone(),
+        )
+    };
+    let missing = |what: &str| ArcanumError::Pipeline {
+        stage: stage.into(),
+        message: format!("{what} not set"),
+    };
+    let document_id = document_id.ok_or_else(|| missing("snapshot_document_id"))?;
+    let version_num = version_num.ok_or_else(|| missing("snapshot_version_num"))?;
+    let snapshot_uri = snapshot_uri.ok_or_else(|| missing("snapshot_uri"))?;
+    for c in chunks {
+        c.collection_id = collection_id.clone();
+        c.document_id = document_id.clone();
+        c.provenance = ChunkProvenance {
+            document_version: version_num,
+            source_uri: doc.source_uri.clone(),
+            snapshot_uri: snapshot_uri.clone(),
+            canonical_uri: canonical_uri.clone(),
+            page: None,
+            section: None,
+            block_ids: vec![],
+        };
+    }
+    Ok(())
+}
+
 pub fn make_vector_chunk_stage(
     state: Arc<Mutex<IngestionState>>,
     chunker: Arc<dyn Chunker>,
@@ -316,7 +357,7 @@ pub fn make_vector_chunk_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_chunk",
-        deps: vec!["preprocess"],
+        deps: vec!["preprocess", "snapshot"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let chunker = chunker.clone();
@@ -326,40 +367,18 @@ pub fn make_vector_chunk_stage(
                 if skip(&ctx) {
                     return Ok(ctx);
                 }
-                let (doc, collection_id) = {
-                    let g = state.lock().await;
-                    (
-                        g.doc.clone().ok_or_else(|| ArcanumError::Pipeline {
-                            stage: "vector_chunk".into(),
-                            message: "no doc".into(),
-                        })?,
-                        g.collection_id.clone(),
-                    )
-                };
+                let doc = state
+                    .lock()
+                    .await
+                    .doc
+                    .clone()
+                    .ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "vector_chunk".into(),
+                        message: "no doc".into(),
+                    })?;
                 // Primary chunking
                 let mut chunks = chunker.chunk(&doc).await?;
-                let source_uri = doc.source_uri.clone();
-                let (snapshot_version_num, snapshot_uri, canonical_uri) = {
-                    let g = state.lock().await;
-                    (
-                        g.snapshot_version_num,
-                        g.snapshot_uri.clone(),
-                        g.canonical_uri.clone(),
-                    )
-                };
-                for c in &mut chunks {
-                    c.collection_id = collection_id.clone();
-                    // Attach ChunkProvenance with document/version/source tracking.
-                    c.provenance = arcanum_core::types::ChunkProvenance {
-                        document_version: snapshot_version_num.unwrap_or(0),
-                        source_uri: source_uri.clone(),
-                        snapshot_uri: snapshot_uri.clone().unwrap_or_default(),
-                        canonical_uri: canonical_uri.clone(),
-                        page: None,
-                        section: None,
-                        block_ids: vec![],
-                    };
-                }
+                stamp_snapshot_identity(&state, &doc, &mut chunks, "vector_chunk").await?;
                 state.lock().await.chunks = chunks;
 
                 // Shadow write — best-effort, detached task, failure does not fail primary.
@@ -428,7 +447,7 @@ pub fn make_graph_chunk_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "graph_chunk",
-        deps: vec!["preprocess"],
+        deps: vec!["preprocess", "snapshot"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let chunker = chunker.clone();
@@ -437,38 +456,17 @@ pub fn make_graph_chunk_stage(
                 if skip(&ctx) {
                     return Ok(ctx);
                 }
-                let (doc, collection_id) = {
-                    let g = state.lock().await;
-                    (
-                        g.doc.clone().ok_or_else(|| ArcanumError::Pipeline {
-                            stage: "graph_chunk".into(),
-                            message: "no doc".into(),
-                        })?,
-                        g.collection_id.clone(),
-                    )
-                };
+                let doc = state
+                    .lock()
+                    .await
+                    .doc
+                    .clone()
+                    .ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "graph_chunk".into(),
+                        message: "no doc".into(),
+                    })?;
                 let mut chunks = chunker.chunk(&doc).await?;
-                let source_uri = doc.source_uri.clone();
-                let (snapshot_version_num, snapshot_uri, canonical_uri) = {
-                    let g = state.lock().await;
-                    (
-                        g.snapshot_version_num,
-                        g.snapshot_uri.clone(),
-                        g.canonical_uri.clone(),
-                    )
-                };
-                for c in &mut chunks {
-                    c.collection_id = collection_id.clone();
-                    c.provenance = arcanum_core::types::ChunkProvenance {
-                        document_version: snapshot_version_num.unwrap_or(0),
-                        source_uri: source_uri.clone(),
-                        snapshot_uri: snapshot_uri.clone().unwrap_or_default(),
-                        canonical_uri: canonical_uri.clone(),
-                        page: None,
-                        section: None,
-                        block_ids: vec![],
-                    };
-                }
+                stamp_snapshot_identity(&state, &doc, &mut chunks, "graph_chunk").await?;
                 state.lock().await.graph_chunks = chunks;
                 Ok(ctx)
             })
@@ -482,7 +480,7 @@ pub fn make_tree_chunk_stage(
 ) -> PipelineStage {
     PipelineStage {
         id: "tree_chunk",
-        deps: vec!["preprocess"],
+        deps: vec!["preprocess", "snapshot"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
             let chunker = chunker.clone();
@@ -491,38 +489,17 @@ pub fn make_tree_chunk_stage(
                 if skip(&ctx) {
                     return Ok(ctx);
                 }
-                let (doc, collection_id) = {
-                    let g = state.lock().await;
-                    (
-                        g.doc.clone().ok_or_else(|| ArcanumError::Pipeline {
-                            stage: "tree_chunk".into(),
-                            message: "no doc".into(),
-                        })?,
-                        g.collection_id.clone(),
-                    )
-                };
+                let doc = state
+                    .lock()
+                    .await
+                    .doc
+                    .clone()
+                    .ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "tree_chunk".into(),
+                        message: "no doc".into(),
+                    })?;
                 let mut chunks = chunker.chunk(&doc).await?;
-                let source_uri = doc.source_uri.clone();
-                let (snapshot_version_num, snapshot_uri, canonical_uri) = {
-                    let g = state.lock().await;
-                    (
-                        g.snapshot_version_num,
-                        g.snapshot_uri.clone(),
-                        g.canonical_uri.clone(),
-                    )
-                };
-                for c in &mut chunks {
-                    c.collection_id = collection_id.clone();
-                    c.provenance = arcanum_core::types::ChunkProvenance {
-                        document_version: snapshot_version_num.unwrap_or(0),
-                        source_uri: source_uri.clone(),
-                        snapshot_uri: snapshot_uri.clone().unwrap_or_default(),
-                        canonical_uri: canonical_uri.clone(),
-                        page: None,
-                        section: None,
-                        block_ids: vec![],
-                    };
-                }
+                stamp_snapshot_identity(&state, &doc, &mut chunks, "tree_chunk").await?;
                 state.lock().await.tree_chunks = chunks;
                 Ok(ctx)
             })
@@ -747,15 +724,26 @@ pub fn make_vector_write_stage(
                         "circuit open: vector store unavailable".into(),
                     ));
                 }
-                let (chunks, vectors, collection_id, doc_id, version_num) = {
+                let (chunks, vectors, collection_id) = {
                     let g = state.lock().await;
-                    (
-                        g.chunks.clone(),
-                        g.vectors.clone(),
-                        g.collection_id.clone(),
-                        g.snapshot_document_id.clone(),
-                        g.snapshot_version_num,
-                    )
+                    (g.chunks.clone(), g.vectors.clone(), g.collection_id.clone())
+                };
+
+                // Build registry records before the vector write consumes the chunks, but
+                // persist them only after it succeeds: a failed vector write must not leave
+                // orphaned registry rows.
+                let metadata_records = if cms.is_some() {
+                    let (doc_id, version_num, doc_text) =
+                        registration_inputs(&state, "vector_write").await?;
+                    Some(build_chunk_records(
+                        &chunks,
+                        ChunkBackend::Vector,
+                        &doc_id,
+                        version_num,
+                        &doc_text,
+                    )?)
+                } else {
+                    None
                 };
 
                 let indexed: Vec<IndexedChunk> = chunks
@@ -768,45 +756,6 @@ pub fn make_vector_write_stage(
                         store_id: String::new(),
                     })
                     .collect();
-
-                // Build chunk metadata records before the vector write (which consumes
-                // `indexed`), but only persist them after the vector write succeeds — a
-                // failed vector write must not leave orphaned metadata rows behind.
-                let metadata_records: Option<Vec<ChunkMetadataRecord>> = if cms.is_some() {
-                    match (&doc_id, version_num) {
-                        (Some(doc_id), Some(version_num)) => Some(
-                            indexed
-                                .iter()
-                                .map(|chunk| ChunkMetadataRecord {
-                                    chunk_id: chunk.chunk.id.clone(),
-                                    document_id: doc_id.clone(),
-                                    collection_id: collection_id.0.clone(),
-                                    version_num,
-                                    backend: ChunkBackend::Vector,
-                                    text: chunk.chunk.text.clone(),
-                                    chunk_index: chunk.chunk.position.index,
-                                    source_uri: chunk.chunk.provenance.source_uri.clone(),
-                                    snapshot_uri: chunk.chunk.provenance.snapshot_uri.clone(),
-                                    canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),
-                                    page: chunk.chunk.provenance.page,
-                                    section: chunk.chunk.provenance.section.clone(),
-                                    block_ids: chunk.chunk.provenance.block_ids.clone(),
-                                    offset_start: chunk.chunk.position.start,
-                                    offset_end: chunk.chunk.position.end,
-                                    ingested_at: chrono::Utc::now(),
-                                })
-                                .collect(),
-                        ),
-                        _ => {
-                            tracing::warn!(
-                                "snapshot_document_id/version_num not set — skipping chunk metadata write"
-                            );
-                            None
-                        }
-                    }
-                } else {
-                    None
-                };
 
                 // BM25 wants (chunk_id, text) pairs — capture before `indexed` moves into
                 // vs.upsert below.
@@ -821,11 +770,7 @@ pub fn make_vector_write_stage(
                     Ok(()) => {
                         cb.record_success();
                         if let (Some(cms), Some(records)) = (&cms, metadata_records) {
-                            for meta in &records {
-                                if let Err(e) = cms.put(meta).await {
-                                    tracing::warn!(err = ?e, "chunk metadata write failed — continuing");
-                                }
-                            }
+                            register_chunks(cms.as_ref(), &records).await?;
                         }
                         // Best-effort: BM25 is a supplementary lexical index, not the
                         // source of truth — a write failure here must not fail ingestion.
@@ -976,9 +921,9 @@ mod test_chunk_source_uri {
             tree_vectors: vec![],
             raw_content: Some(doc.content.clone()),
             canonical_json: None,
-            snapshot_document_id: None,
-            snapshot_version_num: None,
-            snapshot_uri: None,
+            snapshot_document_id: Some(DocumentId::new()),
+            snapshot_version_num: Some(1),
+            snapshot_uri: Some("snap://test".into()),
             canonical_uri: None,
             pending_version: None,
         }));
