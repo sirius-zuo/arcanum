@@ -66,6 +66,8 @@ pub struct ArcanumEngine {
     pub version_store: Arc<dyn DocumentVersionStore>,
     pub snapshot_store: Arc<dyn SnapshotStore>,
     pub chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    /// Lexical (BM25) index, exposed so source removal can delete its entries.
+    pub bm25_index: Option<Arc<Bm25Index>>,
     pub evidence: Option<Arc<dyn EvidenceResolver>>,
     pub gc_worker: Option<Arc<dyn GcWorker>>,
 }
@@ -875,6 +877,7 @@ impl ArcanumEngineBuilder {
             version_store: version_store.clone(),
             snapshot_store,
             chunk_metadata_store: chunk_metadata_store.clone(),
+            bm25_index: self.bm25_index.clone(),
             evidence: self.evidence.clone().or_else(|| {
                 chunk_metadata_store.as_ref().map(|cms| {
                     Arc::new(DefaultEvidenceResolver::new(

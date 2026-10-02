@@ -554,6 +554,68 @@ async fn source_removal_is_idempotent_by_stable_uri() {
 }
 
 #[tokio::test]
+async fn source_removal_clears_lexical_index_and_registry() {
+    use arcanum_core::traits::{ChunkMetadataStore, InMemoryChunkMetadataStore};
+    use arcanum_core::types::*;
+
+    let dir = tempfile::tempdir().unwrap();
+    let bm25 = Arc::new(arcanum_vector::Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
+    let registry = Arc::new(InMemoryChunkMetadataStore::new());
+    let engine = ArcanumEngine::builder()
+        .auth_secret("a-32-char-secret-for-testing-ok!")
+        .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+        .bm25_index(bm25.clone())
+        .chunk_metadata_store(registry.clone())
+        .build()
+        .await
+        .expect("engine must build");
+    let token = engine.auth.generate_admin_key("tester");
+
+    let uri = "s3://bucket/docs/gone.md";
+    let chunk_id = ChunkId::new();
+    bm25.index_chunks("col1", uri, &[(chunk_id.clone(), "zebra stripes".into())])
+        .unwrap();
+    registry
+        .put(&ChunkMetadataRecord {
+            chunk_id: chunk_id.clone(),
+            document_id: DocumentId::new(),
+            collection_id: "col1".into(),
+            version_num: 1,
+            backend: ChunkBackend::Lexical,
+            text: "zebra stripes".into(),
+            chunk_index: 0,
+            source_uri: uri.into(),
+            snapshot_uri: String::new(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 0,
+            offset_end: 13,
+            ingested_at: chrono::Utc::now(),
+        })
+        .await
+        .unwrap();
+    assert_eq!(bm25.search("col1", "zebra", 5).unwrap().len(), 1);
+
+    let resp = build_app(Some(engine))
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/collections/col1/sources?source_uri={uri}"))
+                .header("Authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    assert!(bm25.search("col1", "zebra", 5).unwrap().is_empty());
+    assert!(registry.get(&chunk_id).await.unwrap().is_none());
+}
+
+#[tokio::test]
 async fn new_routes_require_auth() {
     let app = build_app(None);
 

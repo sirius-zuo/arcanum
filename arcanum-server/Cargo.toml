@@ -29,6 +29,8 @@ tower  = { version = "0.4", features = ["util"] }
 http-body-util = "0.1"
 hyper  = { version = "1", features = ["full"] }
 serial_test = "3"
+arcanum-vector = { path = "../arcanum-vector" }
+tempfile = "3"
 
 [[test]]
 name = "smoke_test"
