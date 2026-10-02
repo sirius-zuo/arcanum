@@ -98,6 +98,7 @@ fn deps(
         preprocessors: Some(Arc::new(PassThrough)),
         chunkers: PerBackendChunkers {
             vector: chunker.clone(),
+            lexical: chunker.clone(),
             graph: chunker.clone(),
             tree: chunker,
         },

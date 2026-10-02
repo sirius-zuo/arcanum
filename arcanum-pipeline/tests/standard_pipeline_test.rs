@@ -30,6 +30,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
     let stub_chunker = Arc::new(StubChunker);
     let chunkers = PerBackendChunkers {
         vector: stub_chunker.clone(),
+        lexical: stub_chunker.clone(),
         graph: stub_chunker.clone(),
         tree: stub_chunker.clone(),
     };

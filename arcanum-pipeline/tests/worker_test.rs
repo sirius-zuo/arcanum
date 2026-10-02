@@ -44,6 +44,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
     let stub_chunker = Arc::new(StubChunker);
     let chunkers = PerBackendChunkers {
         vector: stub_chunker.clone(),
+        lexical: stub_chunker.clone(),
         graph: stub_chunker.clone(),
         tree: stub_chunker.clone(),
     };
@@ -291,6 +292,7 @@ async fn test_worker_invalidates_cache_on_force_reingest() {
         preprocessors: Some(Arc::new(StubPreprocessor2)),
         chunkers: PerBackendChunkers {
             vector: Arc::new(StubChunker2),
+            lexical: Arc::new(StubChunker2),
             graph: Arc::new(StubChunker2),
             tree: Arc::new(StubChunker2),
         },
@@ -506,6 +508,7 @@ async fn test_worker_invalidates_cache_on_genuine_content_change_without_force()
         preprocessors: Some(Arc::new(StubPreprocessor3)),
         chunkers: PerBackendChunkers {
             vector: Arc::new(StubChunker3),
+            lexical: Arc::new(StubChunker3),
             graph: Arc::new(StubChunker3),
             tree: Arc::new(StubChunker3),
         },

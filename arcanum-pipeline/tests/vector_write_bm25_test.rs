@@ -57,6 +57,7 @@ fn make_state_with_chunks() -> Arc<Mutex<IngestionState>> {
         collection_id: CollectionId("test-collection".into()),
         doc: Some(doc.clone()),
         chunks: vec![chunk],
+        lexical_chunks: vec![],
         graph_chunks: vec![],
         tree_chunks: vec![],
         vectors: vec![Vector(vec![0.1, 0.2, 0.3])],

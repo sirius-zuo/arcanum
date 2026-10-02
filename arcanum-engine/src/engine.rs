@@ -1442,6 +1442,7 @@ mod tests {
                 strategy: "fixed".to_string(),
                 params: serde_json::json!({ "chunk_size": 256, "overlap": 8 }),
             },
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1587,6 +1588,7 @@ mod tests {
                 strategy: "fixed".to_string(),
                 params: serde_json::json!({ "chunk_size": 256, "overlap": 8 }),
             },
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1713,6 +1715,7 @@ mod resolution_tests {
     fn no_collection_override_uses_global_default() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1723,11 +1726,13 @@ mod resolution_tests {
     fn collection_vector_override_wins() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
         let collection = PerBackendChunkConfig {
             vector: make_semantic(800),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1738,6 +1743,7 @@ mod resolution_tests {
     fn collection_none_graph_falls_back_to_global_then_vector() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1748,6 +1754,7 @@ mod resolution_tests {
     fn unknown_strategy_in_collection_config_returns_error() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1756,6 +1763,7 @@ mod resolution_tests {
                 strategy: "nonexistent".to_string(),
                 params: serde_json::json!({}),
             },
+            lexical: None,
             graph: None,
             tree: None,
         };

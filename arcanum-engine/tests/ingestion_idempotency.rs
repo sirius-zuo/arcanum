@@ -106,6 +106,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         preprocessors: Some(Arc::new(StubPreprocessor)),
         chunkers: PerBackendChunkers {
             vector: chunker.clone(),
+            lexical: chunker.clone(),
             graph: chunker.clone(),
             tree: chunker.clone(),
         },

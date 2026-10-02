@@ -63,6 +63,7 @@ fn stub_deps() -> Arc<PipelineDeps> {
         preprocessors: Some(Arc::new(StubPreprocessor)),
         chunkers: PerBackendChunkers {
             vector: Arc::new(StubChunker),
+            lexical: Arc::new(StubChunker),
             graph: Arc::new(StubChunker),
             tree: Arc::new(StubChunker),
         },

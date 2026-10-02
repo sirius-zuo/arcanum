@@ -1,9 +1,6 @@
 //! Shared harness for provenance-integrity tests: deterministic embedder,
 //! cosine vector store, scripted enricher, and a full-template ingestion
 //! fixture over two documents.
-//!
-//! Extension point: when a lexical chunker exists on `PerBackendChunkers`
-//! (plan Task 5), add `lexical: fixed{80,0}` in `ingest_fixture`.
 #![allow(dead_code)]
 
 use arcanum_core::traits::{
@@ -262,6 +259,7 @@ pub async fn ingest_fixture() -> Fixture {
         preprocessors: Some(Arc::new(PassThrough)),
         chunkers: PerBackendChunkers {
             vector: fixed(120, 20),
+            lexical: fixed(80, 0),
             graph: fixed(200, 0),
             tree: fixed(60, 0),
         },

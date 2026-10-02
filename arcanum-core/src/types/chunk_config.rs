@@ -11,6 +11,7 @@ pub struct ChunkStrategyConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PerBackendChunkConfig {
     pub vector: ChunkStrategyConfig,
+    pub lexical: Option<ChunkStrategyConfig>,
     pub graph: Option<ChunkStrategyConfig>,
     pub tree: Option<ChunkStrategyConfig>,
 }
@@ -22,6 +23,7 @@ impl Default for PerBackendChunkConfig {
                 strategy: "fixed".to_string(),
                 params: serde_json::json!({ "chunk_size": 512, "overlap": 64 }),
             },
+            lexical: None,
             graph: None,
             tree: None,
         }
@@ -30,6 +32,7 @@ impl Default for PerBackendChunkConfig {
 
 pub struct PerBackendChunkers {
     pub vector: Arc<dyn Chunker>,
+    pub lexical: Arc<dyn Chunker>,
     pub graph: Arc<dyn Chunker>,
     pub tree: Arc<dyn Chunker>,
 }
@@ -38,6 +41,7 @@ impl Clone for PerBackendChunkers {
     fn clone(&self) -> Self {
         Self {
             vector: self.vector.clone(),
+            lexical: self.lexical.clone(),
             graph: self.graph.clone(),
             tree: self.tree.clone(),
         }
