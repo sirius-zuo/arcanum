@@ -61,11 +61,11 @@ impl Retriever for Bm25Retriever {
         let collection_id = query_cid.clone();
         Ok(raw
             .into_iter()
-            .map(|(store_id, score)| RetrievedChunk {
+            .map(|(chunk_id, score)| RetrievedChunk {
                 indexed_chunk: IndexedChunk {
                     chunk: Chunk {
-                        id: ChunkId::new(),
-                        text: store_id.clone(),
+                        id: chunk_id.clone(),
+                        text: String::new(),
                         document_id: DocumentId::new(),
                         collection_id: collection_id.clone(),
                         position: ChunkPosition {
@@ -78,7 +78,7 @@ impl Retriever for Bm25Retriever {
                     },
                     vector: Vector(vec![]),
                     token_vectors: None,
-                    store_id,
+                    store_id: chunk_id.0.to_string(),
                 },
                 score,
                 strategy: RetrievalStrategy::Bm25,
@@ -96,7 +96,7 @@ mod tests {
     use super::*;
 
     struct FakeLexicalIndex {
-        hits: Vec<(String, f32)>,
+        hits: Vec<(ChunkId, f32)>,
     }
     #[async_trait::async_trait]
     impl LexicalIndex for FakeLexicalIndex {
@@ -105,7 +105,7 @@ mod tests {
             _collection_id: &str,
             _query: &str,
             _top_k: usize,
-        ) -> arcanum_core::Result<Vec<(String, f32)>> {
+        ) -> arcanum_core::Result<Vec<(ChunkId, f32)>> {
             Ok(self.hits.clone())
         }
     }
@@ -113,7 +113,7 @@ mod tests {
     #[tokio::test]
     async fn test_bm25_retriever_uses_lexical_index_trait() {
         let index: Arc<dyn LexicalIndex> = Arc::new(FakeLexicalIndex {
-            hits: vec![("chunk-1".to_string(), 0.9)],
+            hits: vec![(ChunkId::new(), 0.9)],
         });
         let retriever = Bm25Retriever::new(CollectionId("col1".into()), index);
         let query = Query::new("hello").with_collection(CollectionId("col1".into()));

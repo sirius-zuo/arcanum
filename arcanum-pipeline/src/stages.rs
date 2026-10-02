@@ -759,11 +759,16 @@ pub fn make_vector_write_stage(
 
                 // BM25 wants (chunk_id, text) pairs — capture before `indexed` moves into
                 // vs.upsert below.
-                let bm25_docs: Option<Vec<(String, String)>> = bm25.as_ref().map(|_| {
-                    indexed
+                let bm25_docs: Option<(String, Vec<(ChunkId, String)>)> = bm25.as_ref().map(|_| {
+                    let source_uri = indexed
+                        .first()
+                        .map(|c| c.chunk.provenance.source_uri.clone())
+                        .unwrap_or_default();
+                    let docs = indexed
                         .iter()
-                        .map(|c| (c.chunk.id.0.to_string(), c.chunk.text.clone()))
-                        .collect()
+                        .map(|c| (c.chunk.id.clone(), c.chunk.text.clone()))
+                        .collect();
+                    (source_uri, docs)
                 });
 
                 match vs.upsert(&collection_id.0, indexed).await {
@@ -774,8 +779,9 @@ pub fn make_vector_write_stage(
                         }
                         // Best-effort: BM25 is a supplementary lexical index, not the
                         // source of truth — a write failure here must not fail ingestion.
-                        if let (Some(bm25), Some(docs)) = (&bm25, bm25_docs) {
-                            if let Err(e) = bm25.index_chunks(docs) {
+                        if let (Some(bm25), Some((source_uri, docs))) = (&bm25, bm25_docs) {
+                            if let Err(e) = bm25.index_chunks(&collection_id.0, &source_uri, &docs)
+                            {
                                 tracing::warn!(err = ?e, "bm25 index write failed — continuing");
                             }
                         }
