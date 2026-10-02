@@ -47,13 +47,7 @@ impl EntityExtractor {
 
         let parsed: ExtractionResult = serde_json::from_str(&raw.0).unwrap_or_default();
 
-        let source_uri = chunk
-            .metadata
-            .0
-            .get("source_uri")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let source_uri = chunk.provenance.source_uri.clone();
         let mut entity_map = std::collections::HashMap::new();
         let entities: Vec<Entity> = parsed
             .entities
@@ -92,5 +86,46 @@ impl EntityExtractor {
         tracing::Span::current().record("entity_count", entities.len());
         tracing::Span::current().record("relation_count", relations.len());
         Ok((entities, relations))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct StubEnricher;
+
+    #[async_trait::async_trait]
+    impl TextEnricher for StubEnricher {
+        async fn enrich(&self, _request: EnrichRequest) -> Result<EnrichedText> {
+            Ok(EnrichedText(
+                r#"{"entities":[{"name":"Acme","entity_type":"Org"}],"relations":[]}"#.into(),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn entities_take_source_uri_from_chunk_provenance() {
+        let chunk = Chunk {
+            id: ChunkId::new(),
+            text: "Acme".into(),
+            document_id: DocumentId::new(),
+            collection_id: CollectionId("c".into()),
+            position: ChunkPosition {
+                start: 0,
+                end: 4,
+                index: 0,
+            },
+            metadata: Default::default(),
+            provenance: ChunkProvenance {
+                source_uri: "file://a.md".into(),
+                ..Default::default()
+            },
+        };
+        let (entities, _) = EntityExtractor::new(Arc::new(StubEnricher))
+            .extract(&chunk)
+            .await
+            .unwrap();
+        assert_eq!(entities[0].source_uri, "file://a.md");
     }
 }
