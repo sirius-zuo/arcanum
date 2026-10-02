@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Chunker, types::*, Result};
+use arcanum_core::{traits::Chunker, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use metrics;
 use tracing::instrument;
@@ -23,7 +23,8 @@ fn build_chunk(
     index: usize,
     title: String,
     source_text: &str,
-) -> Chunk {
+    cursor: &mut usize,
+) -> Result<Chunk> {
     let mut metadata = std::collections::HashMap::new();
     if !title.is_empty() {
         metadata.insert(
@@ -31,9 +32,18 @@ fn build_chunk(
             serde_json::Value::String(title),
         );
     }
-    let start = source_text.find(&text).unwrap_or(0);
+    let start = source_text[*cursor..]
+        .find(&text)
+        .map(|p| p + *cursor)
+        .ok_or_else(|| {
+            ArcanumError::Ingestion(format!(
+                "hierarchical chunker: section text not found in source after byte {}",
+                *cursor
+            ))
+        })?;
     let end = start + text.len();
-    Chunk {
+    *cursor = end;
+    Ok(Chunk {
         id: ChunkId::new(),
         text,
         document_id: doc.id.clone(),
@@ -41,7 +51,7 @@ fn build_chunk(
         position: ChunkPosition { start, end, index },
         metadata: ChunkMetadata(metadata),
         provenance: Default::default(),
-    }
+    })
 }
 
 #[async_trait]
@@ -72,18 +82,22 @@ impl Chunker for HierarchicalChunker {
             sections.push(("".to_string(), text.clone()));
         }
 
-        let chunks: Vec<Chunk> = sections
-            .into_iter()
-            .enumerate()
-            .filter_map(|(i, (title, body))| {
-                let body_trimmed = body.trim().to_string();
-                if body_trimmed.is_empty() && title.is_empty() {
-                    None
-                } else {
-                    Some(build_chunk(body_trimmed, doc, i, title, &text))
-                }
-            })
-            .collect();
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut cursor = 0usize;
+        for (i, (title, body)) in sections.into_iter().enumerate() {
+            let body_trimmed = body.trim().to_string();
+            if body_trimmed.is_empty() && title.is_empty() {
+                continue;
+            }
+            chunks.push(build_chunk(
+                body_trimmed,
+                doc,
+                i,
+                title,
+                &text,
+                &mut cursor,
+            )?);
+        }
         tracing::Span::current().record("chunk_count", chunks.len());
         metrics::histogram!("arcanum_chunk_count", "chunker" => "hierarchical")
             .record(chunks.len() as f64);

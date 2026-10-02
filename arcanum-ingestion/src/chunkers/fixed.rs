@@ -26,28 +26,34 @@ impl Chunker for FixedSizeChunker {
         if text.trim().is_empty() {
             return Ok(vec![]);
         }
-        let chars: Vec<char> = text.chars().collect();
+        // Byte offset of every char boundary, plus the end of the text, so that
+        // windows measured in chars map to byte ranges that slice cleanly.
+        let mut bounds: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+        let n_chars = bounds.len();
+        bounds.push(text.len());
         let step = self.chunk_size - self.overlap;
         let mut chunks = vec![];
         let mut start = 0usize;
         let mut index = 0usize;
-        while start < chars.len() {
-            let end = (start + self.chunk_size).min(chars.len());
-            let chunk_text: String = chars[start..end].iter().collect();
-            let trimmed = chunk_text.trim().to_string();
-            if !trimmed.is_empty() {
+        while start < n_chars {
+            let end = (start + self.chunk_size).min(n_chars);
+            if let Some((s, e)) = super::trimmed_span(&text, bounds[start], bounds[end]) {
                 chunks.push(Chunk {
                     id: ChunkId::new(),
-                    text: trimmed,
+                    text: text[s..e].to_string(),
                     document_id: doc.id.clone(),
                     collection_id: CollectionId("default".into()),
-                    position: ChunkPosition { start, end, index },
+                    position: ChunkPosition {
+                        start: s,
+                        end: e,
+                        index,
+                    },
                     metadata: ChunkMetadata::default(),
                     provenance: Default::default(),
                 });
                 index += 1;
             }
-            if end == chars.len() {
+            if end == n_chars {
                 break;
             }
             start += step;

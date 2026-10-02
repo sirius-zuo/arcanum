@@ -1,4 +1,4 @@
-use arcanum_core::{traits::Chunker, types::*, Result};
+use arcanum_core::{traits::Chunker, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use metrics;
 use tracing::instrument;
@@ -13,11 +13,26 @@ impl StructureAwareChunker {
     }
 }
 
-fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str) -> Chunk {
+fn build_chunk(
+    text: String,
+    doc: &RawDocument,
+    index: usize,
+    source_text: &str,
+    cursor: &mut usize,
+) -> Result<Chunk> {
     let t = text.trim().to_string();
-    let start = source_text.find(&t).unwrap_or(0);
+    let start = source_text[*cursor..]
+        .find(&t)
+        .map(|p| p + *cursor)
+        .ok_or_else(|| {
+            ArcanumError::Ingestion(format!(
+                "structure chunker: chunk text not found in source after byte {}",
+                *cursor
+            ))
+        })?;
     let end = start + t.len();
-    Chunk {
+    *cursor = end;
+    Ok(Chunk {
         id: ChunkId::new(),
         text: t,
         document_id: doc.id.clone(),
@@ -25,7 +40,7 @@ fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str)
         position: ChunkPosition { start, end, index },
         metadata: ChunkMetadata::default(),
         provenance: Default::default(),
-    }
+    })
 }
 
 fn split_into_blocks(text: &str) -> Vec<String> {
@@ -67,23 +82,42 @@ impl Chunker for StructureAwareChunker {
         let mut chunks = Vec::new();
         let mut current = String::new();
         let mut idx = 0;
+        let mut cursor = 0usize;
 
         for block in blocks {
             let is_atomic = block.starts_with("```") || block.trim_start().starts_with('|');
             if is_atomic {
                 if !current.trim().is_empty() {
-                    chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
+                    chunks.push(build_chunk(
+                        current.trim().to_string(),
+                        doc,
+                        idx,
+                        &text,
+                        &mut cursor,
+                    )?);
                     idx += 1;
                     current = String::new();
                 }
-                chunks.push(build_chunk(block.trim().to_string(), doc, idx, &text));
+                chunks.push(build_chunk(
+                    block.trim().to_string(),
+                    doc,
+                    idx,
+                    &text,
+                    &mut cursor,
+                )?);
                 idx += 1;
             } else {
                 // Split prose block into lines and accumulate up to max_chunk_chars
                 for line in block.lines() {
                     if !current.is_empty() && current.len() + line.len() + 1 > self.max_chunk_chars
                     {
-                        chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
+                        chunks.push(build_chunk(
+                            current.trim().to_string(),
+                            doc,
+                            idx,
+                            &text,
+                            &mut cursor,
+                        )?);
                         idx += 1;
                         current = String::new();
                     }
@@ -95,10 +129,22 @@ impl Chunker for StructureAwareChunker {
             }
         }
         if !current.trim().is_empty() {
-            chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
+            chunks.push(build_chunk(
+                current.trim().to_string(),
+                doc,
+                idx,
+                &text,
+                &mut cursor,
+            )?);
         }
         if chunks.is_empty() {
-            chunks.push(build_chunk(text.trim().to_string(), doc, 0, &text));
+            chunks.push(build_chunk(
+                text.trim().to_string(),
+                doc,
+                0,
+                &text,
+                &mut cursor,
+            )?);
         }
         tracing::Span::current().record("chunk_count", chunks.len());
         metrics::histogram!("arcanum_chunk_count", "chunker" => "structure")
