@@ -117,6 +117,10 @@ impl Retriever for RaptorRetriever {
                     },
                     score,
                     strategy: RetrievalStrategy::Raptor,
+                    kind: ChunkKind::Summary {
+                        level: node.level,
+                        covers: vec![],
+                    },
                 }
             })
             .collect())

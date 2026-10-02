@@ -43,6 +43,7 @@ impl Retriever for VectorRetriever {
                 indexed_chunk: s.chunk,
                 score: s.score,
                 strategy: RetrievalStrategy::Vector,
+                kind: ChunkKind::Source,
             })
             .collect())
     }

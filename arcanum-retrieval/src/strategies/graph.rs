@@ -95,6 +95,7 @@ impl Retriever for GraphRetriever {
                 indexed_chunk: s.chunk,
                 score: s.score,
                 strategy: RetrievalStrategy::Graph,
+                kind: ChunkKind::Source,
             })
             .collect())
     }

@@ -30,6 +30,7 @@ impl Retriever for StubRetriever {
             },
             score: 0.9,
             strategy: self.0.clone(),
+            kind: ChunkKind::Source,
         }])
     }
     fn strategy(&self) -> RetrievalStrategy {
@@ -78,6 +79,7 @@ impl Retriever for QueryEchoingRetriever {
             },
             score: 0.9,
             strategy: RetrievalStrategy::Vector,
+            kind: ChunkKind::Source,
         }])
     }
     fn strategy(&self) -> RetrievalStrategy {
@@ -183,6 +185,7 @@ fn make_dupeable_retriever(doc_id: DocumentId, strategy: RetrievalStrategy) -> A
                 },
                 score: 0.9,
                 strategy: self.1.clone(),
+                kind: ChunkKind::Source,
             }])
         }
         fn strategy(&self) -> RetrievalStrategy {

@@ -93,11 +93,18 @@ pub struct IndexedChunk {
     pub store_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum ChunkKind {
+    Source,
+    Summary { level: u32, covers: Vec<ChunkId> },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievedChunk {
     pub indexed_chunk: IndexedChunk,
     pub score: f32,
     pub strategy: RetrievalStrategy,
+    pub kind: ChunkKind,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

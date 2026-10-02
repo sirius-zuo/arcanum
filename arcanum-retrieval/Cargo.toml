@@ -18,3 +18,4 @@ reqwest      = { version = "0.12", features = ["json"] }
 arcanum-graph  = { path = "../arcanum-graph" }
 arcanum-vector = { path = "../arcanum-vector" }
 tokio          = { workspace = true }
+chrono         = { workspace = true }

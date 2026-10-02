@@ -82,6 +82,7 @@ impl Retriever for Bm25Retriever {
                 },
                 score,
                 strategy: RetrievalStrategy::Bm25,
+                kind: ChunkKind::Source,
             })
             .collect())
     }
