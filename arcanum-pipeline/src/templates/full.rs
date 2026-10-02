@@ -4,6 +4,7 @@ use crate::{
     ingestion_state::IngestionState,
     registry::TemplateBuilder,
     stages::{self, *},
+    templates::with_lexical_stages,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -21,6 +22,7 @@ pub fn builder() -> TemplateBuilder {
                 deps.vector_store.clone(),
                 deps.graph_store.clone(),
                 deps.tree_store.clone(),
+                deps.bm25_index.clone(),
             ))
             .add_stage(make_preprocess_stage(
                 state.clone(),
@@ -70,7 +72,6 @@ pub fn builder() -> TemplateBuilder {
             deps.vector_store.clone(),
             deps.vector_store_cb.clone(),
             deps.chunk_metadata.clone(),
-            deps.bm25_index.clone(),
         ));
         dag = dag.add_stage(make_register_version_stage(
             state.clone(),
@@ -99,6 +100,6 @@ pub fn builder() -> TemplateBuilder {
             ));
         }
 
-        dag
+        with_lexical_stages(dag, state, deps)
     })
 }

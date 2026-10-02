@@ -125,6 +125,7 @@ pub fn make_cleanup_stage(
     vector_store: Arc<dyn VectorStore>,
     graph_store: Option<Arc<dyn GraphStore>>,
     tree_store: Option<Arc<dyn TreeStore>>,
+    lexical_index: Option<Arc<Bm25Index>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "cleanup",
@@ -134,6 +135,7 @@ pub fn make_cleanup_stage(
             let vs = vector_store.clone();
             let gs = graph_store.clone();
             let ts = tree_store.clone();
+            let li = lexical_index.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "cleanup", "executing cleanup stage");
                 let replace = ctx
@@ -165,6 +167,9 @@ pub fn make_cleanup_stage(
                 }
                 if let Some(ts) = &ts {
                     ts.delete_by_source_uri(&collection_id, &source_uri).await?;
+                }
+                if let Some(li) = &li {
+                    li.delete_by_source_uri(&collection_id, &source_uri)?;
                 }
                 Ok(ctx)
             })
@@ -507,6 +512,94 @@ pub fn make_tree_chunk_stage(
     }
 }
 
+pub fn make_lexical_chunk_stage(
+    state: Arc<Mutex<IngestionState>>,
+    chunker: Arc<dyn Chunker>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "lexical_chunk",
+        deps: vec!["preprocess", "snapshot"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let chunker = chunker.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "lexical_chunk", "executing lexical chunk stage");
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
+                let doc = state
+                    .lock()
+                    .await
+                    .doc
+                    .clone()
+                    .ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "lexical_chunk".into(),
+                        message: "no doc".into(),
+                    })?;
+                let mut chunks = chunker.chunk(&doc).await?;
+                stamp_snapshot_identity(&state, &doc, &mut chunks, "lexical_chunk").await?;
+                state.lock().await.lexical_chunks = chunks;
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
+/// Indexes the lexical chunks in BM25 and registers them with `ChunkBackend::Lexical`.
+/// Independent of the vector line: it indexes its own chunks, and a Tantivy failure fails
+/// the stage.
+pub fn make_lexical_write_stage(
+    state: Arc<Mutex<IngestionState>>,
+    index: Arc<Bm25Index>,
+    chunk_metadata: Option<Arc<dyn ChunkMetadataStore>>,
+) -> PipelineStage {
+    PipelineStage {
+        id: "lexical_write",
+        deps: vec!["lexical_chunk"],
+        run: Arc::new(move |ctx| {
+            let state = state.clone();
+            let index = index.clone();
+            let cms = chunk_metadata.clone();
+            Box::pin(async move {
+                tracing::debug!(stage = "lexical_write", "executing lexical_write stage");
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
+                let (chunks, collection_id) = {
+                    let g = state.lock().await;
+                    (g.lexical_chunks.clone(), g.collection_id.clone())
+                };
+                if chunks.is_empty() {
+                    return Ok(ctx);
+                }
+                let records = if cms.is_some() {
+                    let (doc_id, version_num, doc_text) =
+                        registration_inputs(&state, "lexical_write").await?;
+                    Some(build_chunk_records(
+                        &chunks,
+                        ChunkBackend::Lexical,
+                        &doc_id,
+                        version_num,
+                        &doc_text,
+                    )?)
+                } else {
+                    None
+                };
+                let source_uri = chunks[0].provenance.source_uri.clone();
+                let docs: Vec<(ChunkId, String)> = chunks
+                    .iter()
+                    .map(|c| (c.id.clone(), c.text.clone()))
+                    .collect();
+                index.index_chunks(&collection_id.0, &source_uri, &docs)?;
+                if let (Some(cms), Some(records)) = (&cms, records) {
+                    register_chunks(cms.as_ref(), &records).await?;
+                }
+                Ok(ctx)
+            })
+        }),
+    }
+}
+
 pub fn make_context_enrich_stage(
     state: Arc<Mutex<IngestionState>>,
     enricher: Arc<dyn TextEnricher>,
@@ -698,7 +791,6 @@ pub fn make_vector_write_stage(
     vector_store: Arc<dyn VectorStore>,
     vector_store_cb: Arc<arcanum_middleware::CircuitBreaker>,
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
-    bm25_index: Option<Arc<Bm25Index>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "vector_write",
@@ -713,7 +805,6 @@ pub fn make_vector_write_stage(
             let vs = vector_store.clone();
             let cb = vector_store_cb.clone();
             let cms = chunk_metadata_store.clone();
-            let bm25 = bm25_index.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_write", "executing vector_write stage");
                 if skip(&ctx) {
@@ -757,33 +848,11 @@ pub fn make_vector_write_stage(
                     })
                     .collect();
 
-                // BM25 wants (chunk_id, text) pairs — capture before `indexed` moves into
-                // vs.upsert below.
-                let bm25_docs: Option<(String, Vec<(ChunkId, String)>)> = bm25.as_ref().map(|_| {
-                    let source_uri = indexed
-                        .first()
-                        .map(|c| c.chunk.provenance.source_uri.clone())
-                        .unwrap_or_default();
-                    let docs = indexed
-                        .iter()
-                        .map(|c| (c.chunk.id.clone(), c.chunk.text.clone()))
-                        .collect();
-                    (source_uri, docs)
-                });
-
                 match vs.upsert(&collection_id.0, indexed).await {
                     Ok(()) => {
                         cb.record_success();
                         if let (Some(cms), Some(records)) = (&cms, metadata_records) {
                             register_chunks(cms.as_ref(), &records).await?;
-                        }
-                        // Best-effort: BM25 is a supplementary lexical index, not the
-                        // source of truth — a write failure here must not fail ingestion.
-                        if let (Some(bm25), Some((source_uri, docs))) = (&bm25, bm25_docs) {
-                            if let Err(e) = bm25.index_chunks(&collection_id.0, &source_uri, &docs)
-                            {
-                                tracing::warn!(err = ?e, "bm25 index write failed — continuing");
-                            }
                         }
                         ctx.insert("vector_write_ok".to_string(), serde_json::json!(true));
                         Ok(ctx)

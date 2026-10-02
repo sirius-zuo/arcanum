@@ -4,6 +4,7 @@ use crate::{
     ingestion_state::IngestionState,
     registry::TemplateBuilder,
     stages::{self, *},
+    templates::with_lexical_stages,
 };
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -11,59 +12,63 @@ use tokio::sync::Mutex;
 /// StandardPipeline: Load → Dedup → Cleanup → Preprocess → Snapshot → Chunk → Embed → VectorWrite
 pub fn builder() -> TemplateBuilder {
     Arc::new(|state: Arc<Mutex<IngestionState>>, deps: &PipelineDeps| {
-        PipelineDAG::new()
-            .add_stage(make_load_stage(state.clone(), deps.loaders.clone()))
-            .add_stage(make_dedup_stage(state.clone(), deps.version_store.clone()))
-            .add_stage(make_cleanup_stage(
-                state.clone(),
-                deps.version_store.clone(),
-                deps.vector_store.clone(),
-                deps.graph_store.clone(),
-                deps.tree_store.clone(),
-            ))
-            .add_stage(make_preprocess_stage(
-                state.clone(),
-                deps.preprocessors.clone(),
-            ))
-            .add_stage(make_snapshot_stage(
-                state.clone(),
-                deps.version_store.clone(),
-                deps.snapshot_store.clone(),
-            ))
-            .add_stage(make_vector_chunk_stage(
-                state.clone(),
-                deps.chunkers.vector.clone(),
-                deps.shadow.as_ref().map(|s| stages::ShadowWriteContext {
-                    chunker: s.chunkers.vector.clone(),
-                    shadow_collection_id: s.shadow_collection_id.clone(),
-                    embedder: deps.embedder.clone(),
-                    vector_store: deps.vector_store.clone(),
-                    vector_store_cb: deps.vector_store_cb.clone(),
-                }),
-            ))
-            .add_stage(make_graph_chunk_stage(
-                state.clone(),
-                deps.chunkers.graph.clone(),
-            ))
-            .add_stage(make_tree_chunk_stage(
-                state.clone(),
-                deps.chunkers.tree.clone(),
-            ))
-            .add_stage(make_embed_stage(
-                state.clone(),
-                deps.embedder.clone(),
-                deps.embedding_cb.clone(),
-            ))
-            .add_stage(make_vector_write_stage(
-                state.clone(),
-                deps.vector_store.clone(),
-                deps.vector_store_cb.clone(),
-                deps.chunk_metadata.clone(),
-                deps.bm25_index.clone(),
-            ))
-            .add_stage(make_register_version_stage(
-                state.clone(),
-                deps.version_store.clone(),
-            ))
+        with_lexical_stages(
+            PipelineDAG::new()
+                .add_stage(make_load_stage(state.clone(), deps.loaders.clone()))
+                .add_stage(make_dedup_stage(state.clone(), deps.version_store.clone()))
+                .add_stage(make_cleanup_stage(
+                    state.clone(),
+                    deps.version_store.clone(),
+                    deps.vector_store.clone(),
+                    deps.graph_store.clone(),
+                    deps.tree_store.clone(),
+                    deps.bm25_index.clone(),
+                ))
+                .add_stage(make_preprocess_stage(
+                    state.clone(),
+                    deps.preprocessors.clone(),
+                ))
+                .add_stage(make_snapshot_stage(
+                    state.clone(),
+                    deps.version_store.clone(),
+                    deps.snapshot_store.clone(),
+                ))
+                .add_stage(make_vector_chunk_stage(
+                    state.clone(),
+                    deps.chunkers.vector.clone(),
+                    deps.shadow.as_ref().map(|s| stages::ShadowWriteContext {
+                        chunker: s.chunkers.vector.clone(),
+                        shadow_collection_id: s.shadow_collection_id.clone(),
+                        embedder: deps.embedder.clone(),
+                        vector_store: deps.vector_store.clone(),
+                        vector_store_cb: deps.vector_store_cb.clone(),
+                    }),
+                ))
+                .add_stage(make_graph_chunk_stage(
+                    state.clone(),
+                    deps.chunkers.graph.clone(),
+                ))
+                .add_stage(make_tree_chunk_stage(
+                    state.clone(),
+                    deps.chunkers.tree.clone(),
+                ))
+                .add_stage(make_embed_stage(
+                    state.clone(),
+                    deps.embedder.clone(),
+                    deps.embedding_cb.clone(),
+                ))
+                .add_stage(make_vector_write_stage(
+                    state.clone(),
+                    deps.vector_store.clone(),
+                    deps.vector_store_cb.clone(),
+                    deps.chunk_metadata.clone(),
+                ))
+                .add_stage(make_register_version_stage(
+                    state.clone(),
+                    deps.version_store.clone(),
+                )),
+            state,
+            deps,
+        )
     })
 }
