@@ -283,6 +283,16 @@ mod tests {
         async fn get(&self, id: &ChunkId) -> arcanum_core::Result<Option<ChunkMetadataRecord>> {
             Ok(self.0.lock().unwrap().get(&id.0.to_string()).cloned())
         }
+        async fn get_many(
+            &self,
+            ids: &[ChunkId],
+        ) -> arcanum_core::Result<Vec<ChunkMetadataRecord>> {
+            let m = self.0.lock().unwrap();
+            Ok(ids
+                .iter()
+                .filter_map(|id| m.get(&id.0.to_string()).cloned())
+                .collect())
+        }
         async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> {
             Ok(())
         }
@@ -301,6 +311,9 @@ mod tests {
             document_id: doc_id,
             collection_id: "col".into(),
             version_num: 1,
+            backend: ChunkBackend::Vector,
+            text: String::new(),
+            chunk_index: 0,
             source_uri: "confluence://page/42".into(),
             snapshot_uri: "file:///snapshots/d/1.raw".into(),
             canonical_uri: None,

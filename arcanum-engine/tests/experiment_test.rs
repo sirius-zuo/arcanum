@@ -14,6 +14,7 @@ fn fixed_config(size: u64) -> PerBackendChunkConfig {
             strategy: "fixed".to_string(),
             params: serde_json::json!({ "chunk_size": size, "overlap": 8 }),
         },
+        lexical: None,
         graph: None,
         tree: None,
     }
@@ -383,6 +384,7 @@ async fn collection_chunker_override_is_applied_to_ingestion_jobs() {
             strategy: "semantic".to_string(),
             params: serde_json::json!({ "max_chars": 800 }),
         },
+        lexical: None,
         graph: None,
         tree: None,
     };

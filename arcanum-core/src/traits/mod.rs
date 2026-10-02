@@ -2,6 +2,7 @@ pub mod cache;
 pub mod evidence;
 pub mod experiment;
 pub mod graph_planner;
+pub mod graph_scorer;
 pub mod in_memory_chunk_metadata;
 pub mod in_memory_operation;
 pub mod in_memory_snapshot;
@@ -21,6 +22,7 @@ pub use experiment::{
     ExperimentMetrics, ExperimentStatus, ExperimentStore, InMemoryExperimentStore, ShadowExperiment,
 };
 pub use graph_planner::*;
+pub use graph_scorer::GraphScorer;
 pub use in_memory_chunk_metadata::InMemoryChunkMetadataStore;
 pub use in_memory_operation::InMemoryOperationStore;
 pub use in_memory_snapshot::InMemorySnapshotStore;

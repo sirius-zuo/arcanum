@@ -43,6 +43,11 @@ impl ChunkMetadataStore for InMemoryChunkMetadataStore {
         Ok(self.data.lock().await.get(chunk_id).cloned())
     }
 
+    async fn get_many(&self, ids: &[ChunkId]) -> Result<Vec<ChunkMetadataRecord>> {
+        let data = self.data.lock().await;
+        Ok(ids.iter().filter_map(|id| data.get(id).cloned()).collect())
+    }
+
     async fn delete_by_source_uri(&self, _collection_id: &str, _source_uri: &str) -> Result<()> {
         let mut data = self.data.lock().await;
         let ids_to_remove: Vec<ChunkId> = data
@@ -77,6 +82,7 @@ impl ChunkMetadataStore for InMemoryChunkMetadataStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ChunkBackend;
     use chrono::Utc;
 
     #[tokio::test]
@@ -87,6 +93,9 @@ mod tests {
             document_id: DocumentId::new(),
             collection_id: "col".into(),
             version_num: 1,
+            backend: ChunkBackend::Vector,
+            text: String::new(),
+            chunk_index: 0,
             source_uri: "file://test.txt".into(),
             snapshot_uri: "file:///snap/test/1.raw".into(),
             canonical_uri: None,
@@ -113,6 +122,9 @@ mod tests {
             document_id: DocumentId::new(),
             collection_id: "col".into(),
             version_num: 1,
+            backend: ChunkBackend::Vector,
+            text: String::new(),
+            chunk_index: 0,
             source_uri: "file://delete_me.txt".into(),
             snapshot_uri: "file:///snap/d/1.raw".into(),
             canonical_uri: None,
@@ -132,6 +144,56 @@ mod tests {
         assert!(store.get(&id).await.unwrap().is_none());
     }
 
+    fn rec(backend: ChunkBackend, text: &str, idx: usize) -> ChunkMetadataRecord {
+        ChunkMetadataRecord {
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
+            collection_id: "col".into(),
+            version_num: 1,
+            backend,
+            text: text.into(),
+            chunk_index: idx,
+            source_uri: "file://x.txt".into(),
+            snapshot_uri: "file:///snap/x/1.raw".into(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 0,
+            offset_end: text.len(),
+            ingested_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_many_returns_present_ids_and_skips_missing() {
+        let store = InMemoryChunkMetadataStore::new();
+        let a = rec(ChunkBackend::Vector, "aaa", 0);
+        let b = rec(ChunkBackend::Lexical, "bbb", 1);
+        store.put(&a).await.unwrap();
+        store.put(&b).await.unwrap();
+        let got = store
+            .get_many(&[a.chunk_id.clone(), ChunkId::new(), b.chunk_id.clone()])
+            .await
+            .unwrap();
+        let mut ids: Vec<_> = got.iter().map(|r| r.chunk_id.0).collect();
+        ids.sort();
+        let mut want = vec![a.chunk_id.0, b.chunk_id.0];
+        want.sort();
+        assert_eq!(ids, want);
+    }
+
+    #[tokio::test]
+    async fn record_round_trips_backend_text_and_index() {
+        let store = InMemoryChunkMetadataStore::new();
+        let r = rec(ChunkBackend::Graph, "graph text", 5);
+        store.put(&r).await.unwrap();
+        let found = store.get(&r.chunk_id).await.unwrap().unwrap();
+        assert_eq!(found.backend, ChunkBackend::Graph);
+        assert_eq!(found.text, "graph text");
+        assert_eq!(found.chunk_index, 5);
+    }
+
     #[tokio::test]
     async fn test_get_missing() {
         let store = InMemoryChunkMetadataStore::new();
@@ -148,6 +210,9 @@ mod tests {
             document_id: doc_id.clone(),
             collection_id: "col".into(),
             version_num: 1,
+            backend: ChunkBackend::Vector,
+            text: String::new(),
+            chunk_index: 0,
             source_uri: "file://doc.pdf".into(),
             snapshot_uri: "file:///snap/d/1.raw".into(),
             canonical_uri: None,

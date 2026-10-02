@@ -501,15 +501,10 @@ pub async fn list_operation_by_idempotency(
 
 /// DELETE /api/v1/collections/{collectionId}/sources?source_uri=<encoded> —
 /// idempotent removal of every entry for the stable source URI within one
-/// collection. Uses the existing `delete_by_source_uri` contracts on the
-/// vector, graph, and tree stores and marks the collection-scoped document
-/// versions deleted per the version-store contract. Repeating removal for an
-/// absent source is a no-op success.
-///
-/// The BM25/lexical index is deliberately NOT removed here: `LexicalIndex`/
-/// `Bm25Index` expose only `delete_document(id)` keyed by a bare chunk id, not
-/// a source-scoped delete, and BM25 is a supplementary index rather than the
-/// source of truth. Full lexical removal is tracked as a follow-up.
+/// collection. Uses the `delete_by_source_uri` contracts on the vector, graph,
+/// tree, lexical (BM25) and chunk-registry stores and marks the
+/// collection-scoped document versions deleted per the version-store contract.
+/// Repeating removal for an absent source is a no-op success.
 #[tracing::instrument(skip_all)]
 pub async fn delete_collection_source(
     headers: HeaderMap,
@@ -563,6 +558,29 @@ pub async fn delete_collection_source(
                 .await
             {
                 tracing::warn!(collection = %collection_id, err = %e, "tree source removal failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "internal error" })),
+                )
+                    .into_response();
+            }
+        }
+        if let Some(bm25) = eng.bm25_index.as_ref() {
+            if let Err(e) = bm25.delete_by_source_uri(&collection_id, &params.source_uri) {
+                tracing::warn!(collection = %collection_id, err = %e, "lexical source removal failed");
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": "internal error" })),
+                )
+                    .into_response();
+            }
+        }
+        if let Some(store) = eng.chunk_metadata_store.as_ref() {
+            if let Err(e) = store
+                .delete_by_source_uri(&collection_id, &params.source_uri)
+                .await
+            {
+                tracing::warn!(collection = %collection_id, err = %e, "chunk registry source removal failed");
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({ "error": "internal error" })),

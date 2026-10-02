@@ -194,6 +194,7 @@ mod tests {
             },
             score: 0.9,
             strategy: RetrievalStrategy::Vector,
+            kind: ChunkKind::Source,
         }
     }
 

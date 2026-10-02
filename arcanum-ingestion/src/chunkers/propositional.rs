@@ -21,28 +21,32 @@ impl Chunker for PropositionalChunker {
     #[instrument(skip(self, doc), fields(chunker = "propositional", input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content);
-        let props: Vec<&str> = text
-            .split(['.', '!', '?', '\n'])
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .collect();
-        let chunks: Vec<Chunk> = props
-            .into_iter()
-            .enumerate()
-            .map(|(i, p)| Chunk {
-                id: ChunkId::new(),
-                text: p.to_string(),
-                document_id: doc.id.clone(),
-                collection_id: CollectionId("default".into()),
-                position: ChunkPosition {
-                    start: i,
-                    end: i + 1,
-                    index: i,
-                },
-                metadata: ChunkMetadata::default(),
-                provenance: Default::default(),
-            })
-            .collect();
+        let mut chunks: Vec<Chunk> = Vec::new();
+        let mut seg_start = 0usize;
+        let ends = text
+            .char_indices()
+            .filter(|(_, c)| matches!(c, '.' | '!' | '?' | '\n'))
+            .map(|(i, _)| i)
+            .chain(std::iter::once(text.len()));
+        for seg_end in ends {
+            if let Some((s, e)) = super::trimmed_span(&text, seg_start, seg_end) {
+                chunks.push(Chunk {
+                    id: ChunkId::new(),
+                    text: text[s..e].to_string(),
+                    document_id: doc.id.clone(),
+                    collection_id: CollectionId("default".into()),
+                    position: ChunkPosition {
+                        start: s,
+                        end: e,
+                        index: chunks.len(),
+                    },
+                    metadata: ChunkMetadata::default(),
+                    provenance: Default::default(),
+                });
+            }
+            // Every terminator is a single ASCII byte.
+            seg_start = seg_end + 1;
+        }
         tracing::Span::current().record("chunk_count", chunks.len());
         metrics::histogram!("arcanum_chunk_count", "chunker" => "propositional")
             .record(chunks.len() as f64);

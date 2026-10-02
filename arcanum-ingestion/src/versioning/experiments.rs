@@ -234,6 +234,7 @@ mod tests {
                     strategy: "fixed".to_string(),
                     params: serde_json::json!({ "chunk_size": 512, "overlap": 64 }),
                 },
+                lexical: None,
                 graph: None,
                 tree: None,
             },

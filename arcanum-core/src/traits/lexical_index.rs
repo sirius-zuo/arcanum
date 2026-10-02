@@ -1,8 +1,8 @@
-use crate::Result;
+use crate::{types::ChunkId, Result};
 use async_trait::async_trait;
 
 /// Lexical (BM25-style) full-text search over a single collection.
-/// Returns (chunk_store_id, score) pairs sorted by score descending.
+/// Returns (chunk_id, score) pairs sorted by score descending.
 #[async_trait]
 pub trait LexicalIndex: Send + Sync {
     async fn search(
@@ -10,5 +10,5 @@ pub trait LexicalIndex: Send + Sync {
         collection_id: &str,
         query: &str,
         top_k: usize,
-    ) -> Result<Vec<(String, f32)>>;
+    ) -> Result<Vec<(ChunkId, f32)>>;
 }

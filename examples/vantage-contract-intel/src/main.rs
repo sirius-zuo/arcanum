@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use arcanum_core::config::ArcanumConfig;
+use arcanum_core::traits::InMemoryChunkMetadataStore;
 use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_graph::InMemoryGraphStore;
 use arcanum_models::OllamaProvider;
@@ -68,6 +69,7 @@ async fn main() -> Result<()> {
         .enricher(enricher)
         .graph_store(graph_store)
         .tree_store(tree_store)
+        .chunk_metadata_store(Arc::new(InMemoryChunkMetadataStore::new()))
         .build()
         .await?;
 

@@ -7,11 +7,12 @@ pub struct IngestionState {
     pub source: Source,
     pub collection_id: CollectionId,
     pub doc: Option<RawDocument>,
-    pub chunks: Vec<Chunk>,        // vector chunks (primary)
-    pub graph_chunks: Vec<Chunk>,  // graph backend chunks
-    pub tree_chunks: Vec<Chunk>,   // tree backend chunks
-    pub vectors: Vec<Vector>,      // embeddings for state.chunks
-    pub tree_vectors: Vec<Vector>, // embeddings for state.tree_chunks
+    pub chunks: Vec<Chunk>,         // vector chunks (primary)
+    pub lexical_chunks: Vec<Chunk>, // lexical backend chunks
+    pub graph_chunks: Vec<Chunk>,   // graph backend chunks
+    pub tree_chunks: Vec<Chunk>,    // tree backend chunks
+    pub vectors: Vec<Vector>,       // embeddings for state.chunks
+    pub tree_vectors: Vec<Vector>,  // embeddings for state.tree_chunks
 
     // Set by load stage — original bytes before preprocess overwrites doc.content.
     pub raw_content: Option<Vec<u8>>,
@@ -33,6 +34,7 @@ impl IngestionState {
             collection_id,
             doc: None,
             chunks: vec![],
+            lexical_chunks: vec![],
             graph_chunks: vec![],
             tree_chunks: vec![],
             vectors: vec![],

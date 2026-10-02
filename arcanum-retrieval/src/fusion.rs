@@ -179,6 +179,7 @@ mod tests {
             },
             score,
             strategy,
+            kind: ChunkKind::Source,
         }
     }
 

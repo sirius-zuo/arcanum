@@ -99,6 +99,7 @@ impl Retriever for ColBertRetriever {
                 indexed_chunk: chunk,
                 score,
                 strategy: RetrievalStrategy::ColBert,
+                kind: ChunkKind::Source,
             })
             .collect())
     }

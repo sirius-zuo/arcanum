@@ -1,40 +1,38 @@
+use crate::hydrate::hydrate;
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::instrument;
 
-/// GraphRetriever: uses a GraphPlanner to extract entity names from the
-/// query, traverses the knowledge graph to collect source_chunk_ids, then
-/// performs a vector search filtered to those specific chunks.
+/// GraphRetriever: a `GraphPlanner` extracts seed entity names from the query,
+/// a `GraphScorer` ranks the chunks those entities (and their neighbours) were
+/// extracted from, and the winners are hydrated from the chunk metadata registry.
 pub struct GraphRetriever {
-    graph_store: Arc<dyn GraphStore>,
-    vector_store: Arc<dyn VectorStore>,
     planner: Arc<dyn GraphPlanner>,
-    embedder: Arc<dyn Embedder>,
-    max_hops: u32,
+    graph_store: Arc<dyn GraphStore>,
+    scorer: Arc<dyn GraphScorer>,
+    chunk_metadata: Arc<dyn ChunkMetadataStore>,
 }
 
 impl GraphRetriever {
     pub fn new(
-        graph_store: Arc<dyn GraphStore>,
-        vector_store: Arc<dyn VectorStore>,
         planner: Arc<dyn GraphPlanner>,
-        embedder: Arc<dyn Embedder>,
-        max_hops: u32,
+        graph_store: Arc<dyn GraphStore>,
+        scorer: Arc<dyn GraphScorer>,
+        chunk_metadata: Arc<dyn ChunkMetadataStore>,
     ) -> Self {
         Self {
-            graph_store,
-            vector_store,
             planner,
-            embedder,
-            max_hops,
+            graph_store,
+            scorer,
+            chunk_metadata,
         }
     }
 }
 
 #[async_trait]
 impl Retriever for GraphRetriever {
-    #[instrument(skip(self), fields(strategy = "graph", max_hops = self.max_hops), err)]
+    #[instrument(skip(self), fields(strategy = "graph"), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let collection_id = query.collection_id.as_ref().ok_or_else(|| {
             arcanum_core::ArcanumError::Config(
@@ -43,60 +41,22 @@ impl Retriever for GraphRetriever {
         })?;
         let collection = collection_id.0.as_str();
 
-        // Step 1: Plan the traversal — extract seed entities from query.
-        let seed_entities = self.planner.plan_entities(&query.text).await?;
-        if seed_entities.is_empty() {
+        let seeds = self.planner.plan_entities(&query.text).await?;
+        if seeds.is_empty() {
             return Ok(vec![]);
         }
 
-        // Step 2: For each seed entity, query the graph and collect source chunks.
-        let mut chunk_ids: Vec<ChunkId> = vec![];
-        for entity_name in &seed_entities {
-            let gq = GraphQuery {
-                entity_name: Some(entity_name.clone()),
-                entity_type: None,
-                max_hops: self.max_hops,
-                relation_filter: None,
-            };
-            let entities = self.graph_store.query(collection, &gq).await?;
-            for entity in entities {
-                chunk_ids.extend(entity.source_chunks);
-            }
-        }
-        chunk_ids.dedup_by(|a, b| a.0 == b.0);
-
-        if chunk_ids.is_empty() {
-            return Ok(vec![]);
-        }
-
-        // Step 3: Vector search, grounded to the graph-traversed chunks.
-        let vectors = self.embedder.embed(vec![query.text.clone()]).await?;
-        let query_vec = vectors.into_iter().next().unwrap_or(Vector(vec![]));
-
-        let mut filters = query.filters.clone();
-        filters.push(MetadataFilter {
-            field: "chunk_id".into(),
-            op: FilterOp::In,
-            value: serde_json::json!(chunk_ids
-                .iter()
-                .map(|c| c.0.to_string())
-                .collect::<Vec<_>>()),
-        });
-        let vq = VectorQuery {
-            vector: query_vec,
-            top_k: query.top_k,
-            filters,
-        };
-        let results = self.vector_store.search(collection, &vq).await?;
-
-        Ok(results
-            .into_iter()
-            .map(|s| RetrievedChunk {
-                indexed_chunk: s.chunk,
-                score: s.score,
-                strategy: RetrievalStrategy::Graph,
-            })
-            .collect())
+        let hits = self
+            .scorer
+            .score(self.graph_store.as_ref(), collection, &seeds, query.top_k)
+            .await?;
+        hydrate(
+            self.chunk_metadata.as_ref(),
+            &hits,
+            collection,
+            RetrievalStrategy::Graph,
+        )
+        .await
     }
 
     fn strategy(&self) -> RetrievalStrategy {
@@ -109,92 +69,6 @@ mod tests {
     use super::*;
     use arcanum_core::types::{EnrichRequest, EnrichedText};
     use arcanum_graph::{GraphQueryPlanner, InMemoryGraphStore};
-    use std::{collections::HashMap, sync::Mutex};
-
-    struct MockEmbedder;
-    #[async_trait::async_trait]
-    impl Embedder for MockEmbedder {
-        async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
-            Ok(texts.iter().map(|_| Vector(vec![0.1, 0.2, 0.3])).collect())
-        }
-        fn dimension(&self) -> usize {
-            3
-        }
-    }
-
-    struct MockVectorStore(Mutex<HashMap<String, Vec<IndexedChunk>>>);
-    #[async_trait::async_trait]
-    impl VectorStore for MockVectorStore {
-        async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
-            self.0
-                .lock()
-                .unwrap()
-                .entry(collection.to_string())
-                .or_default()
-                .extend(chunks);
-            Ok(())
-        }
-        async fn search(&self, collection: &str, q: &VectorQuery) -> Result<Vec<ScoredChunk>> {
-            let store = self.0.lock().unwrap();
-            let chunks = store.get(collection).cloned().unwrap_or_default();
-            Ok(chunks
-                .into_iter()
-                .take(q.top_k)
-                .map(|c| ScoredChunk {
-                    chunk: c,
-                    score: 0.7,
-                })
-                .collect())
-        }
-        async fn delete(&self, _: &str, _: &[ChunkId]) -> Result<()> {
-            Ok(())
-        }
-        async fn collection_exists(&self, c: &str) -> Result<bool> {
-            Ok(self.0.lock().unwrap().contains_key(c))
-        }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
-            Ok(())
-        }
-    }
-
-    struct QueryCapturingVectorStore {
-        chunks: Mutex<HashMap<String, Vec<IndexedChunk>>>,
-        last_query: Mutex<Option<VectorQuery>>,
-    }
-    #[async_trait::async_trait]
-    impl VectorStore for QueryCapturingVectorStore {
-        async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
-            self.chunks
-                .lock()
-                .unwrap()
-                .entry(collection.to_string())
-                .or_default()
-                .extend(chunks);
-            Ok(())
-        }
-        async fn search(&self, collection: &str, q: &VectorQuery) -> Result<Vec<ScoredChunk>> {
-            *self.last_query.lock().unwrap() = Some(q.clone());
-            let store = self.chunks.lock().unwrap();
-            let chunks = store.get(collection).cloned().unwrap_or_default();
-            Ok(chunks
-                .into_iter()
-                .take(q.top_k)
-                .map(|c| ScoredChunk {
-                    chunk: c,
-                    score: 0.7,
-                })
-                .collect())
-        }
-        async fn delete(&self, _: &str, _: &[ChunkId]) -> Result<()> {
-            Ok(())
-        }
-        async fn collection_exists(&self, c: &str) -> Result<bool> {
-            Ok(self.chunks.lock().unwrap().contains_key(c))
-        }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
-            Ok(())
-        }
-    }
 
     struct EmptyEnricher;
     #[async_trait::async_trait]
@@ -206,21 +80,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_graph_retriever_compiles_and_returns_empty_for_no_entities() {
-        let graph_store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
-        let vector_store: Arc<dyn VectorStore> =
-            Arc::new(MockVectorStore(Mutex::new(HashMap::new())));
-        let planner: Arc<dyn GraphPlanner> =
-            Arc::new(GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2));
-        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = GraphRetriever::new(graph_store, vector_store, planner, embedder, 2);
-
-        let query = Query::new("who is the CEO?").with_collection(CollectionId("col".into()));
-        let results = retriever.retrieve(&query).await.unwrap();
-        assert!(results.is_empty(), "No entities extracted -> no results");
-    }
-
     struct FixedPlanner(Vec<String>);
     #[async_trait::async_trait]
     impl GraphPlanner for FixedPlanner {
@@ -229,77 +88,79 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn search_is_filtered_to_the_graph_grounded_chunk_ids() {
-        let graph_store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
-        let chunk_a = ChunkId::new();
-        let chunk_b = ChunkId::new();
-        graph_store
-            .upsert_entities(
-                "col",
-                vec![Entity {
-                    id: EntityId::new(),
-                    name: "Acme Corp".into(),
-                    entity_type: "org".into(),
-                    canonical_id: None,
-                    source_chunks: vec![chunk_a.clone(), chunk_b.clone()],
-                    source_uri: String::new(),
-                    collection_id: "col".into(),
-                }],
-            )
-            .await
-            .unwrap();
+    struct StubScorer(Vec<(ChunkId, f32)>);
+    #[async_trait::async_trait]
+    impl GraphScorer for StubScorer {
+        async fn score(
+            &self,
+            _: &dyn GraphStore,
+            _: &str,
+            _: &[String],
+            _: usize,
+        ) -> Result<Vec<(ChunkId, f32)>> {
+            Ok(self.0.clone())
+        }
+    }
 
-        let vector_store = Arc::new(QueryCapturingVectorStore {
-            chunks: Mutex::new(HashMap::new()),
-            last_query: Mutex::new(None),
-        });
-        let planner: Arc<dyn GraphPlanner> = Arc::new(FixedPlanner(vec!["Acme Corp".into()]));
-        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = GraphRetriever::new(
-            graph_store,
-            vector_store.clone() as Arc<dyn VectorStore>,
-            planner,
-            embedder,
-            2,
-        );
-
-        let query = Query::new("who works at Acme?").with_collection(CollectionId("col".into()));
-        retriever.retrieve(&query).await.unwrap();
-
-        let captured = vector_store
-            .last_query
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("GraphRetriever must call VectorStore::search");
-        let chunk_id_filter = captured
-            .filters
-            .iter()
-            .find(|f| f.field == "chunk_id")
-            .expect("VectorQuery must carry a chunk_id filter grounded by the graph traversal");
-        assert!(matches!(chunk_id_filter.op, FilterOp::In));
-        let ids: Vec<String> = chunk_id_filter
-            .value
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(ids.len(), 2);
-        assert!(ids.contains(&chunk_a.0.to_string()));
-        assert!(ids.contains(&chunk_b.0.to_string()));
+    fn record(text: &str) -> ChunkMetadataRecord {
+        ChunkMetadataRecord {
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
+            collection_id: "col".into(),
+            version_num: 1,
+            backend: ChunkBackend::Graph,
+            text: text.into(),
+            chunk_index: 0,
+            source_uri: "file://x.txt".into(),
+            snapshot_uri: "file:///snap/x/1.raw".into(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 0,
+            offset_end: text.len(),
+            ingested_at: chrono::Utc::now(),
+        }
     }
 
     #[tokio::test]
-    async fn test_graph_retriever_strategy() {
-        let graph_store: Arc<dyn GraphStore> = Arc::new(InMemoryGraphStore::new());
-        let vector_store: Arc<dyn VectorStore> =
-            Arc::new(MockVectorStore(Mutex::new(HashMap::new())));
-        let planner: Arc<dyn GraphPlanner> =
-            Arc::new(GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2));
-        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = GraphRetriever::new(graph_store, vector_store, planner, embedder, 2);
+    async fn graph_results_are_registry_chunks_ranked_by_scorer() {
+        let (c1, c2) = (record("one"), record("two"));
+        let store = Arc::new(InMemoryChunkMetadataStore::new());
+        store.put(&c1).await.unwrap();
+        store.put(&c2).await.unwrap();
+        let retriever = GraphRetriever::new(
+            Arc::new(FixedPlanner(vec!["Acme".into()])),
+            Arc::new(InMemoryGraphStore::new()),
+            Arc::new(StubScorer(vec![
+                (c2.chunk_id.clone(), 0.9),
+                (c1.chunk_id.clone(), 0.5),
+            ])),
+            store,
+        );
+        let query = Query::new("q").with_collection(CollectionId("col".into()));
+        let results = retriever.retrieve(&query).await.unwrap();
+        let ids: Vec<_> = results
+            .iter()
+            .map(|r| r.indexed_chunk.chunk.id.clone())
+            .collect();
+        assert_eq!(ids, vec![c2.chunk_id, c1.chunk_id]);
+        for r in &results {
+            assert_eq!(r.strategy, RetrievalStrategy::Graph);
+            assert_eq!(r.kind, ChunkKind::Source);
+        }
+    }
+
+    #[tokio::test]
+    async fn no_seed_entities_returns_empty() {
+        let retriever = GraphRetriever::new(
+            Arc::new(GraphQueryPlanner::new(Arc::new(EmptyEnricher), 2)),
+            Arc::new(InMemoryGraphStore::new()),
+            Arc::new(StubScorer(vec![(ChunkId::new(), 1.0)])),
+            Arc::new(InMemoryChunkMetadataStore::new()),
+        );
+        let query = Query::new("who is the CEO?").with_collection(CollectionId("col".into()));
+        assert!(retriever.retrieve(&query).await.unwrap().is_empty());
         assert_eq!(retriever.strategy(), RetrievalStrategy::Graph);
     }
 }

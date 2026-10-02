@@ -27,6 +27,7 @@ fn make_retrieved_for_doc(
         },
         score: 0.5,
         strategy,
+        kind: ChunkKind::Source,
     }
 }
 

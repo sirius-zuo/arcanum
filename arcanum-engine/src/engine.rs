@@ -66,6 +66,8 @@ pub struct ArcanumEngine {
     pub version_store: Arc<dyn DocumentVersionStore>,
     pub snapshot_store: Arc<dyn SnapshotStore>,
     pub chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    /// Lexical (BM25) index, exposed so source removal can delete its entries.
+    pub bm25_index: Option<Arc<Bm25Index>>,
     pub evidence: Option<Arc<dyn EvidenceResolver>>,
     pub gc_worker: Option<Arc<dyn GcWorker>>,
 }
@@ -566,6 +568,21 @@ impl ArcanumEngineBuilder {
             (None, None) => None,
         };
 
+        let registry_backend = if self.bm25_index.is_some() {
+            Some("lexical")
+        } else if self.graph_store.is_some() {
+            Some("graph")
+        } else if self.tree_store.is_some() {
+            Some("tree")
+        } else {
+            None
+        };
+        if let (Some(backend), None) = (registry_backend, &chunk_metadata_store) {
+            return Err(ArcanumError::Config(format!(
+                "{backend} backend requires a ChunkMetadataStore: set storage.database_url or call .chunk_metadata_store(..)"
+            )));
+        }
+
         let query_cache: Option<Arc<QueryCache>> =
             self.config.retrieval.query_cache.as_ref().map(|qc| {
                 Arc::new(QueryCache::new(
@@ -729,37 +746,42 @@ impl ArcanumEngineBuilder {
                 .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
             retriever_count += 2;
         }
-        if let (Some(gs), Some(vs), Some(emb), Some(resolved_enricher)) = (
-            &self.graph_store,
-            &self.vector_store,
-            &self.embedder,
-            &enricher,
-        ) {
+        if let (Some(gs), Some(resolved_enricher)) = (&self.graph_store, &enricher) {
+            let cms = chunk_metadata_store
+                .as_ref()
+                .expect("registry presence checked above");
             // Use the resolved (possibly per-intent-routing) enricher, not the raw
             // builder field, so GraphQueryPlanner's ExtractEntities calls honor
             // entity_extraction_provider routing like ingestion does.
             let planner: Arc<dyn arcanum_core::traits::GraphPlanner> =
                 Arc::new(GraphQueryPlanner::new(resolved_enricher.clone(), 2));
             orchestrator = orchestrator.add_retriever(Arc::new(GraphRetriever::new(
-                gs.clone(),
-                vs.clone(),
                 planner,
-                emb.clone(),
-                2,
+                gs.clone(),
+                Arc::new(arcanum_graph::HopDecayScorer::new(2)),
+                cms.clone(),
             )));
             retriever_count += 1;
         }
         if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {
+            let cms = chunk_metadata_store
+                .as_ref()
+                .expect("registry presence checked above");
             orchestrator = orchestrator.add_retriever(Arc::new(RaptorRetriever::new(
                 ts.clone(),
                 emb.clone(),
+                cms.clone(),
                 3,
             )));
             retriever_count += 1;
         }
         if let Some(bm25) = &self.bm25_index {
+            let cms = chunk_metadata_store
+                .as_ref()
+                .expect("registry presence checked above");
             orchestrator = orchestrator.add_retriever(Arc::new(Bm25Retriever::new_global(
                 bm25.clone() as Arc<dyn LexicalIndex>,
+                cms.clone(),
             )));
             retriever_count += 1;
         }
@@ -855,6 +877,7 @@ impl ArcanumEngineBuilder {
             version_store: version_store.clone(),
             snapshot_store,
             chunk_metadata_store: chunk_metadata_store.clone(),
+            bm25_index: self.bm25_index.clone(),
             evidence: self.evidence.clone().or_else(|| {
                 chunk_metadata_store.as_ref().map(|cms| {
                     Arc::new(DefaultEvidenceResolver::new(
@@ -1018,6 +1041,67 @@ mod tests {
         assert_eq!(result.0, "default");
     }
 
+    fn base_builder() -> ArcanumEngineBuilder {
+        ArcanumEngine::builder()
+            .config(ArcanumConfig::default())
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+    }
+
+    #[tokio::test]
+    async fn build_rejects_lexical_without_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let bm25 = Arc::new(Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
+        let r = base_builder().bm25_index(bm25).build().await;
+        assert!(
+            matches!(&r, Err(ArcanumError::Config(m)) if m.starts_with("lexical backend")),
+            "got {:?}",
+            r.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn build_rejects_graph_without_registry() {
+        let r = base_builder()
+            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
+            .build()
+            .await;
+        assert!(
+            matches!(&r, Err(ArcanumError::Config(m)) if m.starts_with("graph backend")),
+            "got {:?}",
+            r.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn build_rejects_tree_without_registry() {
+        let r = base_builder()
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            .build()
+            .await;
+        assert!(
+            matches!(&r, Err(ArcanumError::Config(m)) if m.starts_with("tree backend")),
+            "got {:?}",
+            r.err()
+        );
+    }
+
+    #[tokio::test]
+    async fn build_accepts_backends_with_in_memory_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let bm25 = Arc::new(Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
+        let r = base_builder()
+            .bm25_index(bm25)
+            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
+            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
+            .build()
+            .await;
+        assert!(r.is_ok(), "got {:?}", r.err());
+    }
+
     #[tokio::test]
     async fn evidence_resolver_auto_wired_when_all_stores_present() {
         let engine = ArcanumEngine::builder()
@@ -1066,8 +1150,6 @@ mod tests {
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             // chunk_metadata_store deliberately omitted
-            .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
-            .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
             .build()
             .await
             .expect("build should succeed");
@@ -1442,6 +1524,7 @@ mod tests {
                 strategy: "fixed".to_string(),
                 params: serde_json::json!({ "chunk_size": 256, "overlap": 8 }),
             },
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1587,6 +1670,7 @@ mod tests {
                 strategy: "fixed".to_string(),
                 params: serde_json::json!({ "chunk_size": 256, "overlap": 8 }),
             },
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1713,6 +1797,7 @@ mod resolution_tests {
     fn no_collection_override_uses_global_default() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1723,11 +1808,13 @@ mod resolution_tests {
     fn collection_vector_override_wins() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
         let collection = PerBackendChunkConfig {
             vector: make_semantic(800),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1738,6 +1825,7 @@ mod resolution_tests {
     fn collection_none_graph_falls_back_to_global_then_vector() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1748,6 +1836,7 @@ mod resolution_tests {
     fn unknown_strategy_in_collection_config_returns_error() {
         let global = PerBackendChunkConfig {
             vector: make_fixed(512, 64),
+            lexical: None,
             graph: None,
             tree: None,
         };
@@ -1756,6 +1845,7 @@ mod resolution_tests {
                 strategy: "nonexistent".to_string(),
                 params: serde_json::json!({}),
             },
+            lexical: None,
             graph: None,
             tree: None,
         };

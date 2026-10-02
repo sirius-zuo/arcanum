@@ -2,7 +2,7 @@
 
 **Production-grade Retrieval-Augmented Generation engine written in Rust.**
 
-Arcanum combines five retrieval strategies (dense vector, BM25 lexical, knowledge graph, hierarchical RAPTOR tree, and token-level ColBERT) into a single, enterprise-ready system with pluggable backends, per-backend chunking strategies, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
+Arcanum combines four independent retrieval strategies (dense vector, BM25 lexical, knowledge graph, and hierarchical RAPTOR tree, plus a ColBERT re-rank variant of Vector) into a single, enterprise-ready system with pluggable backends, per-backend chunking strategies, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
 
 ---
 
@@ -10,8 +10,8 @@ Arcanum combines five retrieval strategies (dense vector, BM25 lexical, knowledg
 
 Most RAG frameworks are single-strategy wrappers around one vector database. Arcanum is different:
 
-- **Five retrieval strategies in a single orchestrator**: hybrid dense+sparse, graph-aware, and hierarchical retrieval are first-class, not afterthoughts.
-- **Per-backend chunking**: vector, graph, and tree backends each run their own chunker. A knowledge graph benefits from hierarchical chunks; a vector index benefits from semantic coherence. Both are first-class.
+- **Four independent retrieval strategies in a single orchestrator**: hybrid dense+sparse, graph-aware, and hierarchical retrieval are first-class, not afterthoughts.
+- **Per-backend chunking**: vector, lexical (BM25), graph, and tree backends each run their own chunker and store. A knowledge graph benefits from hierarchical chunks; a vector index benefits from semantic coherence. All of them share one coordinate system (document, version, byte offsets) through the chunk registry, so results from different backends stay comparable and citable.
 - **Chunk strategy experimentation built-in**: shadow experiments A/B-test a challenger chunking strategy against the live collection without affecting queries. An offline benchmark harness and an inspect API let you measure before you commit.
 - **Hexagonal architecture enforced at the type level**: every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer**: every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
@@ -94,13 +94,13 @@ Embeds the query and performs approximate nearest-neighbour search over stored c
 Full-text retrieval via an embedded Tantivy engine. Collection-isolated: each `Bm25Retriever` instance is scoped to a single collection, preventing cross-collection data leakage at the type level.
 
 ### 3 — Graph-Augmented
-Extracts entity names from the query, traverses a knowledge graph (Neo4j or in-memory) up to a configurable hop depth, and then performs a vector search filtered to the retrieved entity contexts. Effective for relationship-heavy domains.
+Extracts entity names from the query, traverses a knowledge graph (Neo4j or in-memory) up to a configurable hop depth, and returns the chunks that mention the matched entities, ranked by hop distance (nearer entities score higher). Effective for relationship-heavy domains.
 
 ### 4 — RAPTOR (Hierarchical Tree)
 Builds a recursive summarisation tree over ingested chunks using K-means clustering. At query time, traversal spans all levels (coarse-to-fine), with level-weighted cosine scoring. Handles abstractive questions that require document-level reasoning, not just chunk-level matches.
 
-### 5 — ColBERT (Token-Level Re-Ranking)
-Performs a coarse ANN pass followed by a MaxSim token-vector re-rank. Falls back gracefully to coarse scores when token vectors are absent. Provides the precision of cross-encoder models at closer-to-bi-encoder latency.
+### ColBERT (Re-Rank Variant of Vector)
+A variant of Vector rather than a separate backend. Performs a coarse ANN pass followed by a MaxSim token-vector re-rank. Falls back gracefully to coarse scores when token vectors are absent. Provides the precision of cross-encoder models at closer-to-bi-encoder latency.
 
 ### Orchestration Modes
 
@@ -109,6 +109,8 @@ Performs a coarse ANN pass followed by a MaxSim token-vector re-rank. Falls back
 | `Static` | Fixed retriever order, first result set returned |
 | `QueryClassified` | Classifier routes queries to the most relevant retriever |
 | `ParallelFusion` | All retrievers run concurrently; document-level RRF fusion |
+
+**Chunk registry:** every backend registers its chunks in the chunk registry (`ChunkMetadataStore`) with the backend name, the document, the version and UTF-8 byte offsets into the preprocessed document. BM25, Graph and RAPTOR hydrate their hits from the registry, so each hit points at citable source text. A registry is required whenever lexical, graph or tree is enabled; the engine fails to start otherwise.
 
 **Fusion key:** Arcanum keys cross-backend fusion on `document_id`, not `chunk_id`. With per-backend chunkers each backend produces independent `ChunkId`s that never align; `document_id` is the stable, correct cross-backend key. A document appearing in both vector and graph results is boosted; one appearing in only one is not penalised.
 
@@ -152,10 +154,11 @@ When `[ingestion.docling]` is absent, the engine falls back to `default_chains`,
 
 ### Per-Backend Chunking
 
-Every pipeline template runs three independent chunking branches from the same preprocessed document:
+Every pipeline template runs independent chunking branches from the same preprocessed document:
 
 ```
 Preprocess ─┬─→ vector_chunk (chunkers.vector) → embed → vector_write
+            ├─→ lexical_chunk (chunkers.lexical) → lexical_write
             ├─→ graph_chunk  (chunkers.graph)  → entity_extract → graph_write
             └─→ tree_chunk   (chunkers.tree)   → tree_embed → raptor_build → tree_write
 ```

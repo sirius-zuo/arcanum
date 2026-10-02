@@ -75,6 +75,10 @@ pub(crate) fn resolve_chunkers(
     let vector_cfg = collection_config
         .map(|c| &c.vector)
         .unwrap_or(&global_config.vector);
+    let lexical_cfg = collection_config
+        .and_then(|c| c.lexical.as_ref())
+        .or(global_config.lexical.as_ref())
+        .unwrap_or(&global_config.vector);
     let graph_cfg = collection_config
         .and_then(|c| c.graph.as_ref())
         .or(global_config.graph.as_ref())
@@ -85,7 +89,61 @@ pub(crate) fn resolve_chunkers(
         .unwrap_or(&global_config.vector);
     Ok(PerBackendChunkers {
         vector: registry.build(vector_cfg)?,
+        lexical: registry.build(lexical_cfg)?,
         graph: registry.build(graph_cfg)?,
         tree: registry.build(tree_cfg)?,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arcanum_core::types::{ChunkStrategyConfig, RawDocument};
+
+    fn fixed(size: u64) -> ChunkStrategyConfig {
+        ChunkStrategyConfig {
+            strategy: "fixed".to_string(),
+            params: serde_json::json!({ "chunk_size": size, "overlap": 0 }),
+        }
+    }
+
+    fn doc() -> RawDocument {
+        RawDocument::for_test("word ".repeat(100).into_bytes(), "text/plain")
+    }
+
+    #[tokio::test]
+    async fn resolve_chunkers_lexical_falls_back_to_vector_config() {
+        let global = PerBackendChunkConfig {
+            vector: fixed(100),
+            ..Default::default()
+        };
+        let c = resolve_chunkers(None, &global).unwrap();
+        assert!(!Arc::ptr_eq(&c.lexical, &c.vector));
+        let d = doc();
+        let lexical = c.lexical.chunk(&d).await.unwrap();
+        let vector = c.vector.chunk(&d).await.unwrap();
+        assert_eq!(lexical.len(), vector.len());
+    }
+
+    #[tokio::test]
+    async fn resolve_chunkers_prefers_collection_lexical() {
+        let global = PerBackendChunkConfig {
+            vector: fixed(200),
+            lexical: Some(fixed(150)),
+            ..Default::default()
+        };
+        let collection = PerBackendChunkConfig {
+            vector: fixed(200),
+            lexical: Some(fixed(50)),
+            ..Default::default()
+        };
+        let c = resolve_chunkers(Some(&collection), &global).unwrap();
+        let d = doc();
+        let lexical = c.lexical.chunk(&d).await.unwrap();
+        let vector = c.vector.chunk(&d).await.unwrap();
+        assert!(lexical.len() > vector.len());
+        let g = resolve_chunkers(None, &global).unwrap();
+        let global_lexical = g.lexical.chunk(&d).await.unwrap();
+        assert!(lexical.len() > global_lexical.len());
+    }
 }

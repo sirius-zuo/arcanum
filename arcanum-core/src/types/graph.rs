@@ -30,6 +30,14 @@ pub struct Entity {
     pub collection_id: String,
 }
 
+/// An entity returned by `GraphStore::query`, with its hop distance from the
+/// nearest seed (name/type match). Seeds have `hops == 0`.
+#[derive(Debug, Clone)]
+pub struct EntityHit {
+    pub entity: Entity,
+    pub hops: u32,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Relation {
     pub source: EntityId,

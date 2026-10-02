@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod fusion;
+pub mod hydrate;
 pub mod orchestrator;
 pub mod processor;
 pub mod reranker;

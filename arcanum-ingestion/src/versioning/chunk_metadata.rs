@@ -1,6 +1,6 @@
 use arcanum_core::{
     traits::ChunkMetadataStore,
-    types::{ChunkId, ChunkMetadataRecord, DocumentId},
+    types::{ChunkBackend, ChunkId, ChunkMetadataRecord, DocumentId},
     ArcanumError, Result,
 };
 use async_trait::async_trait;
@@ -14,6 +14,9 @@ struct ChunkMetadataRow {
     document_id: uuid::Uuid,
     collection_id: String,
     version_num: i32,
+    backend: String,
+    text: String,
+    chunk_index: i32,
     source_uri: String,
     snapshot_uri: String,
     canonical_uri: Option<String>,
@@ -23,6 +26,36 @@ struct ChunkMetadataRow {
     offset_start: i64,
     offset_end: i64,
     ingested_at: chrono::DateTime<Utc>,
+}
+
+const SELECT_COLUMNS: &str = "chunk_id, document_id, collection_id, version_num, chunk_index, \
+     backend, text, source_uri, snapshot_uri, canonical_uri, page, section, block_ids, \
+     offset_start, offset_end, ingested_at";
+
+impl ChunkMetadataRow {
+    fn into_record(self) -> Result<ChunkMetadataRecord> {
+        let block_ids: Vec<String> = serde_json::from_value(self.block_ids)
+            .map_err(|e| ArcanumError::Storage(format!("deserialize block_ids: {}", e)))?;
+        let backend: ChunkBackend = self.backend.parse()?;
+        Ok(ChunkMetadataRecord {
+            chunk_id: ChunkId(self.chunk_id),
+            document_id: DocumentId(self.document_id),
+            collection_id: self.collection_id,
+            version_num: self.version_num as u32,
+            backend,
+            text: self.text,
+            chunk_index: self.chunk_index as usize,
+            source_uri: self.source_uri,
+            snapshot_uri: self.snapshot_uri,
+            canonical_uri: self.canonical_uri,
+            page: self.page.map(|p| p as u32),
+            section: self.section,
+            block_ids,
+            offset_start: self.offset_start as usize,
+            offset_end: self.offset_end as usize,
+            ingested_at: self.ingested_at,
+        })
+    }
 }
 
 pub struct PostgresChunkMetadataStore {
@@ -47,6 +80,9 @@ impl PostgresChunkMetadataStore {
                 document_id   UUID        NOT NULL,
                 collection_id TEXT        NOT NULL,
                 version_num   INTEGER     NOT NULL,
+                chunk_index   INTEGER     NOT NULL,
+                backend       TEXT        NOT NULL,
+                text          TEXT        NOT NULL,
                 source_uri    TEXT        NOT NULL,
                 snapshot_uri  TEXT        NOT NULL,
                 canonical_uri TEXT,
@@ -68,18 +104,6 @@ impl PostgresChunkMetadataStore {
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_chunk_meta_col_uri ON chunk_metadata (collection_id, source_uri)")
             .execute(&self.pool).await.ok();
 
-        // Widen existing deployments created before offsets moved from INTEGER to BIGINT
-        // (INTEGER silently truncated/wrapped offsets past 2^31, corrupting evidence spans
-        // for documents over ~2GB).
-        sqlx::query("ALTER TABLE chunk_metadata ALTER COLUMN offset_start TYPE BIGINT")
-            .execute(&self.pool)
-            .await
-            .ok();
-        sqlx::query("ALTER TABLE chunk_metadata ALTER COLUMN offset_end TYPE BIGINT")
-            .execute(&self.pool)
-            .await
-            .ok();
-
         Ok(())
     }
 }
@@ -92,11 +116,15 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
             .map_err(|e| ArcanumError::Storage(format!("serialize block_ids: {}", e)))?;
         sqlx::query(
             r#"INSERT INTO chunk_metadata
-               (chunk_id, document_id, collection_id, version_num, source_uri, snapshot_uri,
-                canonical_uri, page, section, block_ids, offset_start, offset_end, ingested_at)
-               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+               (chunk_id, document_id, collection_id, version_num, chunk_index, backend, text,
+                source_uri, snapshot_uri, canonical_uri, page, section, block_ids,
+                offset_start, offset_end, ingested_at)
+               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
                ON CONFLICT (chunk_id) DO UPDATE SET
                  version_num   = EXCLUDED.version_num,
+                 chunk_index   = EXCLUDED.chunk_index,
+                 backend       = EXCLUDED.backend,
+                 text          = EXCLUDED.text,
                  source_uri    = EXCLUDED.source_uri,
                  snapshot_uri  = EXCLUDED.snapshot_uri,
                  canonical_uri = EXCLUDED.canonical_uri,
@@ -111,6 +139,9 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
         .bind(record.document_id.0)
         .bind(&record.collection_id)
         .bind(record.version_num as i32)
+        .bind(record.chunk_index as i32)
+        .bind(record.backend.as_str())
+        .bind(&record.text)
         .bind(&record.source_uri)
         .bind(&record.snapshot_uri)
         .bind(&record.canonical_uri)
@@ -128,36 +159,31 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
 
     #[instrument(skip(self), fields(store = "postgres_chunk_meta", chunk_id = %chunk_id.0), err)]
     async fn get(&self, chunk_id: &ChunkId) -> Result<Option<ChunkMetadataRecord>> {
-        let row = sqlx::query_as::<_, ChunkMetadataRow>(
-            r#"SELECT chunk_id, document_id, collection_id, version_num, source_uri, snapshot_uri,
-                      canonical_uri, page, section, block_ids, offset_start, offset_end, ingested_at
-               FROM chunk_metadata WHERE chunk_id = $1"#,
-        )
+        let row = sqlx::query_as::<_, ChunkMetadataRow>(&format!(
+            "SELECT {SELECT_COLUMNS} FROM chunk_metadata WHERE chunk_id = $1"
+        ))
         .bind(chunk_id.0)
         .fetch_optional(&self.pool)
         .await
         .map_err(|e| ArcanumError::Storage(format!("get chunk_metadata: {}", e)))?;
 
-        let Some(r) = row else { return Ok(None) };
+        row.map(ChunkMetadataRow::into_record).transpose()
+    }
 
-        let block_ids: Vec<String> = serde_json::from_value(r.block_ids)
-            .map_err(|e| ArcanumError::Storage(format!("deserialize block_ids: {}", e)))?;
+    #[instrument(skip(self, ids), fields(store = "postgres_chunk_meta", count = ids.len()), err)]
+    async fn get_many(&self, ids: &[ChunkId]) -> Result<Vec<ChunkMetadataRecord>> {
+        let uuids: Vec<uuid::Uuid> = ids.iter().map(|id| id.0).collect();
+        let rows = sqlx::query_as::<_, ChunkMetadataRow>(&format!(
+            "SELECT {SELECT_COLUMNS} FROM chunk_metadata WHERE chunk_id = ANY($1)"
+        ))
+        .bind(&uuids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get_many chunk_metadata: {}", e)))?;
 
-        Ok(Some(ChunkMetadataRecord {
-            chunk_id: ChunkId(r.chunk_id),
-            document_id: DocumentId(r.document_id),
-            collection_id: r.collection_id,
-            version_num: r.version_num as u32,
-            source_uri: r.source_uri,
-            snapshot_uri: r.snapshot_uri,
-            canonical_uri: r.canonical_uri,
-            page: r.page.map(|p| p as u32),
-            section: r.section,
-            block_ids,
-            offset_start: r.offset_start as usize,
-            offset_end: r.offset_end as usize,
-            ingested_at: r.ingested_at,
-        }))
+        rows.into_iter()
+            .map(ChunkMetadataRow::into_record)
+            .collect()
     }
 
     #[instrument(
@@ -206,6 +232,9 @@ mod tests {
             document_id: DocumentId::new(),
             collection_id: "test_col".into(),
             version_num: 1,
+            backend: ChunkBackend::Vector,
+            text: String::new(),
+            chunk_index: 0,
             source_uri: "file://doc.pdf".into(),
             snapshot_uri: "file:///snapshots/doc/1.raw".into(),
             canonical_uri: None,
@@ -235,6 +264,9 @@ mod tests {
             document_id: DocumentId::new(),
             collection_id: "test_col".into(),
             version_num: 1,
+            backend: ChunkBackend::Vector,
+            text: String::new(),
+            chunk_index: 0,
             source_uri: "file://to_delete.pdf".into(),
             snapshot_uri: "file:///snapshots/d/1.raw".into(),
             canonical_uri: None,
@@ -252,5 +284,59 @@ mod tests {
             .await
             .unwrap();
         assert!(store.get(&chunk_id).await.unwrap().is_none());
+    }
+
+    fn new_record(backend: ChunkBackend, text: &str, idx: usize) -> ChunkMetadataRecord {
+        ChunkMetadataRecord {
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
+            collection_id: "test_col".into(),
+            version_num: 2,
+            backend,
+            text: text.into(),
+            chunk_index: idx,
+            source_uri: "file://new_cols.pdf".into(),
+            snapshot_uri: "file:///snapshots/n/2.raw".into(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 5,
+            offset_end: 5 + text.len(),
+            ingested_at: Utc::now(),
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres — set TEST_DATABASE_URL"]
+    async fn put_get_round_trips_new_columns() {
+        let url = std::env::var("TEST_DATABASE_URL").unwrap();
+        let store = PostgresChunkMetadataStore::new(&url).await.unwrap();
+        let r = new_record(ChunkBackend::Tree, "tree text", 9);
+        store.put(&r).await.unwrap();
+        let found = store.get(&r.chunk_id).await.unwrap().unwrap();
+        assert_eq!(found.backend, ChunkBackend::Tree);
+        assert_eq!(found.text, "tree text");
+        assert_eq!(found.chunk_index, 9);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Postgres — set TEST_DATABASE_URL"]
+    async fn get_many_postgres() {
+        let url = std::env::var("TEST_DATABASE_URL").unwrap();
+        let store = PostgresChunkMetadataStore::new(&url).await.unwrap();
+        let a = new_record(ChunkBackend::Vector, "aaa", 0);
+        let b = new_record(ChunkBackend::Lexical, "bbb", 1);
+        store.put(&a).await.unwrap();
+        store.put(&b).await.unwrap();
+        let got = store
+            .get_many(&[a.chunk_id.clone(), ChunkId::new(), b.chunk_id.clone()])
+            .await
+            .unwrap();
+        let mut ids: Vec<_> = got.iter().map(|r| r.chunk_id.0).collect();
+        ids.sort();
+        let mut want = vec![a.chunk_id.0, b.chunk_id.0];
+        want.sort();
+        assert_eq!(ids, want);
     }
 }

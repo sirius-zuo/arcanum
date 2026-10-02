@@ -1,3 +1,4 @@
+use super::{line_spans, trimmed_span};
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
 use metrics;
@@ -13,13 +14,11 @@ impl StructureAwareChunker {
     }
 }
 
-fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str) -> Chunk {
-    let t = text.trim().to_string();
-    let start = source_text.find(&t).unwrap_or(0);
-    let end = start + t.len();
+fn build_chunk(doc: &RawDocument, index: usize, source_text: &str, span: (usize, usize)) -> Chunk {
+    let (start, end) = trimmed_span(source_text, span.0, span.1).unwrap_or((span.0, span.0));
     Chunk {
         id: ChunkId::new(),
-        text: t,
+        text: source_text[start..end].to_string(),
         document_id: doc.id.clone(),
         collection_id: CollectionId("default".into()),
         position: ChunkPosition { start, end, index },
@@ -28,31 +27,31 @@ fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str)
     }
 }
 
-fn split_into_blocks(text: &str) -> Vec<String> {
+/// Byte spans of blocks: runs of lines, with fenced code blocks kept separate.
+fn split_into_blocks(text: &str) -> Vec<(usize, usize)> {
     let mut blocks = Vec::new();
     let mut in_code = false;
-    let mut current: Vec<String> = Vec::new();
-    for line in text.lines() {
-        if line.starts_with("```") {
+    let mut current: Option<(usize, usize)> = None;
+    for (ls, le) in line_spans(text) {
+        let extend = |c: Option<(usize, usize)>| Some((c.map_or(ls, |(s, _)| s), le));
+        if text[ls..le].starts_with("```") {
             if in_code {
-                current.push(line.to_string());
-                blocks.push(current.join("\n"));
-                current = Vec::new();
+                blocks.push(extend(current).unwrap());
+                current = None;
                 in_code = false;
             } else {
-                if !current.is_empty() {
-                    blocks.push(current.join("\n"));
-                    current = Vec::new();
+                if let Some(c) = current.take() {
+                    blocks.push(c);
                 }
-                current.push(line.to_string());
+                current = extend(None);
                 in_code = true;
             }
         } else {
-            current.push(line.to_string());
+            current = extend(current);
         }
     }
-    if !current.is_empty() {
-        blocks.push(current.join("\n"));
+    if let Some(c) = current {
+        blocks.push(c);
     }
     blocks
 }
@@ -65,40 +64,44 @@ impl Chunker for StructureAwareChunker {
         let blocks = split_into_blocks(&text);
 
         let mut chunks = Vec::new();
-        let mut current = String::new();
+        // Source span of the prose accumulated so far.
+        let mut current: Option<(usize, usize)> = None;
         let mut idx = 0;
 
-        for block in blocks {
+        for (bs, be) in blocks {
+            let block = &text[bs..be];
             let is_atomic = block.starts_with("```") || block.trim_start().starts_with('|');
             if is_atomic {
-                if !current.trim().is_empty() {
-                    chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
-                    idx += 1;
-                    current = String::new();
+                if let Some(c) = current.take() {
+                    if !text[c.0..c.1].trim().is_empty() {
+                        chunks.push(build_chunk(doc, idx, &text, c));
+                        idx += 1;
+                    }
                 }
-                chunks.push(build_chunk(block.trim().to_string(), doc, idx, &text));
+                chunks.push(build_chunk(doc, idx, &text, (bs, be)));
                 idx += 1;
             } else {
-                // Split prose block into lines and accumulate up to max_chunk_chars
-                for line in block.lines() {
-                    if !current.is_empty() && current.len() + line.len() + 1 > self.max_chunk_chars
-                    {
-                        chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
-                        idx += 1;
-                        current = String::new();
+                // Accumulate prose lines up to max_chunk_chars
+                for (ls, le) in line_spans(block) {
+                    let (ls, le) = (bs + ls, bs + le);
+                    if let Some(c) = current {
+                        if c.1 > c.0 && (c.1 - c.0) + (le - ls) + 1 > self.max_chunk_chars {
+                            chunks.push(build_chunk(doc, idx, &text, c));
+                            idx += 1;
+                            current = None;
+                        }
                     }
-                    if !current.is_empty() {
-                        current.push('\n');
-                    }
-                    current.push_str(line);
+                    current = Some((current.map_or(ls, |(s, _)| s), le));
                 }
             }
         }
-        if !current.trim().is_empty() {
-            chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
+        if let Some(c) = current {
+            if !text[c.0..c.1].trim().is_empty() {
+                chunks.push(build_chunk(doc, idx, &text, c));
+            }
         }
         if chunks.is_empty() {
-            chunks.push(build_chunk(text.trim().to_string(), doc, 0, &text));
+            chunks.push(build_chunk(doc, 0, &text, (0, text.len())));
         }
         tracing::Span::current().record("chunk_count", chunks.len());
         metrics::histogram!("arcanum_chunk_count", "chunker" => "structure")

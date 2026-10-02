@@ -119,6 +119,7 @@ async fn cleanup_stage_never_calls_supersede_active() {
             vector_store,
             None,
             None,
+            None,
         ));
 
     let mut ctx = StageContext::default();

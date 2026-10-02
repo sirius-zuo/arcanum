@@ -110,40 +110,36 @@ impl GraphStore for Neo4jStore {
     }
 
     #[instrument(skip(self, q), fields(store = "neo4j", collection), err)]
-    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<EntityHit>> {
         let name_pattern = q.entity_name.clone().unwrap_or_default();
         let entity_type = q.entity_type.clone().unwrap_or_default();
 
-        let cypher = if !entity_type.is_empty() && !name_pattern.is_empty() {
-            "MATCH (e:Entity {collection: $collection}) \
-             WHERE e.name CONTAINS $name AND e.entity_type = $entity_type \
-             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
-                    e.source_chunks as source_chunks"
-        } else if !entity_type.is_empty() {
-            "MATCH (e:Entity {collection: $collection}) \
-             WHERE e.entity_type = $entity_type \
-             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
-                    e.source_chunks as source_chunks"
-        } else if !name_pattern.is_empty() {
-            "MATCH (e:Entity {collection: $collection}) \
-             WHERE e.name CONTAINS $name \
-             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
-                    e.source_chunks as source_chunks"
-        } else {
-            "MATCH (e:Entity {collection: $collection}) \
-             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
-                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
-                    e.source_chunks as source_chunks \
-             LIMIT 100"
+        let (seed_filter, seed_limit) = match (!entity_type.is_empty(), !name_pattern.is_empty()) {
+            (true, true) => (
+                "WHERE s.name CONTAINS $name AND s.entity_type = $entity_type ",
+                "",
+            ),
+            (true, false) => ("WHERE s.entity_type = $entity_type ", ""),
+            (false, true) => ("WHERE s.name CONTAINS $name ", ""),
+            (false, false) => ("", "LIMIT 100 "),
         };
+        // Cypher cannot parameterize the variable-length bound, so format the u32 in.
+        let cypher = format!(
+            "MATCH (s:Entity {{collection: $collection}}) {seed_filter}\
+             WITH s {seed_limit}\
+             MATCH p=(s)-[*0..{max_hops}]-(e:Entity {{collection: $collection}}) \
+             WHERE ALL(n IN nodes(p) WHERE n.collection = $collection) \
+             RETURN e.id as id, e.name as name, e.entity_type as entity_type, \
+                    e.canonical_id as canonical_id, e.source_uri as source_uri, \
+                    e.source_chunks as source_chunks, min(length(p)) AS hops \
+             ORDER BY hops, name",
+            max_hops = q.max_hops
+        );
 
         let mut stream = self
             .graph
             .execute(
-                query(cypher)
+                query(&cypher)
                     .param("collection", collection.to_string())
                     .param("name", name_pattern)
                     .param("entity_type", entity_type),
@@ -173,14 +169,20 @@ impl GraphStore for Neo4jStore {
             let id = id_str
                 .parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse uuid: {}", e)))?;
-            entities.push(Entity {
-                id: EntityId(id),
-                name,
-                entity_type,
-                canonical_id: canonical_id.filter(|s| !s.is_empty()),
-                source_chunks,
-                source_uri,
-                collection_id: collection.to_string(),
+            let hops: i64 = row
+                .get("hops")
+                .map_err(|e| ArcanumError::Storage(format!("get hops: {}", e)))?;
+            entities.push(EntityHit {
+                entity: Entity {
+                    id: EntityId(id),
+                    name,
+                    entity_type,
+                    canonical_id: canonical_id.filter(|s| !s.is_empty()),
+                    source_chunks,
+                    source_uri,
+                    collection_id: collection.to_string(),
+                },
+                hops: hops as u32,
             });
         }
         Ok(entities)
@@ -569,6 +571,41 @@ mod tests {
         };
         let results = store.query("test-col", &q).await.expect("query");
         assert!(!results.is_empty());
+        assert_eq!(results[0].hops, 0);
+
+        // Hop distance: A-B relation, seed A reaches B at 1 hop.
+        let other = Entity {
+            id: EntityId::new(),
+            name: "Neighbor Entity".to_string(),
+            entity_type: "PERSON".to_string(),
+            canonical_id: None,
+            source_chunks: vec![],
+            source_uri: "".to_string(),
+            collection_id: "test-col".to_string(),
+        };
+        store
+            .upsert_entities("test-col", vec![other.clone()])
+            .await
+            .expect("upsert neighbor");
+        store
+            .upsert_relations(
+                "test-col",
+                vec![Relation {
+                    source: entity.id.clone(),
+                    relation_type: "KNOWS".to_string(),
+                    target: other.id.clone(),
+                    confidence: 1.0,
+                    source_chunks: vec![],
+                }],
+            )
+            .await
+            .expect("upsert relation");
+        let hits = store.query("test-col", &q).await.expect("query hops");
+        let neighbor = hits
+            .iter()
+            .find(|h| h.entity.id.0 == other.id.0)
+            .expect("neighbor reached");
+        assert_eq!(neighbor.hops, 1);
     }
 
     /// Verifies that list_collections returns collections populated by upsert_entities

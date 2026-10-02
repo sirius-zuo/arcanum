@@ -15,5 +15,7 @@ pub fn is_core_stage(stage_id: &str) -> bool {
             | "tree_chunk"
             | "embed"
             | "vector_write"
+            | "lexical_chunk"
+            | "lexical_write"
     )
 }

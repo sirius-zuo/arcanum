@@ -58,7 +58,7 @@ pub struct GraphQuery {
 pub trait GraphStore: Send + Sync {
     async fn upsert_entities(&self, collection: &str, entities: Vec<Entity>) -> Result<()>;
     async fn upsert_relations(&self, collection: &str, relations: Vec<Relation>) -> Result<()>;
-    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>>;
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<EntityHit>>;
     async fn get_relations(&self, entity_id: &EntityId) -> Result<Vec<Relation>>;
     /// Delete all entities (and their relations) for the given source_uri in the collection.
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
@@ -132,6 +132,41 @@ pub fn relation_touches_removed_entity(
 ) -> bool {
     removed_ids.contains(&relation.source.0.to_string())
         || removed_ids.contains(&relation.target.0.to_string())
+}
+
+/// Breadth-first walk over `relations` in both directions from `seeds`, up to
+/// `max_hops`. Returns the minimum hop count per reachable id (seeds are 0).
+/// Callers pass only the relations whose endpoints are both in scope.
+pub fn walk_hops(
+    seeds: &[uuid::Uuid],
+    relations: &[Relation],
+    max_hops: u32,
+) -> std::collections::HashMap<uuid::Uuid, u32> {
+    let mut adjacency: std::collections::HashMap<uuid::Uuid, Vec<uuid::Uuid>> =
+        std::collections::HashMap::new();
+    for r in relations {
+        adjacency.entry(r.source.0).or_default().push(r.target.0);
+        adjacency.entry(r.target.0).or_default().push(r.source.0);
+    }
+    let mut hops: std::collections::HashMap<uuid::Uuid, u32> =
+        seeds.iter().map(|id| (*id, 0)).collect();
+    let mut frontier: Vec<uuid::Uuid> = hops.keys().copied().collect();
+    for depth in 1..=max_hops {
+        let mut next = vec![];
+        for id in &frontier {
+            for n in adjacency.get(id).into_iter().flatten() {
+                if !hops.contains_key(n) {
+                    hops.insert(*n, depth);
+                    next.push(*n);
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    hops
 }
 
 /// Merges a newly-upserted relation into an already-stored relation for the

@@ -68,10 +68,16 @@ pub async fn get_graph(
     let q = GraphQuery {
         entity_name: None,
         entity_type: None,
-        max_hops: 1,
+        max_hops: 0,
         relation_filter: None,
     };
-    let entities = store.query(collection, &q).await.unwrap_or_default();
+    let entities: Vec<_> = store
+        .query(collection, &q)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|hit| hit.entity)
+        .collect();
 
     let mut nodes = Vec::new();
     let mut edges = Vec::new();

@@ -1,5 +1,7 @@
 use arcanum_core::{
-    traits::store::{merge_relation, relation_identity_key, relation_touches_removed_entity},
+    traits::store::{
+        merge_relation, relation_identity_key, relation_touches_removed_entity, walk_hops,
+    },
     traits::*,
     types::*,
     ArcanumError, Result,
@@ -14,6 +16,9 @@ use tracing::instrument;
 
 pub mod query_planner;
 pub use query_planner::GraphQueryPlanner;
+
+pub mod scorer;
+pub use scorer::HopDecayScorer;
 
 pub mod neo4j_store;
 pub use neo4j_store::Neo4jStore;
@@ -101,10 +106,10 @@ impl GraphStore for InMemoryGraphStore {
         fields(store = "in_memory_graph", collection, result_count),
         err
     )]
-    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<EntityHit>> {
         let map = self.entities.read().await;
         let entities = map.get(collection).cloned().unwrap_or_default();
-        let mut results: Vec<Entity> = entities
+        let mut seeds: Vec<uuid::Uuid> = entities
             .values()
             .filter(|e| {
                 q.entity_name
@@ -116,11 +121,32 @@ impl GraphStore for InMemoryGraphStore {
                         .map(|t| e.entity_type == t)
                         .unwrap_or(true)
             })
-            .cloned()
+            .map(|e| e.id.0)
             .collect();
         if q.entity_name.is_none() && q.entity_type.is_none() {
-            results.truncate(100);
+            seeds.truncate(100);
         }
+        let in_scope: Vec<Relation> = {
+            let all = self.relations.read().await;
+            all.values()
+                .filter(|r| {
+                    entities.contains_key(&r.source.0.to_string())
+                        && entities.contains_key(&r.target.0.to_string())
+                })
+                .cloned()
+                .collect()
+        };
+        let hops = walk_hops(&seeds, &in_scope, q.max_hops);
+        let mut results: Vec<EntityHit> = hops
+            .into_iter()
+            .filter_map(|(id, hops)| {
+                entities.get(&id.to_string()).map(|e| EntityHit {
+                    entity: e.clone(),
+                    hops,
+                })
+            })
+            .collect();
+        results.sort_by(|a, b| (a.hops, &a.entity.name).cmp(&(b.hops, &b.entity.name)));
         tracing::Span::current().record("result_count", results.len());
         Ok(results)
     }
@@ -372,7 +398,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "Doc B");
+        assert_eq!(results[0].entity.name, "Doc B");
 
         // Verify the relation was also removed (cascade)
         let relations = store.get_relations(&id2).await.unwrap();
@@ -414,11 +440,11 @@ mod tests {
         };
         let col_a = store.query("col-a", &gq).await.unwrap();
         assert_eq!(col_a.len(), 1);
-        assert_eq!(col_a[0].name, "Alpha");
+        assert_eq!(col_a[0].entity.name, "Alpha");
 
         let col_b = store.query("col-b", &gq).await.unwrap();
         assert_eq!(col_b.len(), 1);
-        assert_eq!(col_b[0].name, "Beta");
+        assert_eq!(col_b[0].entity.name, "Beta");
     }
 
     #[tokio::test]
@@ -974,6 +1000,123 @@ mod tests {
         assert!(
             relations.is_empty(),
             "relation must be cascade-deleted when its target entity is removed"
+        );
+    }
+
+    fn hop_entity(name: &str) -> Entity {
+        Entity {
+            id: EntityId::new(),
+            name: name.into(),
+            entity_type: "T".into(),
+            canonical_id: None,
+            source_chunks: vec![],
+            source_uri: "".into(),
+            collection_id: "col".into(),
+        }
+    }
+
+    fn hop_rel(a: &Entity, b: &Entity) -> Relation {
+        Relation {
+            source: a.id.clone(),
+            relation_type: "R".into(),
+            target: b.id.clone(),
+            confidence: 1.0,
+            source_chunks: vec![],
+        }
+    }
+
+    fn seed_query(name: &str, max_hops: u32) -> GraphQuery {
+        GraphQuery {
+            entity_name: Some(name.into()),
+            entity_type: None,
+            max_hops,
+            relation_filter: None,
+        }
+    }
+
+    fn hops_of(hits: &[EntityHit]) -> Vec<(String, u32)> {
+        hits.iter()
+            .map(|h| (h.entity.name.clone(), h.hops))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn query_seed_has_zero_hops() {
+        let store = InMemoryGraphStore::new();
+        store
+            .upsert_entities("col", vec![hop_entity("Seed")])
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("Seed", 0)).await.unwrap();
+        assert_eq!(hops_of(&hits), vec![("Seed".to_string(), 0)]);
+    }
+
+    #[tokio::test]
+    async fn query_expands_neighbors_up_to_max_hops() {
+        let store = InMemoryGraphStore::new();
+        let (a, b, c) = (hop_entity("A"), hop_entity("B"), hop_entity("C"));
+        store
+            .upsert_entities("col", vec![a.clone(), b.clone(), c.clone()])
+            .await
+            .unwrap();
+        store
+            .upsert_relations("col", vec![hop_rel(&a, &b), hop_rel(&b, &c)])
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("A", 1)).await.unwrap();
+        assert_eq!(
+            hops_of(&hits),
+            vec![("A".to_string(), 0), ("B".to_string(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_follows_incoming_relations() {
+        let store = InMemoryGraphStore::new();
+        let (a, b) = (hop_entity("A"), hop_entity("B"));
+        store
+            .upsert_entities("col", vec![a.clone(), b.clone()])
+            .await
+            .unwrap();
+        store
+            .upsert_relations("col", vec![hop_rel(&b, &a)])
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("A", 1)).await.unwrap();
+        assert_eq!(
+            hops_of(&hits),
+            vec![("A".to_string(), 0), ("B".to_string(), 1)]
+        );
+    }
+
+    #[tokio::test]
+    async fn query_reports_minimum_hops_and_terminates_on_cycles() {
+        let store = InMemoryGraphStore::new();
+        let (a, b, c) = (hop_entity("A"), hop_entity("B"), hop_entity("C"));
+        store
+            .upsert_entities("col", vec![a.clone(), b.clone(), c.clone()])
+            .await
+            .unwrap();
+        store
+            .upsert_relations(
+                "col",
+                vec![
+                    hop_rel(&a, &b),
+                    hop_rel(&b, &c),
+                    hop_rel(&a, &c),
+                    hop_rel(&c, &a),
+                ],
+            )
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("A", 5)).await.unwrap();
+        assert_eq!(
+            hops_of(&hits),
+            vec![
+                ("A".to_string(), 0),
+                ("B".to_string(), 1),
+                ("C".to_string(), 1)
+            ]
         );
     }
 }

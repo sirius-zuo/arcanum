@@ -29,7 +29,7 @@ async fn test_upsert_and_query_entities() {
         .await
         .unwrap();
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].name, "Rust");
+    assert_eq!(results[0].entity.name, "Rust");
 }
 
 #[tokio::test]

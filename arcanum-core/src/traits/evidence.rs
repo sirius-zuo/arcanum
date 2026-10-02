@@ -21,6 +21,9 @@ pub trait EvidenceResolver: Send + Sync {
 pub trait ChunkMetadataStore: Send + Sync {
     async fn put(&self, record: &ChunkMetadataRecord) -> Result<()>;
     async fn get(&self, chunk_id: &ChunkId) -> Result<Option<ChunkMetadataRecord>>;
+    /// Fetch several records at once. Missing ids are absent from the result and the
+    /// order is unspecified.
+    async fn get_many(&self, ids: &[ChunkId]) -> Result<Vec<ChunkMetadataRecord>>;
     async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()>;
     /// Delete all chunk_metadata rows belonging to a specific document version, returning
     /// the chunk IDs that were removed. Unlike `delete_by_source_uri`, this is scoped to a
