@@ -6,7 +6,7 @@ mod provenance_harness;
 
 use arcanum_core::traits::{ChunkMetadataStore, EvidenceResolver, Retriever, TreeStore};
 use arcanum_core::types::RetrievalStrategy;
-use arcanum_core::types::{CollectionId, Query};
+use arcanum_core::types::{ChunkKind, CollectionId, Query};
 use arcanum_evidence::resolver::DefaultEvidenceResolver;
 use arcanum_graph::GraphQueryPlanner;
 use arcanum_retrieval::{
@@ -64,15 +64,18 @@ async fn bm25_results_carry_real_text_and_document_id() {
 }
 
 #[tokio::test]
-#[ignore = "fixed by Task 11"]
 async fn raptor_leaf_results_carry_provenance_and_offsets() {
     let fx = ingest_fixture().await;
-    let retriever = RaptorRetriever::new(fx.tree_store.clone(), Arc::new(KeywordEmbedder), 3);
+    let retriever = RaptorRetriever::new(
+        fx.tree_store.clone(),
+        Arc::new(KeywordEmbedder),
+        fx.chunk_metadata.clone(),
+        3,
+    );
     let results = retriever.retrieve(&query("rockets", 20)).await.unwrap();
-    // Level is currently encoded in position.index (Task 11 switches this to kind == Source).
     let leaves: Vec<_> = results
         .iter()
-        .filter(|r| r.indexed_chunk.chunk.position.index == 0)
+        .filter(|r| r.kind == ChunkKind::Source)
         .collect();
     assert!(!leaves.is_empty(), "no level-0 results");
     for r in leaves {

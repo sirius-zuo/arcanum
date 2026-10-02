@@ -749,10 +749,13 @@ impl ArcanumEngineBuilder {
             )));
             retriever_count += 1;
         }
-        if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {
+        if let (Some(ts), Some(emb), Some(cms)) =
+            (&self.tree_store, &self.embedder, &chunk_metadata_store)
+        {
             orchestrator = orchestrator.add_retriever(Arc::new(RaptorRetriever::new(
                 ts.clone(),
                 emb.clone(),
+                cms.clone(),
                 3,
             )));
             retriever_count += 1;

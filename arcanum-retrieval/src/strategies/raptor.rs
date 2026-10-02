@@ -1,8 +1,8 @@
+use crate::hydrate::fetch_records;
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
-use tracing::instrument;
-use uuid::Uuid;
+use tracing::{instrument, warn};
 
 /// RAPTOR retriever: queries hierarchical tree levels (coarse→fine), scoring
 /// each node with cosine similarity to the query vector, weighted by level
@@ -10,26 +10,21 @@ use uuid::Uuid;
 pub struct RaptorRetriever {
     tree_store: Arc<dyn TreeStore>,
     embedder: Arc<dyn Embedder>,
+    chunk_metadata: Arc<dyn ChunkMetadataStore>,
     max_depth: usize,
 }
-
-/// Fixed namespace for deriving a stable DocumentId from a TreeNode's
-/// source_uri, so multiple nodes from the same source document collapse
-/// onto one DocumentId instead of each getting a fresh random one — see
-/// the doc_id derivation in `retrieve` below.
-const SOURCE_URI_NAMESPACE: Uuid = Uuid::from_bytes([
-    0xa1, 0x1c, 0xa4, 0x4e, 0x6d, 0x0e, 0x4c, 0x0b, 0x9c, 0x1e, 0x52, 0x2e, 0xf3, 0x0a, 0x9b, 0x7d,
-]);
 
 impl RaptorRetriever {
     pub fn new(
         tree_store: Arc<dyn TreeStore>,
         embedder: Arc<dyn Embedder>,
+        chunk_metadata: Arc<dyn ChunkMetadataStore>,
         max_depth: usize,
     ) -> Self {
         Self {
             tree_store,
             embedder,
+            chunk_metadata,
             max_depth,
         }
     }
@@ -80,50 +75,75 @@ impl Retriever for RaptorRetriever {
         candidates.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         candidates.truncate(query.top_k);
 
-        Ok(candidates
-            .into_iter()
-            .map(|(score, node)| {
-                // Deterministic per source_uri so multiple chunks/nodes from the
-                // same document share a DocumentId (needed for reduce_to_best_per_doc
-                // and cross-strategy fusion to recognize them as one document);
-                // falls back to the node's own id when source_uri is unset so we
-                // don't collapse every untitled node onto the same DocumentId.
-                let doc_id = if node.source_uri.is_empty() {
-                    DocumentId(node.id.0)
-                } else {
-                    DocumentId(Uuid::new_v5(
-                        &SOURCE_URI_NAMESPACE,
-                        node.source_uri.as_bytes(),
-                    ))
-                };
-                RetrievedChunk {
-                    indexed_chunk: IndexedChunk {
-                        chunk: Chunk {
-                            id: ChunkId::new(),
-                            text: node.text,
-                            document_id: doc_id,
-                            collection_id: collection_id.clone(),
-                            position: ChunkPosition {
-                                start: 0,
-                                end: 0,
-                                index: node.level as usize,
-                            },
-                            metadata: ChunkMetadata::default(),
-                            provenance: Default::default(),
+        // Every node is anchored to the registry through its first leaf chunk id:
+        // leaves resolve to their own chunk, summaries borrow the document id.
+        let ids: Vec<ChunkId> = candidates
+            .iter()
+            .filter_map(|(_, node)| node.leaf_chunk_ids.first().cloned())
+            .collect();
+        let records = fetch_records(
+            self.chunk_metadata.as_ref(),
+            &ids,
+            collection,
+            &RetrievalStrategy::Raptor,
+        )
+        .await?;
+
+        let mut results = Vec::with_capacity(candidates.len());
+        for (score, node) in candidates {
+            let Some(first) = node.leaf_chunk_ids.first() else {
+                warn!(
+                    collection,
+                    strategy = "raptor",
+                    node_id = %node.id.0,
+                    "tree node has no leaf chunk ids"
+                );
+                metrics::counter!(
+                    "arcanum_retrieval_unresolved_chunks_total",
+                    "strategy" => "raptor"
+                )
+                .increment(1);
+                continue;
+            };
+            let Some(record) = records.get(first) else {
+                continue;
+            };
+            let (chunk, kind) = if node.level == 0 {
+                (record.to_chunk(), ChunkKind::Source)
+            } else {
+                (
+                    Chunk {
+                        id: ChunkId(node.id.0),
+                        text: node.text,
+                        document_id: record.document_id.clone(),
+                        collection_id: collection_id.clone(),
+                        position: ChunkPosition {
+                            start: 0,
+                            end: 0,
+                            index: 0,
                         },
-                        vector: node.vector,
-                        token_vectors: None,
-                        store_id: node.id.0.to_string(),
+                        metadata: ChunkMetadata::default(),
+                        provenance: Default::default(),
                     },
-                    score,
-                    strategy: RetrievalStrategy::Raptor,
-                    kind: ChunkKind::Summary {
+                    ChunkKind::Summary {
                         level: node.level,
-                        covers: vec![],
+                        covers: node.leaf_chunk_ids,
                     },
-                }
-            })
-            .collect())
+                )
+            };
+            results.push(RetrievedChunk {
+                indexed_chunk: IndexedChunk {
+                    chunk,
+                    vector: node.vector,
+                    token_vectors: None,
+                    store_id: node.id.0.to_string(),
+                },
+                score,
+                strategy: RetrievalStrategy::Raptor,
+                kind,
+            });
+        }
+        Ok(results)
     }
 
     fn strategy(&self) -> RetrievalStrategy {
@@ -173,95 +193,155 @@ mod tests {
         }
     }
 
+    fn registry() -> Arc<InMemoryChunkMetadataStore> {
+        Arc::new(InMemoryChunkMetadataStore::new())
+    }
+
+    fn record(text: &str, document_id: DocumentId) -> ChunkMetadataRecord {
+        ChunkMetadataRecord {
+            chunk_id: ChunkId::new(),
+            document_id,
+            collection_id: "col".into(),
+            version_num: 1,
+            backend: ChunkBackend::Tree,
+            text: text.into(),
+            chunk_index: 3,
+            source_uri: "file:///doc.pdf".into(),
+            snapshot_uri: "file:///snap/doc/1.raw".into(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 7,
+            offset_end: 7 + text.len(),
+            ingested_at: chrono::Utc::now(),
+        }
+    }
+
+    fn node(level: u32, text: &str, leaf_chunk_ids: Vec<ChunkId>) -> TreeNode {
+        TreeNode {
+            id: TreeNodeId::new(),
+            level,
+            text: text.into(),
+            vector: Vector(vec![0.1, 0.2, 0.3]),
+            parent: None,
+            children: vec![],
+            cluster_centroid: None,
+            source_uri: "file:///doc.pdf".into(),
+            leaf_chunk_ids,
+        }
+    }
+
+    fn retriever(
+        store: MockTreeStore,
+        chunk_metadata: Arc<InMemoryChunkMetadataStore>,
+        max_depth: usize,
+    ) -> RaptorRetriever {
+        RaptorRetriever::new(
+            Arc::new(store),
+            Arc::new(MockEmbedder),
+            chunk_metadata,
+            max_depth,
+        )
+    }
+
+    fn query(top_k: usize) -> Query {
+        Query::new("q")
+            .with_collection(CollectionId("col".into()))
+            .with_top_k(top_k)
+    }
+
     #[tokio::test]
     async fn test_raptor_retriever_empty_tree() {
-        let store: Arc<dyn TreeStore> = Arc::new(MockTreeStore(Mutex::new(HashMap::new())));
-        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = RaptorRetriever::new(store, embedder, 3);
+        let r = retriever(MockTreeStore(Mutex::new(HashMap::new())), registry(), 3);
         let query =
             Query::new("summarize the document").with_collection(CollectionId("col".into()));
-        let results = retriever.retrieve(&query).await.unwrap();
+        let results = r.retrieve(&query).await.unwrap();
         assert!(results.is_empty(), "Empty tree should return no results");
     }
 
     #[tokio::test]
     async fn test_raptor_retriever_strategy() {
-        let store: Arc<dyn TreeStore> = Arc::new(MockTreeStore(Mutex::new(HashMap::new())));
-        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = RaptorRetriever::new(store, embedder, 2);
-        assert_eq!(retriever.strategy(), RetrievalStrategy::Raptor);
+        let r = retriever(MockTreeStore(Mutex::new(HashMap::new())), registry(), 2);
+        assert_eq!(r.strategy(), RetrievalStrategy::Raptor);
     }
 
     #[tokio::test]
-    async fn nodes_from_the_same_source_share_a_document_id() {
+    async fn leaf_results_use_registry_chunk() {
+        let rec = record("leaf source text", DocumentId::new());
+        let reg = registry();
+        reg.put(&rec).await.unwrap();
         let mock = MockTreeStore(Mutex::new(HashMap::new()));
-        let same_source = TreeNode {
-            id: TreeNodeId::new(),
-            level: 0,
-            text: "a".into(),
-            vector: Vector(vec![0.1, 0.2, 0.3]),
-            parent: None,
-            children: vec![],
-            cluster_centroid: None,
-            source_uri: "file:///doc.pdf".into(),
-            leaf_chunk_ids: vec![],
-        };
-        let other_node_same_source = TreeNode {
-            id: TreeNodeId::new(),
-            level: 0,
-            text: "b".into(),
-            vector: Vector(vec![0.1, 0.2, 0.3]),
-            parent: None,
-            children: vec![],
-            cluster_centroid: None,
-            source_uri: "file:///doc.pdf".into(),
-            leaf_chunk_ids: vec![],
-        };
-        let different_source = TreeNode {
-            id: TreeNodeId::new(),
-            level: 0,
-            text: "c".into(),
-            vector: Vector(vec![0.1, 0.2, 0.3]),
-            parent: None,
-            children: vec![],
-            cluster_centroid: None,
-            source_uri: "file:///other.pdf".into(),
-            leaf_chunk_ids: vec![],
-        };
-        mock.insert_node("col", same_source).await.unwrap();
-        mock.insert_node("col", other_node_same_source)
+        let leaf = node(0, "leaf source text", vec![rec.chunk_id.clone()]);
+        let leaf_id = leaf.id.clone();
+        mock.insert_node("col", leaf).await.unwrap();
+
+        let results = retriever(mock, reg, 0).retrieve(&query(5)).await.unwrap();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(r.kind, ChunkKind::Source);
+        assert_eq!(r.indexed_chunk.store_id, leaf_id.0.to_string());
+        let c = &r.indexed_chunk.chunk;
+        assert_eq!(c.id, rec.chunk_id);
+        assert_eq!(c.document_id, rec.document_id);
+        assert_eq!(c.position.start, 7);
+        assert_eq!(c.position.index, 3);
+    }
+
+    #[tokio::test]
+    async fn summary_results_are_typed_with_covers_and_document_id() {
+        let doc_id = DocumentId::new();
+        let a = record("first leaf", doc_id.clone());
+        let b = record("second leaf", doc_id.clone());
+        let reg = registry();
+        reg.put(&a).await.unwrap();
+        reg.put(&b).await.unwrap();
+        let mock = MockTreeStore(Mutex::new(HashMap::new()));
+        let summary = node(
+            1,
+            "summary text",
+            vec![a.chunk_id.clone(), b.chunk_id.clone()],
+        );
+        let summary_id = summary.id.clone();
+        mock.insert_node("col", summary).await.unwrap();
+
+        let results = retriever(mock, reg, 1).retrieve(&query(5)).await.unwrap();
+        assert_eq!(results.len(), 1);
+        let r = &results[0];
+        assert_eq!(
+            r.kind,
+            ChunkKind::Summary {
+                level: 1,
+                covers: vec![a.chunk_id.clone(), b.chunk_id.clone()],
+            }
+        );
+        let c = &r.indexed_chunk.chunk;
+        assert_eq!(c.id, ChunkId(summary_id.0));
+        assert_eq!(c.text, "summary text");
+        assert_eq!(c.document_id, doc_id);
+        assert_eq!(c.collection_id, CollectionId("col".into()));
+        assert_eq!(c.position.start, 0);
+        assert_eq!(c.position.end, 0);
+    }
+
+    #[tokio::test]
+    async fn node_with_unregistered_leaf_is_skipped() {
+        let known = record("known", DocumentId::new());
+        let reg = registry();
+        reg.put(&known).await.unwrap();
+        let mock = MockTreeStore(Mutex::new(HashMap::new()));
+        mock.insert_node("col", node(0, "known", vec![known.chunk_id.clone()]))
             .await
             .unwrap();
-        mock.insert_node("col", different_source).await.unwrap();
+        mock.insert_node("col", node(0, "ghost", vec![ChunkId::new()]))
+            .await
+            .unwrap();
+        mock.insert_node("col", node(0, "no leaves", vec![]))
+            .await
+            .unwrap();
 
-        let store: Arc<dyn TreeStore> = Arc::new(mock);
-        let embedder: Arc<dyn Embedder> = Arc::new(MockEmbedder);
-        let retriever = RaptorRetriever::new(store, embedder, 0);
-        let query = Query::new("q")
-            .with_collection(CollectionId("col".into()))
-            .with_top_k(3);
-        let results = retriever.retrieve(&query).await.unwrap();
-
-        assert_eq!(results.len(), 3);
-        let doc_id = |text: &str| {
-            results
-                .iter()
-                .find(|r| r.indexed_chunk.chunk.text == text)
-                .unwrap()
-                .indexed_chunk
-                .chunk
-                .document_id
-                .clone()
-        };
-        assert_eq!(
-            doc_id("a"),
-            doc_id("b"),
-            "same source_uri must yield the same document_id"
-        );
-        assert_ne!(
-            doc_id("a"),
-            doc_id("c"),
-            "different source_uri must yield different document_ids"
-        );
+        let results = retriever(mock, reg, 0).retrieve(&query(5)).await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].indexed_chunk.chunk.text, "known");
     }
 }
