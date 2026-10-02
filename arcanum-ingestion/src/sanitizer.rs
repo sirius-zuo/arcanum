@@ -23,10 +23,10 @@ pub fn sanitize_for_enrichment(text: &str) -> String {
         .lines()
         .filter(|line| {
             let lower = line.trim().to_lowercase();
-            !lower.starts_with("system:") &&
-            !lower.starts_with("human:") &&
-            !lower.starts_with("assistant:") &&
-            !lower.starts_with("user:")
+            !lower.starts_with("system:")
+                && !lower.starts_with("human:")
+                && !lower.starts_with("assistant:")
+                && !lower.starts_with("user:")
         })
         .collect();
     let after_roles = cleaned_lines.join("\n");

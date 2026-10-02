@@ -1,7 +1,7 @@
-use arcanum_core::{Result, ArcanumError};
-use jsonwebtoken::{encode, decode, Header, Validation, EncodingKey, DecodingKey, Algorithm};
-use serde::{Deserialize, Serialize};
+use arcanum_core::{ArcanumError, Result};
 use chrono::Utc;
+use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
+use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +58,9 @@ impl AuthMiddleware {
 
     #[instrument(skip(self, token), err(level = "debug"))]
     pub fn validate_admin_jwt(&self, token: &str) -> Result<AdminClaims> {
-        let pem = self.rs256_public_key_pem.as_deref()
+        let pem = self
+            .rs256_public_key_pem
+            .as_deref()
             .ok_or_else(|| ArcanumError::Auth("RS256 public key not configured".to_string()))?;
         let key = DecodingKey::from_rsa_pem(pem.as_bytes())
             .map_err(|e| ArcanumError::Auth(format!("invalid RS256 key: {}", e)))?;
@@ -79,7 +81,12 @@ impl AuthMiddleware {
         self.generate_api_key_with_opts(user_id, vec![], true)
     }
 
-    fn generate_api_key_with_opts(&self, user_id: &str, collections: Vec<String>, is_admin: bool) -> String {
+    fn generate_api_key_with_opts(
+        &self,
+        user_id: &str,
+        collections: Vec<String>,
+        is_admin: bool,
+    ) -> String {
         let claims = ApiKeyClaims {
             user_id: user_id.to_string(),
             allowed_collections: collections,

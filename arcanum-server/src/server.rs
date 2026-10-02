@@ -1,12 +1,20 @@
-use axum::{Router, routing::{get, post}, http::Method};
-use arcanum_core::config::ArcanumConfig;
-use tower_http::{cors::{CorsLayer, AllowOrigin}, trace::TraceLayer};
-use std::sync::Arc;
-use arcanum_engine::ArcanumEngine;
-use crate::routes::{api, health, admin, graph, collections, experiments, evidence};
-use crate::routes::metrics as route_metrics;
-use crate::ws::ws_handler;
 use crate::portal::serve_portal;
+use crate::routes::metrics as route_metrics;
+use crate::routes::{admin, api, collections, evidence, experiments, graph, health};
+use crate::ws::ws_handler;
+use arcanum_core::config::ArcanumConfig;
+use arcanum_engine::ArcanumEngine;
+use axum::{
+    extract::DefaultBodyLimit,
+    http::Method,
+    routing::{get, post},
+    Router,
+};
+use std::sync::Arc;
+use tower_http::{
+    cors::{AllowOrigin, CorsLayer},
+    trace::TraceLayer,
+};
 
 pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: ArcanumConfig) -> Router {
     // Recorder installation is owned by arcanum_telemetry::init().
@@ -22,63 +30,132 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         if origins.is_empty() {
             base
         } else {
-            let allowed: Vec<axum::http::HeaderValue> = origins.iter()
-                .filter_map(|o| o.parse().ok())
-                .collect();
+            let allowed: Vec<axum::http::HeaderValue> =
+                origins.iter().filter_map(|o| o.parse().ok()).collect();
             base.allow_origin(AllowOrigin::list(allowed))
         }
     };
 
     Router::new()
         .route("/health", get(health::liveness))
-        .route("/ready",  get(health::readiness))
+        .route("/ready", get(health::readiness))
         .route("/metrics", get(route_metrics::get_metrics))
         .route("/api/v1/search", post(api::search))
-        .route("/api/v1/ingest",    post(api::ingest))
-        .route("/api/v1/graph",     get(graph::get_graph))
+        .route("/api/v1/ingest", post(api::ingest))
+        .route("/api/v1/graph", get(graph::get_graph))
+        // Durable ingestion operations (Plan 05 Task 4). The multipart body
+        // limit is a coarse safety net; the handler enforces the payload-part
+        // limit precisely from engine.config.ingestion.max_upload_bytes.
+        .route(
+            "/api/v1/ingestion-operations",
+            post(api::submit_operation)
+                .get(api::list_operation_by_idempotency)
+                .layer(DefaultBodyLimit::max(
+                    config
+                        .ingestion
+                        .max_upload_bytes
+                        .saturating_add(1024 * 1024),
+                )),
+        )
+        .route("/api/v1/ingestion-operations/:id", get(api::get_operation))
+        .route(
+            "/api/v1/collections/:collection_id/sources",
+            axum::routing::delete(api::delete_collection_source),
+        )
         // Chunk eval
-        .route("/api/v1/chunk/inspect",    post(api::chunk_inspect))
-        .route("/api/v1/chunk/benchmark",  post(api::chunk_benchmark))
+        .route("/api/v1/chunk/inspect", post(api::chunk_inspect))
+        .route("/api/v1/chunk/benchmark", post(api::chunk_benchmark))
         .route("/api/v1/upload", post(api::upload))
         // Shadow experiments
-        .route("/api/v1/collections/:collection_id/experiments",
-            axum::routing::post(experiments::start_experiment))
-        .route("/api/v1/collections/:collection_id/experiments/:experiment_id",
-            axum::routing::get(experiments::get_experiment))
-        .route("/api/v1/collections/:collection_id/experiments/:experiment_id/promote",
-            axum::routing::post(experiments::promote_experiment))
-        .route("/api/v1/collections/:collection_id/experiments/:experiment_id",
-            axum::routing::delete(experiments::abandon_experiment))
-        .route("/api/v1/collections/:collection_id/experiments/:experiment_id/eval",
-            axum::routing::post(experiments::eval_experiment))
-        .route("/admin/sources",     get(admin::list_ingestion_sources))
-        .route("/admin/audit",       get(admin::get_audit_logs))
+        .route(
+            "/api/v1/collections/:collection_id/experiments",
+            axum::routing::post(experiments::start_experiment),
+        )
+        .route(
+            "/api/v1/collections/:collection_id/experiments/:experiment_id",
+            axum::routing::get(experiments::get_experiment),
+        )
+        .route(
+            "/api/v1/collections/:collection_id/experiments/:experiment_id/promote",
+            axum::routing::post(experiments::promote_experiment),
+        )
+        .route(
+            "/api/v1/collections/:collection_id/experiments/:experiment_id",
+            axum::routing::delete(experiments::abandon_experiment),
+        )
+        .route(
+            "/api/v1/collections/:collection_id/experiments/:experiment_id/eval",
+            axum::routing::post(experiments::eval_experiment),
+        )
+        .route("/admin/sources", get(admin::list_ingestion_sources))
+        .route("/admin/audit", get(admin::get_audit_logs))
         .route("/admin/rotate-keys", post(admin::rotate_keys))
-        .route("/admin/ui",          get(serve_portal))
-        .route("/admin/gc",           post(admin::run_gc))
+        .route("/admin/ui", get(serve_portal))
+        .route("/admin/gc", post(admin::run_gc))
         // Evidence endpoints
-        .route("/evidence/chunk/:chunk_id",             get(evidence::get_chunk_evidence))
-        .route("/evidence/tree-node/:node_id",          get(evidence::get_tree_node_evidence))
-        .route("/evidence/entity/:entity_id",           get(evidence::get_entity_evidence))
-        .route("/evidence/relation/:source_id/:relation_type/:target_id",
-            get(evidence::get_relation_evidence))
+        .route(
+            "/evidence/chunk/:chunk_id",
+            get(evidence::get_chunk_evidence),
+        )
+        .route(
+            "/evidence/tree-node/:node_id",
+            get(evidence::get_tree_node_evidence),
+        )
+        .route(
+            "/evidence/entity/:entity_id",
+            get(evidence::get_entity_evidence),
+        )
+        .route(
+            "/evidence/relation/:source_id/:relation_type/:target_id",
+            get(evidence::get_relation_evidence),
+        )
         // Vector collections
-        .route("/api/v1/vector/collections",              get(collections::vector_list))
-        .route("/api/v1/vector/collections/stats",        get(collections::vector_stats_all))
-        .route("/api/v1/vector/collections/:name",        post(collections::vector_create).delete(collections::vector_delete))
-        .route("/api/v1/vector/collections/:name/stats",  get(collections::vector_stats_one))
-        .route("/api/v1/vector/collections/:name/documents", get(collections::vector_list_documents).delete(collections::vector_delete_document))
+        .route("/api/v1/vector/collections", get(collections::vector_list))
+        .route(
+            "/api/v1/vector/collections/stats",
+            get(collections::vector_stats_all),
+        )
+        .route(
+            "/api/v1/vector/collections/:name",
+            post(collections::vector_create).delete(collections::vector_delete),
+        )
+        .route(
+            "/api/v1/vector/collections/:name/stats",
+            get(collections::vector_stats_one),
+        )
+        .route(
+            "/api/v1/vector/collections/:name/documents",
+            get(collections::vector_list_documents).delete(collections::vector_delete_document),
+        )
         // Graph collections
-        .route("/api/v1/graph/collections",               get(collections::graph_list))
-        .route("/api/v1/graph/collections/stats",         get(collections::graph_stats_all))
-        .route("/api/v1/graph/collections/:name",         post(collections::graph_create).delete(collections::graph_delete))
-        .route("/api/v1/graph/collections/:name/stats",   get(collections::graph_stats_one))
+        .route("/api/v1/graph/collections", get(collections::graph_list))
+        .route(
+            "/api/v1/graph/collections/stats",
+            get(collections::graph_stats_all),
+        )
+        .route(
+            "/api/v1/graph/collections/:name",
+            post(collections::graph_create).delete(collections::graph_delete),
+        )
+        .route(
+            "/api/v1/graph/collections/:name/stats",
+            get(collections::graph_stats_one),
+        )
         // Tree collections
-        .route("/api/v1/tree/collections",                get(collections::tree_list))
-        .route("/api/v1/tree/collections/stats",          get(collections::tree_stats_all))
-        .route("/api/v1/tree/collections/:name",          post(collections::tree_create).delete(collections::tree_delete))
-        .route("/api/v1/tree/collections/:name/stats",    get(collections::tree_stats_one))
-        .route("/ws/events",         get(ws_handler))
+        .route("/api/v1/tree/collections", get(collections::tree_list))
+        .route(
+            "/api/v1/tree/collections/stats",
+            get(collections::tree_stats_all),
+        )
+        .route(
+            "/api/v1/tree/collections/:name",
+            post(collections::tree_create).delete(collections::tree_delete),
+        )
+        .route(
+            "/api/v1/tree/collections/:name/stats",
+            get(collections::tree_stats_one),
+        )
+        .route("/ws/events", get(ws_handler))
         .layer(TraceLayer::new_for_http())
         .layer(cors)
         .with_state(engine)
@@ -91,9 +168,12 @@ pub fn build_app(engine: Option<Arc<ArcanumEngine>>) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body::Body, http::{Request, Method, StatusCode}};
-    use tower::ServiceExt;
+    use axum::{
+        body::Body,
+        http::{Method, Request, StatusCode},
+    };
     use serial_test::serial;
+    use tower::ServiceExt;
 
     #[tokio::test]
     async fn test_cors_absent_when_no_origins_configured() {
@@ -125,11 +205,15 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        let allow_origin = resp.headers()
+        let allow_origin = resp
+            .headers()
             .get("access-control-allow-origin")
             .and_then(|v| v.to_str().ok());
-        assert_eq!(allow_origin, Some("https://app.example.com"),
-            "configured origin should appear in allow-origin header");
+        assert_eq!(
+            allow_origin,
+            Some("https://app.example.com"),
+            "configured origin should appear in allow-origin header"
+        );
     }
 
     #[tokio::test]
@@ -143,8 +227,11 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR,
-            "GET /metrics with no token env var should return 500");
+        assert_eq!(
+            resp.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "GET /metrics with no token env var should return 500"
+        );
     }
 
     #[tokio::test]
@@ -158,7 +245,10 @@ mod tests {
             .unwrap();
         let resp = app.oneshot(req).await.unwrap();
         std::env::remove_var("ARCANUM_METRICS_TOKEN");
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
-            "GET /metrics with token set but not provided should return 401");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "GET /metrics with token set but not provided should return 401"
+        );
     }
 }

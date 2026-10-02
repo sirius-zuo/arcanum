@@ -1,4 +1,4 @@
-use arcanum_core::{traits::*, types::*, Result, ArcanumError};
+use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::instrument;
@@ -15,19 +15,25 @@ use tracing::instrument;
 /// Do NOT use the returned DocumentId/ChunkId as authoritative identifiers
 /// until this is resolved.
 pub struct Bm25Retriever {
-    collection_id: Option<CollectionId>,   // None = accept any collection
+    collection_id: Option<CollectionId>, // None = accept any collection
     index: Arc<dyn LexicalIndex>,
 }
 
 impl Bm25Retriever {
     /// Collection-scoped: rejects queries for other collections.
     pub fn new(collection_id: CollectionId, index: Arc<dyn LexicalIndex>) -> Self {
-        Self { collection_id: Some(collection_id), index }
+        Self {
+            collection_id: Some(collection_id),
+            index,
+        }
     }
 
     /// Global: serves any collection (index is not partitioned by collection).
     pub fn new_global(index: Arc<dyn LexicalIndex>) -> Self {
-        Self { collection_id: None, index }
+        Self {
+            collection_id: None,
+            index,
+        }
     }
 }
 
@@ -35,10 +41,9 @@ impl Bm25Retriever {
 impl Retriever for Bm25Retriever {
     #[instrument(skip(self), fields(strategy = "bm25"), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
-        let query_cid = query.collection_id.as_ref()
-            .ok_or_else(|| ArcanumError::Config(
-                "Bm25Retriever requires an explicit collection_id".into()
-            ))?;
+        let query_cid = query.collection_id.as_ref().ok_or_else(|| {
+            ArcanumError::Config("Bm25Retriever requires an explicit collection_id".into())
+        })?;
 
         if let Some(scope) = &self.collection_id {
             if scope.0 != query_cid.0 {
@@ -49,26 +54,41 @@ impl Retriever for Bm25Retriever {
             }
         }
 
-        let raw = self.index.search(&query_cid.0, &query.text, query.top_k).await?;
+        let raw = self
+            .index
+            .search(&query_cid.0, &query.text, query.top_k)
+            .await?;
         let collection_id = query_cid.clone();
-        Ok(raw.into_iter().map(|(store_id, score)| RetrievedChunk {
-            indexed_chunk: IndexedChunk {
-                chunk: Chunk {
-                    id: ChunkId::new(),
-                    text: store_id.clone(),
-                    document_id: DocumentId::new(),
-                    collection_id: collection_id.clone(),
-                    position: ChunkPosition { start: 0, end: 0, index: 0 },
-                    metadata: ChunkMetadata::default(),
-                    provenance: Default::default(),
+        Ok(raw
+            .into_iter()
+            .map(|(store_id, score)| RetrievedChunk {
+                indexed_chunk: IndexedChunk {
+                    chunk: Chunk {
+                        id: ChunkId::new(),
+                        text: store_id.clone(),
+                        document_id: DocumentId::new(),
+                        collection_id: collection_id.clone(),
+                        position: ChunkPosition {
+                            start: 0,
+                            end: 0,
+                            index: 0,
+                        },
+                        metadata: ChunkMetadata::default(),
+                        provenance: Default::default(),
+                    },
+                    vector: Vector(vec![]),
+                    token_vectors: None,
+                    store_id,
                 },
-                vector: Vector(vec![]), token_vectors: None, store_id,
-            },
-            score, strategy: RetrievalStrategy::Bm25,
-        }).collect())
+                score,
+                strategy: RetrievalStrategy::Bm25,
+            })
+            .collect())
     }
 
-    fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::Bm25 }
+    fn strategy(&self) -> RetrievalStrategy {
+        RetrievalStrategy::Bm25
+    }
 }
 
 #[cfg(test)]

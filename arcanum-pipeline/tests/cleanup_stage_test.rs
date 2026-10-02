@@ -1,18 +1,24 @@
+use arcanum_core::{
+    traits::{DocumentVersionStore, ScoredChunk, Source, VectorQuery, VectorStore},
+    types::{
+        ChunkId, CollectionId, DocumentEntry, DocumentId, DocumentVersion, IndexedChunk,
+        VersioningPolicy,
+    },
+    Result,
+};
+use arcanum_ingestion::{LoaderRegistry, RawLoader};
 use arcanum_pipeline::{
     dag::{StageContext, CTX_REPLACE},
     executor::DagExecutor,
     ingestion_state::IngestionState,
-    stages::{make_load_stage, make_dedup_stage, make_cleanup_stage},
+    stages::{make_cleanup_stage, make_dedup_stage, make_load_stage},
     PipelineDAG,
 };
-use arcanum_core::{
-    traits::{DocumentVersionStore, VectorStore, Source, VectorQuery, ScoredChunk},
-    types::{CollectionId, DocumentId, DocumentEntry, DocumentVersion, VersioningPolicy, IndexedChunk, ChunkId},
-    Result,
-};
-use arcanum_ingestion::{LoaderRegistry, RawLoader};
 use async_trait::async_trait;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use tokio::sync::Mutex;
 
 fn make_state(content: Vec<u8>, uri: &str) -> Arc<Mutex<IngestionState>> {
@@ -38,29 +44,57 @@ struct PanicsOnSupersedeVersionStore;
 
 #[async_trait]
 impl DocumentVersionStore for PanicsOnSupersedeVersionStore {
-    async fn get_latest(&self, _: &str, _: &str) -> Result<Option<DocumentVersion>> { Ok(None) }
-    async fn get_versioning_policy(&self, _: &str) -> Result<VersioningPolicy> { Ok(VersioningPolicy::Replace) }
-    async fn add_version(&self, _: DocumentVersion) -> Result<()> { Ok(()) }
-    async fn supersede_active(&self, _: &DocumentId) -> Result<()> {
-        panic!("cleanup stage must never call supersede_active — state.snapshot_document_id \
-                is only set by make_snapshot_stage, which runs after cleanup");
+    async fn get_latest(&self, _: &str, _: &str) -> Result<Option<DocumentVersion>> {
+        Ok(None)
     }
-    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
-    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
-    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
-    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
-    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
+    async fn get_versioning_policy(&self, _: &str) -> Result<VersioningPolicy> {
+        Ok(VersioningPolicy::Replace)
+    }
+    async fn add_version(&self, _: DocumentVersion) -> Result<()> {
+        Ok(())
+    }
+    async fn supersede_active(&self, _: &DocumentId) -> Result<()> {
+        panic!(
+            "cleanup stage must never call supersede_active — state.snapshot_document_id \
+                is only set by make_snapshot_stage, which runs after cleanup"
+        );
+    }
+    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> {
+        Ok(vec![])
+    }
+    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> {
+        Ok(())
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
+        Ok(None)
+    }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
+    }
 }
 
 struct RecordingVectorStore(Arc<AtomicBool>);
 
 #[async_trait]
 impl VectorStore for RecordingVectorStore {
-    async fn upsert(&self, _: &str, _: Vec<IndexedChunk>) -> Result<()> { Ok(()) }
-    async fn search(&self, _: &str, _: &VectorQuery) -> Result<Vec<ScoredChunk>> { Ok(vec![]) }
-    async fn delete(&self, _: &str, _: &[ChunkId]) -> Result<()> { Ok(()) }
-    async fn collection_exists(&self, _: &str) -> Result<bool> { Ok(true) }
+    async fn upsert(&self, _: &str, _: Vec<IndexedChunk>) -> Result<()> {
+        Ok(())
+    }
+    async fn search(&self, _: &str, _: &VectorQuery) -> Result<Vec<ScoredChunk>> {
+        Ok(vec![])
+    }
+    async fn delete(&self, _: &str, _: &[ChunkId]) -> Result<()> {
+        Ok(())
+    }
+    async fn collection_exists(&self, _: &str) -> Result<bool> {
+        Ok(true)
+    }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
         self.0.store(true, Ordering::SeqCst);
         Ok(())
@@ -75,7 +109,10 @@ async fn cleanup_stage_never_calls_supersede_active() {
 
     let dag = PipelineDAG::new()
         .add_stage(make_load_stage(state.clone(), make_loaders()))
-        .add_stage(make_dedup_stage(state.clone(), Arc::new(PanicsOnSupersedeVersionStore)))
+        .add_stage(make_dedup_stage(
+            state.clone(),
+            Arc::new(PanicsOnSupersedeVersionStore),
+        ))
         .add_stage(make_cleanup_stage(
             state.clone(),
             Arc::new(PanicsOnSupersedeVersionStore),

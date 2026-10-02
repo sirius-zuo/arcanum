@@ -1,7 +1,13 @@
-use axum::{routing::{get, post}, Router, Json, extract::State, http::HeaderMap, response::IntoResponse};
-use std::sync::Arc;
 use crate::handlers::McpJsonRpcHandler;
+use axum::{
+    extract::State,
+    http::HeaderMap,
+    response::IntoResponse,
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::Value;
+use std::sync::Arc;
 use tracing::debug;
 
 pub struct McpServer {

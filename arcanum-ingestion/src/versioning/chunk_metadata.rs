@@ -10,19 +10,19 @@ use tracing::instrument;
 
 #[derive(sqlx::FromRow)]
 struct ChunkMetadataRow {
-    chunk_id:        uuid::Uuid,
-    document_id:     uuid::Uuid,
-    collection_id:   String,
-    version_num:     i32,
-    source_uri:      String,
-    snapshot_uri:    String,
-    canonical_uri:   Option<String>,
-    page:            Option<i32>,
-    section:         Option<String>,
-    block_ids:       serde_json::Value,
-    offset_start:    i64,
-    offset_end:      i64,
-    ingested_at:     chrono::DateTime<Utc>,
+    chunk_id: uuid::Uuid,
+    document_id: uuid::Uuid,
+    collection_id: String,
+    version_num: i32,
+    source_uri: String,
+    snapshot_uri: String,
+    canonical_uri: Option<String>,
+    page: Option<i32>,
+    section: Option<String>,
+    block_ids: serde_json::Value,
+    offset_start: i64,
+    offset_end: i64,
+    ingested_at: chrono::DateTime<Utc>,
 }
 
 pub struct PostgresChunkMetadataStore {
@@ -31,15 +31,17 @@ pub struct PostgresChunkMetadataStore {
 
 impl PostgresChunkMetadataStore {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = PgPool::connect(database_url).await
-            .map_err(|e| ArcanumError::Storage(format!("PostgresChunkMetadataStore connect: {}", e)))?;
+        let pool = PgPool::connect(database_url).await.map_err(|e| {
+            ArcanumError::Storage(format!("PostgresChunkMetadataStore connect: {}", e))
+        })?;
         let store = Self { pool };
         store.ensure_schema().await?;
         Ok(store)
     }
 
     async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS chunk_metadata (
                 chunk_id      UUID        PRIMARY KEY,
                 document_id   UUID        NOT NULL,
@@ -55,8 +57,11 @@ impl PostgresChunkMetadataStore {
                 offset_end    BIGINT      NOT NULL,
                 ingested_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
-        "#).execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("ensure chunk_metadata: {}", e)))?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure chunk_metadata: {}", e)))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_chunk_meta_doc_ver ON chunk_metadata (document_id, version_num)")
             .execute(&self.pool).await.ok();
@@ -67,9 +72,13 @@ impl PostgresChunkMetadataStore {
         // (INTEGER silently truncated/wrapped offsets past 2^31, corrupting evidence spans
         // for documents over ~2GB).
         sqlx::query("ALTER TABLE chunk_metadata ALTER COLUMN offset_start TYPE BIGINT")
-            .execute(&self.pool).await.ok();
+            .execute(&self.pool)
+            .await
+            .ok();
         sqlx::query("ALTER TABLE chunk_metadata ALTER COLUMN offset_end TYPE BIGINT")
-            .execute(&self.pool).await.ok();
+            .execute(&self.pool)
+            .await
+            .ok();
 
         Ok(())
     }
@@ -111,7 +120,8 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
         .bind(record.offset_start as i64)
         .bind(record.offset_end as i64)
         .bind(record.ingested_at)
-        .execute(&self.pool).await
+        .execute(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("put chunk_metadata: {}", e)))?;
         Ok(())
     }
@@ -124,7 +134,8 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
                FROM chunk_metadata WHERE chunk_id = $1"#,
         )
         .bind(chunk_id.0)
-        .fetch_optional(&self.pool).await
+        .fetch_optional(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("get chunk_metadata: {}", e)))?;
 
         let Some(r) = row else { return Ok(None) };
@@ -133,31 +144,34 @@ impl ChunkMetadataStore for PostgresChunkMetadataStore {
             .map_err(|e| ArcanumError::Storage(format!("deserialize block_ids: {}", e)))?;
 
         Ok(Some(ChunkMetadataRecord {
-            chunk_id:      ChunkId(r.chunk_id),
-            document_id:   DocumentId(r.document_id),
+            chunk_id: ChunkId(r.chunk_id),
+            document_id: DocumentId(r.document_id),
             collection_id: r.collection_id,
-            version_num:   r.version_num as u32,
-            source_uri:    r.source_uri,
-            snapshot_uri:  r.snapshot_uri,
+            version_num: r.version_num as u32,
+            source_uri: r.source_uri,
+            snapshot_uri: r.snapshot_uri,
             canonical_uri: r.canonical_uri,
-            page:          r.page.map(|p| p as u32),
-            section:       r.section,
+            page: r.page.map(|p| p as u32),
+            section: r.section,
             block_ids,
-            offset_start:  r.offset_start as usize,
-            offset_end:    r.offset_end as usize,
-            ingested_at:   r.ingested_at,
+            offset_start: r.offset_start as usize,
+            offset_end: r.offset_end as usize,
+            ingested_at: r.ingested_at,
         }))
     }
 
-    #[instrument(skip(self), fields(store = "postgres_chunk_meta", collection_id, source_uri), err)]
+    #[instrument(
+        skip(self),
+        fields(store = "postgres_chunk_meta", collection_id, source_uri),
+        err
+    )]
     async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()> {
-        sqlx::query(
-            "DELETE FROM chunk_metadata WHERE collection_id = $1 AND source_uri = $2",
-        )
-        .bind(collection_id)
-        .bind(source_uri)
-        .execute(&self.pool).await
-        .map_err(|e| ArcanumError::Storage(format!("delete chunk_metadata: {}", e)))?;
+        sqlx::query("DELETE FROM chunk_metadata WHERE collection_id = $1 AND source_uri = $2")
+            .bind(collection_id)
+            .bind(source_uri)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete chunk_metadata: {}", e)))?;
         Ok(())
     }
 
@@ -188,19 +202,19 @@ mod tests {
         let url = std::env::var("TEST_DATABASE_URL").unwrap();
         let store = PostgresChunkMetadataStore::new(&url).await.unwrap();
         let record = ChunkMetadataRecord {
-            chunk_id:      ChunkId::new(),
-            document_id:   DocumentId::new(),
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
             collection_id: "test_col".into(),
-            version_num:   1,
-            source_uri:    "file://doc.pdf".into(),
-            snapshot_uri:  "file:///snapshots/doc/1.raw".into(),
+            version_num: 1,
+            source_uri: "file://doc.pdf".into(),
+            snapshot_uri: "file:///snapshots/doc/1.raw".into(),
             canonical_uri: None,
-            page:          Some(3),
-            section:       Some("§3.2".into()),
-            block_ids:     vec!["b1".into()],
-            offset_start:  100,
-            offset_end:    200,
-            ingested_at:   Utc::now(),
+            page: Some(3),
+            section: Some("§3.2".into()),
+            block_ids: vec!["b1".into()],
+            offset_start: 100,
+            offset_end: 200,
+            ingested_at: Utc::now(),
         };
         let chunk_id = record.chunk_id.clone();
         store.put(&record).await.unwrap();
@@ -217,23 +231,26 @@ mod tests {
         let url = std::env::var("TEST_DATABASE_URL").unwrap();
         let store = PostgresChunkMetadataStore::new(&url).await.unwrap();
         let record = ChunkMetadataRecord {
-            chunk_id:      ChunkId::new(),
-            document_id:   DocumentId::new(),
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
             collection_id: "test_col".into(),
-            version_num:   1,
-            source_uri:    "file://to_delete.pdf".into(),
-            snapshot_uri:  "file:///snapshots/d/1.raw".into(),
+            version_num: 1,
+            source_uri: "file://to_delete.pdf".into(),
+            snapshot_uri: "file:///snapshots/d/1.raw".into(),
             canonical_uri: None,
-            page:          None,
-            section:       None,
-            block_ids:     vec![],
-            offset_start:  0,
-            offset_end:    10,
-            ingested_at:   Utc::now(),
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 0,
+            offset_end: 10,
+            ingested_at: Utc::now(),
         };
         let chunk_id = record.chunk_id.clone();
         store.put(&record).await.unwrap();
-        store.delete_by_source_uri("test_col", "file://to_delete.pdf").await.unwrap();
+        store
+            .delete_by_source_uri("test_col", "file://to_delete.pdf")
+            .await
+            .unwrap();
         assert!(store.get(&chunk_id).await.unwrap().is_none());
     }
 }

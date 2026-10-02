@@ -1,6 +1,6 @@
-use arcanum_core::types::ChunkId;
-use arcanum_core::types::{EnrichRequest, EnrichIntent, EnrichedText};
 use arcanum_core::traits::TextEnricher;
+use arcanum_core::types::ChunkId;
+use arcanum_core::types::{EnrichIntent, EnrichRequest, EnrichedText};
 use arcanum_core::Result;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -10,13 +10,19 @@ use tracing::instrument;
 pub fn compute_hit_rate_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
     let top_k: HashSet<_> = retrieved.iter().take(k).map(|c| &c.0).collect();
     let hit = relevant.iter().any(|r| top_k.contains(&r.0));
-    if hit { 1.0 } else { 0.0 }
+    if hit {
+        1.0
+    } else {
+        0.0
+    }
 }
 
 #[instrument(skip(retrieved, relevant))]
 pub fn compute_mrr(retrieved: &[ChunkId], relevant: &[ChunkId]) -> f32 {
     let rel_set: HashSet<_> = relevant.iter().map(|r| &r.0).collect();
-    retrieved.iter().enumerate()
+    retrieved
+        .iter()
+        .enumerate()
         .find(|(_, id)| rel_set.contains(&id.0))
         .map(|(rank, _)| 1.0 / (rank + 1) as f32)
         .unwrap_or(0.0)
@@ -25,21 +31,32 @@ pub fn compute_mrr(retrieved: &[ChunkId], relevant: &[ChunkId]) -> f32 {
 #[instrument(skip(retrieved, relevant))]
 pub fn compute_ndcg_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
     let rel_set: HashSet<_> = relevant.iter().map(|r| &r.0).collect();
-    let dcg: f32 = retrieved.iter().take(k).enumerate()
+    let dcg: f32 = retrieved
+        .iter()
+        .take(k)
+        .enumerate()
         .filter(|(_, id)| rel_set.contains(&id.0))
         .map(|(i, _)| 1.0 / (i as f32 + 2.0).log2())
         .sum();
     let ideal_dcg: f32 = (0..relevant.len().min(k))
         .map(|i| 1.0 / (i as f32 + 2.0).log2())
         .sum();
-    if ideal_dcg == 0.0 { 0.0 } else { dcg / ideal_dcg }
+    if ideal_dcg == 0.0 {
+        0.0
+    } else {
+        dcg / ideal_dcg
+    }
 }
 
 #[instrument(skip(retrieved, relevant))]
 pub fn compute_precision_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
-    if k == 0 { return 0.0; }
+    if k == 0 {
+        return 0.0;
+    }
     let n = k.min(retrieved.len());
-    if n == 0 { return 0.0; }
+    if n == 0 {
+        return 0.0;
+    }
     let top_k: HashSet<_> = retrieved.iter().take(k).map(|c| &c.0).collect();
     let rel_set: HashSet<_> = relevant.iter().map(|c| &c.0).collect();
     let hits = top_k.intersection(&rel_set).count();
@@ -48,20 +65,24 @@ pub fn compute_precision_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: us
 
 #[instrument(skip(retrieved, relevant))]
 pub fn compute_recall_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize) -> f32 {
-    if relevant.is_empty() { return 1.0; }
+    if relevant.is_empty() {
+        return 1.0;
+    }
     let top_k: HashSet<_> = retrieved.iter().take(k).map(|c| &c.0).collect();
     let rel_set: HashSet<_> = relevant.iter().map(|c| &c.0).collect();
     let hits = top_k.intersection(&rel_set).count();
     hits as f32 / relevant.len() as f32
 }
 
-    #[instrument(skip(question, contexts, enricher), fields(question_len = question.len(), context_count = contexts.len()), err)]
-    pub async fn compute_context_precision(
+#[instrument(skip(question, contexts, enricher), fields(question_len = question.len(), context_count = contexts.len()), err)]
+pub async fn compute_context_precision(
     question: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
 ) -> Result<f32> {
-    if contexts.is_empty() { return Ok(0.0); }
+    if contexts.is_empty() {
+        return Ok(0.0);
+    }
     let mut relevant_count = 0;
     for ctx in contexts {
         let req = EnrichRequest {
@@ -78,46 +99,56 @@ pub fn compute_recall_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize
     Ok(relevant_count as f32 / contexts.len() as f32)
 }
 
-    #[instrument(skip(ground_truth_answer, contexts, enricher), fields(context_count = contexts.len()), err)]
-    pub async fn compute_context_recall(
+#[instrument(skip(ground_truth_answer, contexts, enricher), fields(context_count = contexts.len()), err)]
+pub async fn compute_context_recall(
     ground_truth_answer: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
 ) -> Result<f32> {
-    if contexts.is_empty() { return Ok(0.0); }
+    if contexts.is_empty() {
+        return Ok(0.0);
+    }
     let joined = contexts.join("\n");
     let req = EnrichRequest {
         text: format!("Rate 0-1 how well these contexts support this answer. Answer only with a number.\nAnswer: {}\nContexts: {}", ground_truth_answer, joined),
         intent: EnrichIntent::Custom("context_recall".to_string()),
         context: None,
     };
-    let score = enricher.enrich(req).await.ok()
+    let score = enricher
+        .enrich(req)
+        .await
+        .ok()
         .and_then(|e| e.0.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
     Ok(score.clamp(0.0, 1.0))
 }
 
-    #[instrument(skip(generated_answer, contexts, enricher), fields(context_count = contexts.len()), err)]
-    pub async fn compute_faithfulness(
+#[instrument(skip(generated_answer, contexts, enricher), fields(context_count = contexts.len()), err)]
+pub async fn compute_faithfulness(
     generated_answer: &str,
     contexts: &[String],
     enricher: Arc<dyn TextEnricher>,
 ) -> Result<f32> {
-    if contexts.is_empty() { return Ok(0.0); }
+    if contexts.is_empty() {
+        return Ok(0.0);
+    }
     let joined = contexts.join("\n");
     let req = EnrichRequest {
         text: format!("Rate 0-1 how faithfully this answer is supported by the contexts. Answer only with a number.\nAnswer: {}\nContexts: {}", generated_answer, joined),
         intent: EnrichIntent::Custom("faithfulness".to_string()),
         context: None,
     };
-    let score = enricher.enrich(req).await.ok()
+    let score = enricher
+        .enrich(req)
+        .await
+        .ok()
         .and_then(|e| e.0.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
     Ok(score.clamp(0.0, 1.0))
 }
 
-    #[instrument(skip(question, generated_answer, enricher), fields(question_len = question.len()), err)]
-    pub async fn compute_answer_relevance(
+#[instrument(skip(question, generated_answer, enricher), fields(question_len = question.len()), err)]
+pub async fn compute_answer_relevance(
     question: &str,
     generated_answer: &str,
     enricher: Arc<dyn TextEnricher>,
@@ -127,7 +158,10 @@ pub fn compute_recall_at_k(retrieved: &[ChunkId], relevant: &[ChunkId], k: usize
         intent: EnrichIntent::Custom("answer_relevance".to_string()),
         context: None,
     };
-    let score = enricher.enrich(req).await.ok()
+    let score = enricher
+        .enrich(req)
+        .await
+        .ok()
         .and_then(|e| e.0.trim().parse::<f32>().ok())
         .unwrap_or(0.0);
     Ok(score.clamp(0.0, 1.0))
@@ -176,7 +210,7 @@ mod tests {
     fn test_recall_at_k_partial() {
         let retrieved = ids(&[1, 99, 100]);
         let relevant = ids(&[1, 2, 3]);
-        assert!((compute_recall_at_k(&retrieved, &relevant, 3) - 1.0/3.0).abs() < 0.01);
+        assert!((compute_recall_at_k(&retrieved, &relevant, 3) - 1.0 / 3.0).abs() < 0.01);
     }
 
     #[tokio::test]
@@ -185,7 +219,9 @@ mod tests {
             "What is ML?",
             &["Machine learning is a subset of AI.".to_string()],
             Arc::new(YesEnricher),
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
         assert!((score - 1.0).abs() < 0.01);
     }
 }

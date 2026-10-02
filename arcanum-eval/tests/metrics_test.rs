@@ -1,5 +1,5 @@
-use arcanum_eval::{compute_hit_rate_at_k, compute_mrr};
 use arcanum_core::types::*;
+use arcanum_eval::{compute_hit_rate_at_k, compute_mrr};
 
 #[test]
 fn test_hit_rate_perfect_retrieval() {
@@ -17,8 +17,8 @@ fn test_hit_rate_miss() {
 
 #[test]
 fn test_mrr_first_result_relevant() {
-    let id = ChunkId::new();
-    let mrr = compute_mrr(&[id.clone()], &[id]);
+    let ids = [ChunkId::new()];
+    let mrr = compute_mrr(&ids, &ids);
     assert_eq!(mrr, 1.0);
 }
 

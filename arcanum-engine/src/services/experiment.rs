@@ -1,8 +1,11 @@
-use arcanum_core::{Result, ArcanumError, types::{PerBackendChunkConfig, ExperimentId}};
+use arcanum_core::{
+    types::{ExperimentId, PerBackendChunkConfig},
+    ArcanumError, Result,
+};
 use std::sync::Arc;
 
 pub use arcanum_core::traits::{
-    ExperimentStatus, ExperimentMetrics, ShadowExperiment, ExperimentStore, InMemoryExperimentStore,
+    ExperimentMetrics, ExperimentStatus, ExperimentStore, InMemoryExperimentStore, ShadowExperiment,
 };
 
 pub struct ExperimentService {
@@ -35,13 +38,21 @@ impl ExperimentService {
         self.store.try_start(&collection_id.0, &exp).await?;
 
         // Link experiment to collection so the per-job resolver can find it.
-        self.collections.set_experiment(&collection_id.0, Some(exp.id.clone())).await?;
+        self.collections
+            .set_experiment(&collection_id.0, Some(exp.id.clone()))
+            .await?;
 
         Ok(exp)
     }
 
-    pub async fn get(&self, collection_id: &str, exp_id: &ExperimentId) -> Result<ShadowExperiment> {
-        self.store.get(collection_id, exp_id).await?
+    pub async fn get(
+        &self,
+        collection_id: &str,
+        exp_id: &ExperimentId,
+    ) -> Result<ShadowExperiment> {
+        self.store
+            .get(collection_id, exp_id)
+            .await?
             .ok_or_else(|| ArcanumError::NotFound(format!("experiment '{}'", exp_id.0)))
     }
 
@@ -56,7 +67,9 @@ impl ExperimentService {
             )));
         }
 
-        self.collections.set_chunker_config(collection_id, Some(exp.challenger_config.clone())).await?;
+        self.collections
+            .set_chunker_config(collection_id, Some(exp.challenger_config.clone()))
+            .await?;
 
         // Clear the experiment link on the collection before closing the experiment (finding #10).
         self.collections.set_experiment(collection_id, None).await?;
@@ -129,7 +142,9 @@ mod tests {
         Arc::new(crate::services::collection::CollectionService::new(
             arcanum_core::config::ArcanumConfig::default(),
             Arc::new(crate::audit::AuditLogger::new()),
-            Arc::new(crate::auth::AuthMiddleware::new("a-32-char-secret-for-testing-ok!")),
+            Arc::new(crate::auth::AuthMiddleware::new(
+                "a-32-char-secret-for-testing-ok!",
+            )),
             Arc::new(arcanum_ingestion::PreprocessorCatalog::new()),
         ))
     }
@@ -142,9 +157,15 @@ mod tests {
         let collections = mock_collection_service();
         let col_id = CollectionId("preloaded-col".into());
         let claims = crate::auth::ApiKeyClaims {
-            user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+            user_id: "test".into(),
+            allowed_collections: vec![],
+            is_admin: true,
+            exp: 9999999999,
         };
-        collections.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+        collections
+            .create(col_id.clone(), "test".into(), &claims)
+            .await
+            .unwrap();
 
         let exp = ShadowExperiment {
             id: ExperimentId::new(),

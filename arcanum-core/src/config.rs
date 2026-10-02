@@ -1,20 +1,15 @@
+use crate::types::PerBackendChunkConfig;
+use crate::{ArcanumError, Result};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc};
 use tokio::sync::RwLock;
-use crate::{ArcanumError, Result};
-use crate::types::PerBackendChunkConfig;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub enum RuntimeMode {
+    #[default]
     Development,
     Production,
     Enterprise,
-}
-
-impl Default for RuntimeMode {
-    fn default() -> Self {
-        Self::Development
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,15 +51,15 @@ impl Default for StorageConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryCacheConfig {
     pub max_entries: usize,
-    pub ttl_secs:    u64,
+    pub ttl_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetrievalConfig {
-    pub top_k:           usize,
+    pub top_k: usize,
     pub orchestration_mode: OrchestrationMode,
     #[serde(default)]
-    pub query_cache:     Option<QueryCacheConfig>,
+    pub query_cache: Option<QueryCacheConfig>,
 }
 
 impl Default for RetrievalConfig {
@@ -86,23 +81,29 @@ pub enum OrchestrationMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IngestionConfig {
-    pub worker_pool_size:    usize,
-    pub queue_capacity:      usize,
-    pub retry_max_attempts:  u32,
-    pub retry_base_delay_ms: u64,
+    pub worker_pool_size: usize,
+    pub queue_capacity: usize,
+    /// Maximum accepted size for an inline operation payload submitted to
+    /// `POST /api/v1/ingestion-operations` (and used to bound multipart
+    /// payload staging). Payloads larger than this are rejected with 413.
+    #[serde(default = "default_max_upload_bytes")]
+    pub max_upload_bytes: usize,
     #[serde(default)]
-    pub chunking:            PerBackendChunkConfig,
+    pub chunking: PerBackendChunkConfig,
     #[serde(default)]
-    pub docling:             Option<DoclingConfig>,
+    pub docling: Option<DoclingConfig>,
+}
+
+fn default_max_upload_bytes() -> usize {
+    64 * 1024 * 1024 // 64 MiB
 }
 
 impl Default for IngestionConfig {
     fn default() -> Self {
         Self {
-            worker_pool_size:    4,
-            queue_capacity:      10_000,
-            retry_max_attempts:  3,
-            retry_base_delay_ms: 1_000,
+            worker_pool_size: 4,
+            queue_capacity: 10_000,
+            max_upload_bytes: default_max_upload_bytes(),
             chunking: PerBackendChunkConfig::default(),
             docling: None,
         }
@@ -137,8 +138,12 @@ pub enum DoclingBackendConfig {
     },
 }
 
-fn default_timeout() -> u64 { 300 }
-fn default_poll_interval() -> u64 { 2000 }
+fn default_timeout() -> u64 {
+    300
+}
+fn default_poll_interval() -> u64 {
+    2000
+}
 
 impl Default for DoclingBackendConfig {
     fn default() -> Self {
@@ -222,16 +227,10 @@ impl Default for AdminConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerConfig {
     /// Origins allowed for CORS. Empty = deny all cross-origin requests (fail-closed).
     pub cors_allowed_origins: Vec<String>,
-}
-
-impl Default for ServerConfig {
-    fn default() -> Self {
-        Self { cors_allowed_origins: vec![] }
-    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -276,6 +275,11 @@ impl ArcanumConfig {
                 cfg.ingestion.queue_capacity = n;
             }
         }
+        if let Ok(v) = std::env::var("ARCANUM_INGESTION_MAX_UPLOAD_BYTES") {
+            if let Ok(n) = v.parse() {
+                cfg.ingestion.max_upload_bytes = n;
+            }
+        }
         if let Ok(v) = std::env::var("ARCANUM_EMBEDDING_PROVIDER") {
             cfg.embedding.provider = v;
         }
@@ -286,7 +290,8 @@ impl ArcanumConfig {
             cfg.eval.enabled = v == "true" || v == "1";
         }
         if let Ok(v) = std::env::var("ARCANUM_CORS_ALLOWED_ORIGINS") {
-            cfg.server.cors_allowed_origins = v.split(',')
+            cfg.server.cors_allowed_origins = v
+                .split(',')
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
                 .collect();
@@ -304,9 +309,10 @@ impl ArcanumConfig {
                 .map_err(|e| crate::ArcanumError::Config(format!("TOML parse error: {}", e))),
             "yaml" | "yml" => serde_yaml::from_str(&content)
                 .map_err(|e| crate::ArcanumError::Config(format!("YAML parse error: {}", e))),
-            other => Err(crate::ArcanumError::Config(
-                format!("unsupported config format '.{}'; use .toml or .yaml", other)
-            )),
+            other => Err(crate::ArcanumError::Config(format!(
+                "unsupported config format '.{}'; use .toml or .yaml",
+                other
+            ))),
         }
     }
 
@@ -325,6 +331,9 @@ impl ArcanumConfig {
         }
         if std::env::var("ARCANUM_INGESTION_QUEUE_CAPACITY").is_ok() {
             cfg.ingestion.queue_capacity = from_env.ingestion.queue_capacity;
+        }
+        if std::env::var("ARCANUM_INGESTION_MAX_UPLOAD_BYTES").is_ok() {
+            cfg.ingestion.max_upload_bytes = from_env.ingestion.max_upload_bytes;
         }
         if std::env::var("ARCANUM_EMBEDDING_PROVIDER").is_ok() {
             cfg.embedding.provider = from_env.embedding.provider;
@@ -346,8 +355,7 @@ impl ArcanumConfig {
             && self.storage.metadata_backend == MetadataBackend::Sqlite
         {
             return Err(ArcanumError::Config(
-                "SQLite is not allowed in production or enterprise mode. Use PostgreSQL."
-                    .into(),
+                "SQLite is not allowed in production or enterprise mode. Use PostgreSQL.".into(),
             ));
         }
 
@@ -372,7 +380,8 @@ impl ArcanumConfig {
                     }
                     if *use_async && *poll_interval_ms == 0 {
                         return Err(ArcanumError::Config(
-                            "docling.backend.poll_interval_ms must be > 0 when use_async is true".into(),
+                            "docling.backend.poll_interval_ms must be > 0 when use_async is true"
+                                .into(),
                         ));
                     }
                 }
@@ -458,16 +467,18 @@ mod tests {
     fn test_from_toml_file() {
         use std::io::Write;
         let mut f = tempfile::Builder::new().suffix(".toml").tempfile().unwrap();
-        writeln!(f, r#"
+        writeln!(
+            f,
+            r#"
 [global]
 log_level = "info"
 
 [ingestion]
 worker_pool_size = 8
 queue_capacity = 5000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
-"#).unwrap();
+"#
+        )
+        .unwrap();
         let cfg = ArcanumConfig::from_file(f.path()).unwrap();
         assert_eq!(cfg.ingestion.worker_pool_size, 8);
     }
@@ -493,16 +504,21 @@ retry_base_delay_ms = 1000
 
     #[test]
     fn test_server_config_cors_from_env() {
-        std::env::set_var("ARCANUM_CORS_ALLOWED_ORIGINS", "https://a.com, https://b.com");
+        std::env::set_var(
+            "ARCANUM_CORS_ALLOWED_ORIGINS",
+            "https://a.com, https://b.com",
+        );
         let cfg = ArcanumConfig::from_env();
-        assert_eq!(cfg.server.cors_allowed_origins,
-            vec!["https://a.com".to_string(), "https://b.com".to_string()]);
+        assert_eq!(
+            cfg.server.cors_allowed_origins,
+            vec!["https://a.com".to_string(), "https://b.com".to_string()]
+        );
         std::env::remove_var("ARCANUM_CORS_ALLOWED_ORIGINS");
     }
 
     #[test]
     fn ingestion_default_chunking_matches_per_backend_default() {
-        let ic  = IngestionConfig::default();
+        let ic = IngestionConfig::default();
         let pbc = PerBackendChunkConfig::default();
         // PerBackendChunkConfig doesn't derive PartialEq, so compare via JSON serialization.
         assert_eq!(
@@ -518,8 +534,6 @@ retry_base_delay_ms = 1000
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "http"
@@ -540,8 +554,6 @@ timeout_secs = 300
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "cli"
@@ -561,8 +573,6 @@ command = "docling"
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "http"
@@ -574,7 +584,11 @@ poll_interval_ms = 3000
         let dc = cfg.ingestion.docling.unwrap();
         assert!(matches!(
             dc.backend,
-            DoclingBackendConfig::Http { use_async: true, poll_interval_ms: 3000, .. }
+            DoclingBackendConfig::Http {
+                use_async: true,
+                poll_interval_ms: 3000,
+                ..
+            }
         ));
     }
 
@@ -584,8 +598,6 @@ poll_interval_ms = 3000
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
         assert!(cfg.ingestion.docling.is_none());
@@ -599,8 +611,6 @@ retry_base_delay_ms = 1000
 [ingestion]
 worker_pool_size = 4
 queue_capacity = 10000
-retry_max_attempts = 3
-retry_base_delay_ms = 1000
 
 [ingestion.docling.backend]
 type = "http"
@@ -685,7 +695,10 @@ base_url = "http://localhost:5001"
     fn query_cache_config_parses_and_defaults_off() {
         // Default: absent.
         let d = RetrievalConfig::default();
-        assert!(d.query_cache.is_none(), "query cache must default to disabled");
+        assert!(
+            d.query_cache.is_none(),
+            "query cache must default to disabled"
+        );
         // Parses when present (via ArcanumConfig which contains RetrievalConfig).
         let toml = r#"
 [retrieval]
@@ -701,7 +714,10 @@ query_cache = { max_entries = 500, ttl_secs = 120 }
     fn embedding_cache_redis_url_parses_and_defaults_off() {
         // Default: absent.
         let d = EmbeddingConfig::default();
-        assert!(d.cache_redis_url.is_none(), "embedding cache must default to disabled");
+        assert!(
+            d.cache_redis_url.is_none(),
+            "embedding cache must default to disabled"
+        );
         // Parses when present (via ArcanumConfig which contains EmbeddingConfig).
         let toml = r#"
 [embedding]
@@ -713,7 +729,10 @@ parallelism = 4
 cache_redis_url = "redis://localhost:6390"
 "#;
         let cfg: ArcanumConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cfg.embedding.cache_redis_url.as_deref(), Some("redis://localhost:6390"));
+        assert_eq!(
+            cfg.embedding.cache_redis_url.as_deref(),
+            Some("redis://localhost:6390")
+        );
     }
 
     #[test]

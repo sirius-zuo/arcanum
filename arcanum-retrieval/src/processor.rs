@@ -48,11 +48,17 @@ impl Deduplicator {
 }
 
 fn cosine(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
+    if a.len() != b.len() || a.is_empty() {
+        return 0.0;
+    }
     let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
     let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
     let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -97,43 +103,59 @@ impl CitationGenerator {
     /// - `section` — section heading within the document
     #[instrument(fields(chunk_count = chunks.len(), citation_count))]
     pub fn generate(chunks: &[RetrievedChunk]) -> Vec<Citation> {
-        let result: Vec<Citation> = chunks.iter().map(|c| {
-            let chunk = &c.indexed_chunk.chunk;
-            let provenance = &chunk.provenance;
-            // Source URI: provenance if available, metadata as fallback.
-            let source_uri = if provenance.source_uri.is_empty() {
-                chunk.metadata.0.get("source_uri")
+        let result: Vec<Citation> = chunks
+            .iter()
+            .map(|c| {
+                let chunk = &c.indexed_chunk.chunk;
+                let provenance = &chunk.provenance;
+                // Source URI: provenance if available, metadata as fallback.
+                let source_uri = if provenance.source_uri.is_empty() {
+                    chunk
+                        .metadata
+                        .0
+                        .get("source_uri")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string()
+                } else {
+                    provenance.source_uri.clone()
+                };
+                let title = chunk
+                    .metadata
+                    .0
+                    .get("title")
                     .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string()
-            } else {
-                provenance.source_uri.clone()
-            };
-            let title = chunk.metadata.0.get("title").and_then(|v| v.as_str()).map(str::to_string);
-            let section = if let Some(ref s) = provenance.section {
-                Some(s.clone())
-            } else {
-                chunk.metadata.0.get("section").and_then(|v| v.as_str()).map(str::to_string)
-            };
-            Citation {
-                chunk_id: chunk.id.0.to_string(),
-                source_uri,
-                title,
-                section,
-                chunk_index: chunk.position.index,
-                collection_id: chunk.collection_id.0.clone(),
-                version: if provenance.document_version > 0 {
-                    Some(provenance.document_version)
+                    .map(str::to_string);
+                let section = if let Some(ref s) = provenance.section {
+                    Some(s.clone())
                 } else {
-                    None
-                },
-                snapshot_uri: if !provenance.snapshot_uri.is_empty() {
-                    Some(provenance.snapshot_uri.clone())
-                } else {
-                    None
-                },
-            }
-        }).collect();
+                    chunk
+                        .metadata
+                        .0
+                        .get("section")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                };
+                Citation {
+                    chunk_id: chunk.id.0.to_string(),
+                    source_uri,
+                    title,
+                    section,
+                    chunk_index: chunk.position.index,
+                    collection_id: chunk.collection_id.0.clone(),
+                    version: if provenance.document_version > 0 {
+                        Some(provenance.document_version)
+                    } else {
+                        None
+                    },
+                    snapshot_uri: if !provenance.snapshot_uri.is_empty() {
+                        Some(provenance.snapshot_uri.clone())
+                    } else {
+                        None
+                    },
+                }
+            })
+            .collect();
         tracing::Span::current().record("citation_count", result.len());
         result
     }
@@ -152,9 +174,16 @@ mod tests {
                     text: text.to_string(),
                     document_id: DocumentId::new(),
                     collection_id: CollectionId("col".into()),
-                    position: ChunkPosition { start: 0, end: text.len(), index: 0 },
+                    position: ChunkPosition {
+                        start: 0,
+                        end: text.len(),
+                        index: 0,
+                    },
                     metadata: ChunkMetadata(HashMap::from([
-                        ("source_uri".to_string(), serde_json::json!("file://doc.pdf")),
+                        (
+                            "source_uri".to_string(),
+                            serde_json::json!("file://doc.pdf"),
+                        ),
                         ("title".to_string(), serde_json::json!("My Doc")),
                     ])),
                     provenance: arcanum_core::types::ChunkProvenance::default(),
@@ -183,13 +212,17 @@ mod tests {
         let b = make_chunk_with_text("chunk b", vec![1.0, 0.0]); // identical vector
         let c = make_chunk_with_text("chunk c", vec![0.0, 1.0]); // orthogonal
         let result = Deduplicator::deduplicate(vec![a, b, c], 0.99);
-        assert_eq!(result.len(), 2, "Near-duplicate by cosine should be removed");
+        assert_eq!(
+            result.len(),
+            2,
+            "Near-duplicate by cosine should be removed"
+        );
     }
 
     #[test]
     fn test_deduplicator_keeps_distinct_chunks() {
         let a = make_chunk_with_text("alpha", vec![1.0, 0.0]);
-        let b = make_chunk_with_text("beta",  vec![0.0, 1.0]);
+        let b = make_chunk_with_text("beta", vec![0.0, 1.0]);
         let result = Deduplicator::deduplicate(vec![a, b], 0.99);
         assert_eq!(result.len(), 2);
     }

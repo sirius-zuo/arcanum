@@ -33,7 +33,9 @@ impl LocalSnapshotStore {
     }
 
     fn doc_dir(&self, doc_id: &DocumentId, version: u32) -> PathBuf {
-        self.root.join(doc_id.0.to_string()).join(version.to_string())
+        self.root
+            .join(doc_id.0.to_string())
+            .join(version.to_string())
     }
 
     fn raw_path(&self, doc_id: &DocumentId, version: u32) -> PathBuf {
@@ -50,10 +52,10 @@ impl SnapshotStore for LocalSnapshotStore {
     #[instrument(skip(self), fields(store = "local_snapshot", doc_id = %doc_id.0, version), err)]
     async fn store(
         &self,
-        doc_id:      &DocumentId,
-        version:     u32,
-        raw:         &[u8],
-        canonical:   Option<&serde_json::Value>,
+        doc_id: &DocumentId,
+        version: u32,
+        raw: &[u8],
+        canonical: Option<&serde_json::Value>,
     ) -> Result<SnapshotLocation> {
         self.ensure_root().await?;
 
@@ -67,7 +69,10 @@ impl SnapshotStore for LocalSnapshotStore {
             .await
             .map_err(|e| ArcanumError::Storage(format!("write raw snapshot: {e}")))?;
 
-        let raw_uri = format!("file://{}", self.raw_path(doc_id, version).to_string_lossy());
+        let raw_uri = format!(
+            "file://{}",
+            self.raw_path(doc_id, version).to_string_lossy()
+        );
 
         // Write canonical sidecar if provided.
         let canonical_uri = if let Some(cv) = canonical {
@@ -90,9 +95,9 @@ impl SnapshotStore for LocalSnapshotStore {
 
     #[instrument(skip(self), fields(store = "local_snapshot", uri), err)]
     async fn fetch_raw(&self, uri: &str) -> Result<Vec<u8>> {
-        let path = uri
-            .strip_prefix("file://")
-            .ok_or_else(|| ArcanumError::NotFound(format!("unsupported snapshot URI scheme: {uri}")))?;
+        let path = uri.strip_prefix("file://").ok_or_else(|| {
+            ArcanumError::NotFound(format!("unsupported snapshot URI scheme: {uri}"))
+        })?;
         tokio::fs::read(path)
             .await
             .map_err(|e| ArcanumError::NotFound(format!("snapshot not found: {uri}: {e}")))
@@ -100,12 +105,12 @@ impl SnapshotStore for LocalSnapshotStore {
 
     #[instrument(skip(self), fields(store = "local_snapshot", uri), err)]
     async fn fetch_canonical(&self, uri: &str) -> Result<Option<serde_json::Value>> {
-        let path = uri
-            .strip_prefix("file://")
-            .ok_or_else(|| ArcanumError::NotFound(format!("unsupported snapshot URI scheme: {uri}")))?;
-        let bytes = tokio::fs::read(path)
-            .await
-            .map_err(|e| ArcanumError::NotFound(format!("canonical snapshot not found: {uri}: {e}")))?;
+        let path = uri.strip_prefix("file://").ok_or_else(|| {
+            ArcanumError::NotFound(format!("unsupported snapshot URI scheme: {uri}"))
+        })?;
+        let bytes = tokio::fs::read(path).await.map_err(|e| {
+            ArcanumError::NotFound(format!("canonical snapshot not found: {uri}: {e}"))
+        })?;
         serde_json::from_slice(&bytes)
             .map(Some)
             .map_err(|e| ArcanumError::Storage(format!("parse canonical snapshot: {e}")))
@@ -116,10 +121,12 @@ impl SnapshotStore for LocalSnapshotStore {
         let raw_path = raw_uri
             .strip_prefix("file://")
             .ok_or_else(|| ArcanumError::Storage(format!("unsupported URI scheme: {raw_uri}")))?;
-        tokio::fs::remove_file(raw_path).await
+        tokio::fs::remove_file(raw_path)
+            .await
             .map_err(|e| ArcanumError::Storage(format!("delete raw snapshot: {e}")))?;
         if let Some(u) = canonical_uri {
-            let canon_path = u.strip_prefix("file://")
+            let canon_path = u
+                .strip_prefix("file://")
                 .ok_or_else(|| ArcanumError::Storage(format!("unsupported URI scheme: {u}")))?;
             let _ = tokio::fs::remove_file(canon_path).await;
         }
@@ -161,7 +168,10 @@ mod tests {
             .store(&doc_id, 1, b"raw", Some(&canonical))
             .await
             .unwrap();
-        let fetched = store.fetch_canonical(location.canonical_uri.as_ref().unwrap()).await.unwrap();
+        let fetched = store
+            .fetch_canonical(location.canonical_uri.as_ref().unwrap())
+            .await
+            .unwrap();
         assert_eq!(fetched, Some(canonical));
     }
 
@@ -176,8 +186,14 @@ mod tests {
     #[tokio::test]
     async fn test_fetch_missing_raw_returns_error() {
         let (store, _tmp) = make_store();
-        let err = store.fetch_raw("file://nonexistent/path.bin").await.unwrap_err();
-        assert!(err.to_string().contains("snapshot not found") || err.to_string().contains("No such file"));
+        let err = store
+            .fetch_raw("file://nonexistent/path.bin")
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("snapshot not found")
+                || err.to_string().contains("No such file")
+        );
     }
 
     #[tokio::test]
@@ -211,7 +227,10 @@ mod tests {
         store.delete(&loc.raw_uri, None).await.unwrap();
         // File must be gone.
         let err = store.fetch_raw(&loc.raw_uri).await.unwrap_err();
-        assert!(err.to_string().contains("snapshot not found") || err.to_string().contains("No such file"));
+        assert!(
+            err.to_string().contains("snapshot not found")
+                || err.to_string().contains("No such file")
+        );
     }
 
     #[tokio::test]
@@ -219,9 +238,18 @@ mod tests {
         let (store, _tmp) = make_store();
         let doc_id = DocumentId::new();
         let cv = serde_json::json!({"blocks": []});
-        let loc = store.store(&doc_id, 1, b"raw bytes", Some(&cv)).await.unwrap();
-        store.delete(&loc.raw_uri, loc.canonical_uri.as_deref()).await.unwrap();
+        let loc = store
+            .store(&doc_id, 1, b"raw bytes", Some(&cv))
+            .await
+            .unwrap();
+        store
+            .delete(&loc.raw_uri, loc.canonical_uri.as_deref())
+            .await
+            .unwrap();
         assert!(store.fetch_raw(&loc.raw_uri).await.is_err());
-        assert!(store.fetch_canonical(loc.canonical_uri.as_ref().unwrap()).await.is_err());
+        assert!(store
+            .fetch_canonical(loc.canonical_uri.as_ref().unwrap())
+            .await
+            .is_err());
     }
 }

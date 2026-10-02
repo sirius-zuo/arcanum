@@ -1,9 +1,15 @@
 use arcanum_core::Result;
-use arcanum_eval::{EvalReport, BenchmarkDataset};
+use arcanum_eval::{BenchmarkDataset, EvalReport};
 use tracing::instrument;
 
 #[derive(Debug)]
 pub struct EvalService {}
+
+impl Default for EvalService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl EvalService {
     pub fn new() -> Self {

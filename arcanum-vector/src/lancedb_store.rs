@@ -28,7 +28,8 @@ fn lance_eq_filter(val: &str) -> String {
 }
 
 fn lance_in_filter(field: &str, values: &[String]) -> String {
-    let quoted: Vec<String> = values.iter()
+    let quoted: Vec<String> = values
+        .iter()
         .map(|v| format!("'{}'", v.replace('\'', "''")))
         .collect();
     format!("{field} IN ({})", quoted.join(", "))
@@ -65,8 +66,8 @@ impl LanceDbStore {
     }
 
     fn save_sidecar(&self, names: &[String]) -> Result<()> {
-        let json = serde_json::to_string(names)
-            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let json =
+            serde_json::to_string(names).map_err(|e| ArcanumError::Storage(e.to_string()))?;
         std::fs::write(&self.collections_file, json)
             .map_err(|e| ArcanumError::Storage(format!("write collections sidecar: {}", e)))?;
         Ok(())
@@ -80,10 +81,7 @@ impl LanceDbStore {
             Field::new("source_uri", DataType::Utf8, false),
             Field::new(
                 "vector",
-                DataType::FixedSizeList(
-                    Arc::new(Field::new("item", DataType::Float32, true)),
-                    dim,
-                ),
+                DataType::FixedSizeList(Arc::new(Field::new("item", DataType::Float32, true)), dim),
                 false,
             ),
         ]))
@@ -96,7 +94,8 @@ impl LanceDbStore {
             .iter()
             .map(|c| serde_json::to_string(c).unwrap_or_default())
             .collect();
-        let source_uri_strings: Vec<&str> = chunks.iter()
+        let source_uri_strings: Vec<&str> = chunks
+            .iter()
             .map(|c| c.chunk.provenance.source_uri.as_str())
             .collect();
 
@@ -202,7 +201,8 @@ impl VectorStore for LanceDbStore {
                         "unsupported filter op for chunk_id (only In is supported) — ignoring"
                     );
                 } else if let Some(arr) = f.value.as_array() {
-                    let ids: Vec<String> = arr.iter()
+                    let ids: Vec<String> = arr
+                        .iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect();
                     if !ids.is_empty() {
@@ -249,19 +249,19 @@ impl VectorStore for LanceDbStore {
                 let strings = json_col
                     .as_any()
                     .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        ArcanumError::Storage("chunk_json is not StringArray".into())
-                    })?;
+                    .ok_or_else(|| ArcanumError::Storage("chunk_json is not StringArray".into()))?;
                 // `nearest_to` appends a `_distance` column (L2 distance by
                 // default); convert to a bounded similarity score so callers
                 // that compare scores across hits (e.g. best-per-document
                 // selection during fusion) see real, varying values instead
                 // of a constant.
-                let distances = batch.column_by_name("_distance")
+                let distances = batch
+                    .column_by_name("_distance")
                     .and_then(|c| c.as_any().downcast_ref::<Float32Array>().cloned());
                 for i in 0..strings.len() {
                     if let Ok(chunk) = serde_json::from_str::<IndexedChunk>(strings.value(i)) {
-                        let score = distances.as_ref()
+                        let score = distances
+                            .as_ref()
                             .filter(|d| !d.is_null(i))
                             .map(|d| 1.0 / (1.0 + d.value(i)))
                             .unwrap_or(1.0);
@@ -302,7 +302,10 @@ impl VectorStore for LanceDbStore {
     #[instrument(skip(self), fields(store = "lancedb", collection_id = collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
         if source_uri.is_empty() {
-            tracing::warn!(store = "lancedb", "delete_by_source_uri called with empty source_uri — skipping");
+            tracing::warn!(
+                store = "lancedb",
+                "delete_by_source_uri called with empty source_uri — skipping"
+            );
             return Ok(());
         }
         let conn = lancedb::connect(&self.uri)
@@ -364,9 +367,10 @@ impl VectorStore for LanceDbStore {
         let names = self.load_sidecar();
         let in_sidecar = names.contains(&collection.to_string());
         if in_lance || in_sidecar {
-            return Err(ArcanumError::AlreadyExists(
-                format!("collection '{}' already exists", collection)
-            ));
+            return Err(ArcanumError::AlreadyExists(format!(
+                "collection '{}' already exists",
+                collection
+            )));
         }
         let mut updated = names;
         updated.push(collection.to_string());
@@ -482,10 +486,7 @@ mod tests {
 
         store.create_collection("col1").await.unwrap();
         let err = store.create_collection("col1").await.unwrap_err();
-        assert!(matches!(
-            err,
-            arcanum_core::ArcanumError::AlreadyExists(_)
-        ));
+        assert!(matches!(err, arcanum_core::ArcanumError::AlreadyExists(_)));
     }
 
     #[tokio::test]
@@ -500,10 +501,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let store = make_store(&dir).await;
         store.create_collection("empty").await.unwrap();
-        assert_eq!(
-            store.count_documents(Some("empty")).await.unwrap(),
-            0
-        );
+        assert_eq!(store.count_documents(Some("empty")).await.unwrap(), 0);
         assert_eq!(store.count_documents(None).await.unwrap(), 0);
     }
 
@@ -513,14 +511,21 @@ mod tests {
         let store = make_store(&dir).await;
 
         let mut meta = std::collections::HashMap::new();
-        meta.insert("source_uri".to_string(), serde_json::json!("file:///doc-a.pdf"));
+        meta.insert(
+            "source_uri".to_string(),
+            serde_json::json!("file:///doc-a.pdf"),
+        );
         let chunk = IndexedChunk {
             chunk: arcanum_core::types::Chunk {
                 id: arcanum_core::types::ChunkId::new(),
                 text: "doc a".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("lance_uri_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///doc-a.pdf".into(),
@@ -542,10 +547,7 @@ mod tests {
 
     #[test]
     fn test_lance_eq_filter_escapes_quotes() {
-        assert_eq!(
-            lance_eq_filter("it's here"),
-            "source_uri = 'it''s here'"
-        );
+        assert_eq!(lance_eq_filter("it's here"), "source_uri = 'it''s here'");
         assert_eq!(
             lance_eq_filter("file:///plain.pdf"),
             "source_uri = 'file:///plain.pdf'"
@@ -565,7 +567,11 @@ mod tests {
                 text: "a".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("del_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 1,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta_a),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///a.pdf".into(),
@@ -585,7 +591,11 @@ mod tests {
                 text: "b".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("del_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 1,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta_b),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///b.pdf".into(),
@@ -597,10 +607,16 @@ mod tests {
             store_id: String::new(),
         };
 
-        store.upsert("del_test", vec![chunk_a, chunk_b]).await.unwrap();
+        store
+            .upsert("del_test", vec![chunk_a, chunk_b])
+            .await
+            .unwrap();
         assert_eq!(store.count_documents(Some("del_test")).await.unwrap(), 2);
 
-        store.delete_by_source_uri("del_test", "file:///a.pdf").await.unwrap();
+        store
+            .delete_by_source_uri("del_test", "file:///a.pdf")
+            .await
+            .unwrap();
         assert_eq!(
             store.count_documents(Some("del_test")).await.unwrap(),
             1,
@@ -614,14 +630,21 @@ mod tests {
         let store = make_store(&dir).await;
 
         let mut meta_a = std::collections::HashMap::new();
-        meta_a.insert("source_uri".to_string(), serde_json::json!("file:///filter-a.pdf"));
+        meta_a.insert(
+            "source_uri".to_string(),
+            serde_json::json!("file:///filter-a.pdf"),
+        );
         let chunk_a = IndexedChunk {
             chunk: arcanum_core::types::Chunk {
                 id: arcanum_core::types::ChunkId::new(),
                 text: "doc a".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("lance_filter_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta_a),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///filter-a.pdf".into(),
@@ -634,14 +657,21 @@ mod tests {
         };
 
         let mut meta_b = std::collections::HashMap::new();
-        meta_b.insert("source_uri".to_string(), serde_json::json!("file:///filter-b.pdf"));
+        meta_b.insert(
+            "source_uri".to_string(),
+            serde_json::json!("file:///filter-b.pdf"),
+        );
         let chunk_b = IndexedChunk {
             chunk: arcanum_core::types::Chunk {
                 id: arcanum_core::types::ChunkId::new(),
                 text: "doc b".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("lance_filter_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 5, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta_b),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///filter-b.pdf".into(),
@@ -653,21 +683,40 @@ mod tests {
             store_id: String::new(),
         };
 
-        store.upsert("lance_filter_test", vec![chunk_a, chunk_b]).await.unwrap();
+        store
+            .upsert("lance_filter_test", vec![chunk_a, chunk_b])
+            .await
+            .unwrap();
 
-        let results = store.search("lance_filter_test", &VectorQuery {
-            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![MetadataFilter {
-                field: "source_uri".into(),
-                op: FilterOp::Eq,
-                value: serde_json::json!("file:///filter-a.pdf"),
-            }],
-        }).await.unwrap();
+        let results = store
+            .search(
+                "lance_filter_test",
+                &VectorQuery {
+                    vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![MetadataFilter {
+                        field: "source_uri".into(),
+                        op: FilterOp::Eq,
+                        value: serde_json::json!("file:///filter-a.pdf"),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(results.len(), 1, "filter should return only filter-a.pdf chunk");
-        let uri = results[0].chunk.chunk.metadata.0
-            .get("source_uri").and_then(|v| v.as_str()).unwrap_or("");
+        assert_eq!(
+            results.len(),
+            1,
+            "filter should return only filter-a.pdf chunk"
+        );
+        let uri = results[0]
+            .chunk
+            .chunk
+            .metadata
+            .0
+            .get("source_uri")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         assert_eq!(uri, "file:///filter-a.pdf");
     }
 
@@ -684,7 +733,11 @@ mod tests {
                 text: "x".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("filter_type_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 1,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -695,18 +748,26 @@ mod tests {
         store.upsert("filter_type_test", vec![chunk]).await.unwrap();
 
         // Non-string value: the filter is invalid but must not panic or error
-        let results = store.search("filter_type_test", &VectorQuery {
-            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![MetadataFilter {
-                field: "source_uri".into(),
-                op: FilterOp::Eq,
-                value: serde_json::json!(42),  // number, not a string
-            }],
-        }).await;
+        let results = store
+            .search(
+                "filter_type_test",
+                &VectorQuery {
+                    vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![MetadataFilter {
+                        field: "source_uri".into(),
+                        op: FilterOp::Eq,
+                        value: serde_json::json!(42), // number, not a string
+                    }],
+                },
+            )
+            .await;
 
         // Must not error
-        assert!(results.is_ok(), "non-string filter value must not cause an error");
+        assert!(
+            results.is_ok(),
+            "non-string filter value must not cause an error"
+        );
     }
 
     #[tokio::test]
@@ -722,7 +783,11 @@ mod tests {
                 text: "y".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("filter_op_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 1, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 1,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(meta),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -733,15 +798,20 @@ mod tests {
         store.upsert("filter_op_test", vec![chunk]).await.unwrap();
 
         // FilterOp::Ne is unsupported — must not panic or error
-        let results = store.search("filter_op_test", &VectorQuery {
-            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![MetadataFilter {
-                field: "source_uri".into(),
-                op: FilterOp::Ne,
-                value: serde_json::json!("file:///y.pdf"),
-            }],
-        }).await;
+        let results = store
+            .search(
+                "filter_op_test",
+                &VectorQuery {
+                    vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![MetadataFilter {
+                        field: "source_uri".into(),
+                        op: FilterOp::Ne,
+                        value: serde_json::json!("file:///y.pdf"),
+                    }],
+                },
+            )
+            .await;
 
         assert!(results.is_ok(), "unsupported op must not cause an error");
     }
@@ -757,7 +827,11 @@ mod tests {
                 text: "near".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("score_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 4, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 4,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(Default::default()),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -771,7 +845,11 @@ mod tests {
                 text: "far".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("score_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 3, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 3,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata(Default::default()),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -781,15 +859,29 @@ mod tests {
         };
         store.upsert("score_test", vec![near, far]).await.unwrap();
 
-        let results = store.search("score_test", &VectorQuery {
-            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![],
-        }).await.unwrap();
+        let results = store
+            .search(
+                "score_test",
+                &VectorQuery {
+                    vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![],
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(results.len(), 2);
-        let near_score = results.iter().find(|r| r.chunk.chunk.text == "near").unwrap().score;
-        let far_score = results.iter().find(|r| r.chunk.chunk.text == "far").unwrap().score;
+        let near_score = results
+            .iter()
+            .find(|r| r.chunk.chunk.text == "near")
+            .unwrap()
+            .score;
+        let far_score = results
+            .iter()
+            .find(|r| r.chunk.chunk.text == "far")
+            .unwrap()
+            .score;
         assert!(
             near_score > far_score,
             "the closer vector must score higher: near={near_score} far={far_score}"
@@ -809,7 +901,11 @@ mod tests {
                 text: "keep".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("chunk_id_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 4, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 4,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -823,7 +919,11 @@ mod tests {
                 text: "drop".into(),
                 document_id: arcanum_core::types::DocumentId::new(),
                 collection_id: arcanum_core::types::CollectionId("chunk_id_test".into()),
-                position: arcanum_core::types::ChunkPosition { start: 0, end: 4, index: 0 },
+                position: arcanum_core::types::ChunkPosition {
+                    start: 0,
+                    end: 4,
+                    index: 0,
+                },
                 metadata: arcanum_core::types::ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -831,20 +931,32 @@ mod tests {
             token_vectors: None,
             store_id: String::new(),
         };
-        store.upsert("chunk_id_test", vec![keep, drop]).await.unwrap();
+        store
+            .upsert("chunk_id_test", vec![keep, drop])
+            .await
+            .unwrap();
 
-        let results = store.search("chunk_id_test", &VectorQuery {
-            vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![MetadataFilter {
-                field: "chunk_id".into(),
-                op: FilterOp::In,
-                value: serde_json::json!([keep_id.0.to_string()]),
-            }],
-        }).await.unwrap();
+        let results = store
+            .search(
+                "chunk_id_test",
+                &VectorQuery {
+                    vector: arcanum_core::types::Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![MetadataFilter {
+                        field: "chunk_id".into(),
+                        op: FilterOp::In,
+                        value: serde_json::json!([keep_id.0.to_string()]),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(results.len(), 1, "only the chunk_id-filtered-in chunk should return");
+        assert_eq!(
+            results.len(),
+            1,
+            "only the chunk_id-filtered-in chunk should return"
+        );
         assert_eq!(results[0].chunk.chunk.text, "keep");
     }
-
 }

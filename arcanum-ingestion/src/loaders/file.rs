@@ -1,21 +1,35 @@
-use arcanum_core::{traits::{DocumentLoader, Source}, types::*, Result, ArcanumError};
+use arcanum_core::{
+    traits::{DocumentLoader, Source},
+    types::*,
+    ArcanumError, Result,
+};
 use async_trait::async_trait;
 use tracing::instrument;
 
 pub struct FileLoader;
 
+impl Default for FileLoader {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FileLoader {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 
     fn detect_mime(path: &std::path::Path) -> &'static str {
         match path.extension().and_then(|e| e.to_str()) {
             Some("md") | Some("markdown") => "text/markdown",
-            Some("html") | Some("htm")    => "text/html",
-            Some("txt")                   => "text/plain",
-            Some("pdf")                   => "application/pdf",
-            Some("epub")                  => "application/epub+zip",
-            Some("docx")                  => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            _                             => "application/octet-stream",
+            Some("html") | Some("htm") => "text/html",
+            Some("txt") => "text/plain",
+            Some("pdf") => "application/pdf",
+            Some("epub") => "application/epub+zip",
+            Some("docx") => {
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            }
+            _ => "application/octet-stream",
         }
     }
 }
@@ -25,9 +39,12 @@ impl DocumentLoader for FileLoader {
     #[instrument(skip(self), fields(source_uri = %source.uri(), loader = "file"), err)]
     async fn load(&self, source: &Source) -> Result<RawDocument> {
         let Source::File(path) = source else {
-            return Err(ArcanumError::Ingestion("FileLoader only handles Source::File".into()));
+            return Err(ArcanumError::Ingestion(
+                "FileLoader only handles Source::File".into(),
+            ));
         };
-        let content = tokio::fs::read(path).await
+        let content = tokio::fs::read(path)
+            .await
             .map_err(|e| ArcanumError::Ingestion(e.to_string()))?;
         Ok(RawDocument {
             id: DocumentId::new(),

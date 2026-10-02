@@ -1,8 +1,8 @@
-use arcanum_core::{traits::Embedder, types::*, Result, ArcanumError};
+use arcanum_core::{traits::Embedder, types::*, ArcanumError, Result};
 use async_trait::async_trait;
+use metrics;
 use serde::Serialize;
 use tracing::instrument;
-use metrics;
 
 pub struct HuggingFaceTeiProvider {
     pub base_url: String,
@@ -35,18 +35,24 @@ impl Embedder for HuggingFaceTeiProvider {
         let result: Result<Vec<Vector>> = async {
             let mut results = Vec::new();
             for text in &texts {
-                let resp: Vec<Vec<f32>> = self.client
+                let resp: Vec<Vec<f32>> = self
+                    .client
                     .post(format!("{}/embed", self.base_url))
                     .json(&TeiEmbedRequest { inputs: text })
-                    .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                    .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                    .send()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?;
                 if let Some(v) = resp.into_iter().next() {
                     results.push(Vector(v));
                 }
             }
             tracing::Span::current().record("dimension", self.dim);
             Ok(results)
-        }.await;
+        }
+        .await;
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_model_calls_total", "provider" => "huggingface", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "huggingface", "operation" => "embed").record(start.elapsed().as_secs_f64());
@@ -64,7 +70,8 @@ mod tests {
 
     #[test]
     fn test_tei_provider_construction() {
-        let p = HuggingFaceTeiProvider::new("http://localhost:8080", "BAAI/bge-large-en-v1.5", 1024);
+        let p =
+            HuggingFaceTeiProvider::new("http://localhost:8080", "BAAI/bge-large-en-v1.5", 1024);
         assert_eq!(p.dim, 1024);
         assert_eq!(p.model_id, "BAAI/bge-large-en-v1.5");
     }

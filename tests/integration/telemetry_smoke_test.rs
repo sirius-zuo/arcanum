@@ -6,8 +6,8 @@
 
 use arcanum_telemetry::testing::TestTelemetry;
 use axum::{
-    body::{Body, to_bytes},
-    http::{Request, Method, header},
+    body::{to_bytes, Body},
+    http::{header, Method, Request},
 };
 use serial_test::serial;
 use tower::ServiceExt;
@@ -35,7 +35,9 @@ async fn search_request_emits_root_span() {
         .uri("/api/v1/search")
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, "Bearer test-token")
-        .body(Body::from(r#"{"query": "test query", "collection_id": "default"}"#))
+        .body(Body::from(
+            r#"{"query": "test query", "collection_id": "default"}"#,
+        ))
         .unwrap();
 
     fire_and_flush(&app, req).await;
@@ -44,7 +46,8 @@ async fn search_request_emits_root_span() {
     let names = telem.span_names();
     assert!(
         spans.iter().any(|s| s.name == "search"),
-        "expected a 'search' span from #[tracing::instrument] on the handler, got: {:?}", names
+        "expected a 'search' span from #[tracing::instrument] on the handler, got: {:?}",
+        names
     );
 }
 
@@ -72,7 +75,8 @@ async fn ingest_request_emits_span() {
     let names = telem.span_names();
     assert!(
         spans.iter().any(|s| s.name == "ingest"),
-        "expected an 'ingest' span from #[tracing::instrument] on the handler, got: {:?}", names
+        "expected an 'ingest' span from #[tracing::instrument] on the handler, got: {:?}",
+        names
     );
 }
 
@@ -94,8 +98,11 @@ async fn health_request_emits_span() {
     // The health handler has no #[tracing::instrument]; only the TraceLayer
     // "request" span is emitted for this route.
     assert!(
-        names.iter().any(|n| n.contains("request") || n.contains("GET") || n.contains("health")),
-        "expected a health-request span, got: {:?}", names
+        names
+            .iter()
+            .any(|n| n.contains("request") || n.contains("GET") || n.contains("health")),
+        "expected a health-request span, got: {:?}",
+        names
     );
 }
 

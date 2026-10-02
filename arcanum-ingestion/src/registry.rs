@@ -1,11 +1,9 @@
 use crate::chunkers::{
-    fixed::FixedSizeChunker,
-    semantic::SemanticChunker,
-    hierarchical::HierarchicalChunker,
-    propositional::PropositionalChunker,
+    fixed::FixedSizeChunker, hierarchical::HierarchicalChunker,
+    propositional::PropositionalChunker, semantic::SemanticChunker,
     structure::StructureAwareChunker,
 };
-use arcanum_core::{Result, ArcanumError, traits::Chunker, types::ChunkStrategyConfig};
+use arcanum_core::{traits::Chunker, types::ChunkStrategyConfig, ArcanumError, Result};
 use std::{collections::HashMap, sync::Arc};
 
 type Factory = Box<dyn Fn(&serde_json::Value) -> Result<Arc<dyn Chunker>> + Send + Sync>;
@@ -14,9 +12,17 @@ pub struct ChunkRegistry {
     factories: HashMap<String, Factory>,
 }
 
+impl Default for ChunkRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChunkRegistry {
     pub fn new() -> Self {
-        Self { factories: HashMap::new() }
+        Self {
+            factories: HashMap::new(),
+        }
     }
 
     pub fn register(
@@ -46,9 +52,12 @@ impl ChunkRegistry {
 fn get_u64_param(params: &serde_json::Value, key: &str, default: u64) -> Result<u64> {
     match &params[key] {
         serde_json::Value::Null => Ok(default),
-        v => v.as_u64().ok_or_else(|| ArcanumError::Config(format!(
-            "chunk param '{}' must be a non-negative integer, got: {}", key, v
-        ))),
+        v => v.as_u64().ok_or_else(|| {
+            ArcanumError::Config(format!(
+                "chunk param '{}' must be a non-negative integer, got: {}",
+                key, v
+            ))
+        }),
     }
 }
 
@@ -57,7 +66,7 @@ pub fn default_registry() -> ChunkRegistry {
 
     r.register("fixed", |params| {
         let chunk_size = get_u64_param(params, "chunk_size", 512)? as usize;
-        let overlap    = get_u64_param(params, "overlap", 64)? as usize;
+        let overlap = get_u64_param(params, "overlap", 64)? as usize;
         if overlap >= chunk_size {
             return Err(ArcanumError::Config(format!(
                 "fixed chunker: overlap ({}) must be less than chunk_size ({})",
@@ -77,9 +86,7 @@ pub fn default_registry() -> ChunkRegistry {
         Ok(Arc::new(SemanticChunker::new(max_chars)))
     });
 
-    r.register("hierarchical", |_| {
-        Ok(Arc::new(HierarchicalChunker::new()))
-    });
+    r.register("hierarchical", |_| Ok(Arc::new(HierarchicalChunker::new())));
 
     r.register("propositional", |_| {
         Ok(Arc::new(PropositionalChunker::new()))

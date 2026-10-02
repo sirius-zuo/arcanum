@@ -1,6 +1,6 @@
 use arcanum_core::traits::Preprocessor;
 use arcanum_core::types::*;
-use arcanum_ingestion::{DoclingPreprocessor, DoclingBackend, PreprocessorCatalog};
+use arcanum_ingestion::{DoclingBackend, DoclingPreprocessor, PreprocessorCatalog};
 use std::sync::Arc;
 
 fn raw_doc(content: Vec<u8>, mime_type: &str) -> RawDocument {
@@ -37,8 +37,8 @@ async fn test_docling_http_unavailable() {
 // prove the catalog's resolved Arc<dyn Preprocessor> actually does the work.
 #[tokio::test]
 async fn test_catalog_dispatched_docling_converts_pdf_to_markdown() {
-    use wiremock::{MockServer, Mock, ResponseTemplate};
     use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     let server = MockServer::start().await;
     Mock::given(method("POST"))
@@ -51,17 +51,24 @@ async fn test_catalog_dispatched_docling_converts_pdf_to_markdown() {
         .await;
 
     let mut catalog = PreprocessorCatalog::new();
-    catalog.register("default", Arc::new(DoclingPreprocessor::new(DoclingBackend::Http {
-        base_url: server.uri(),
-        api_key: None,
-        timeout_secs: 10,
-        use_async: false,
-        poll_interval_ms: 2000,
-    })));
+    catalog.register(
+        "default",
+        Arc::new(DoclingPreprocessor::new(DoclingBackend::Http {
+            base_url: server.uri(),
+            api_key: None,
+            timeout_secs: 10,
+            use_async: false,
+            poll_interval_ms: 2000,
+        })),
+    );
 
-    let pp = catalog.get("default").expect("default preprocessor should be registered");
+    let pp = catalog
+        .get("default")
+        .expect("default preprocessor should be registered");
     let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
     let out = pp.process(doc).await.unwrap();
     assert_eq!(out.mime_type, "text/markdown");
-    assert!(String::from_utf8(out.content).unwrap().contains("PDF content"));
+    assert!(String::from_utf8(out.content)
+        .unwrap()
+        .contains("PDF content"));
 }

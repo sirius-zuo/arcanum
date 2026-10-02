@@ -1,8 +1,14 @@
 #[derive(Debug, Clone, PartialEq)]
-pub enum LogFormat { Pretty, Json }
+pub enum LogFormat {
+    Pretty,
+    Json,
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum OtlpProtocol { Grpc, HttpProtobuf }
+pub enum OtlpProtocol {
+    Grpc,
+    HttpProtobuf,
+}
 
 #[derive(Debug, Clone)]
 pub struct TelemetryConfig {
@@ -20,19 +26,17 @@ impl TelemetryConfig {
     pub fn from_env() -> Self {
         use std::env;
         Self {
-            log_filter: env::var("RUST_LOG")
-                .unwrap_or_else(|_| "info".into()),
+            log_filter: env::var("RUST_LOG").unwrap_or_else(|_| "info".into()),
             log_format: match env::var("ARCANUM_LOG_FORMAT").as_deref() {
                 Ok("json") => LogFormat::Json,
-                _          => LogFormat::Pretty,
+                _ => LogFormat::Pretty,
             },
             otlp_endpoint: env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok(),
             otlp_protocol: match env::var("OTEL_EXPORTER_OTLP_PROTOCOL").as_deref() {
                 Ok("http/protobuf") => OtlpProtocol::HttpProtobuf,
-                _                   => OtlpProtocol::Grpc,
+                _ => OtlpProtocol::Grpc,
             },
-            service_name: env::var("OTEL_SERVICE_NAME")
-                .unwrap_or_else(|_| "arcanum".into()),
+            service_name: env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| "arcanum".into()),
             metrics_enabled: env::var("ARCANUM_METRICS_ENABLED")
                 .map(|v| !matches!(v.to_lowercase().as_str(), "false" | "0" | "no" | "off"))
                 .unwrap_or(true),
@@ -47,15 +51,19 @@ impl TelemetryConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
     use serial_test::serial;
+    use std::env;
 
     fn clear_telemetry_env() {
         for key in &[
-            "RUST_LOG", "ARCANUM_LOG_FORMAT",
-            "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_PROTOCOL",
-            "OTEL_SERVICE_NAME", "ARCANUM_METRICS_ENABLED",
-            "ARCANUM_METRICS_OTLP", "ARCANUM_METRICS_TOKEN",
+            "RUST_LOG",
+            "ARCANUM_LOG_FORMAT",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_PROTOCOL",
+            "OTEL_SERVICE_NAME",
+            "ARCANUM_METRICS_ENABLED",
+            "ARCANUM_METRICS_OTLP",
+            "ARCANUM_METRICS_TOKEN",
         ] {
             env::remove_var(key);
         }

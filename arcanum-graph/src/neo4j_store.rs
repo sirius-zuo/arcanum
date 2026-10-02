@@ -1,4 +1,4 @@
-use arcanum_core::{traits::GraphStore, traits::store::GraphQuery, types::*, ArcanumError, Result};
+use arcanum_core::{traits::store::GraphQuery, traits::GraphStore, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use neo4rs::{query, Graph};
 use std::sync::Arc;
@@ -24,9 +24,12 @@ fn parse_chunk_ids(strs: &[String]) -> Result<Vec<ChunkId>> {
 
 impl Neo4jStore {
     pub async fn new(uri: &str, user: &str, password: &str) -> Result<Self> {
-        let graph = Graph::new(uri, user, password).await
+        let graph = Graph::new(uri, user, password)
+            .await
             .map_err(|e| ArcanumError::Config(format!("Neo4j connect error: {}", e)))?;
-        Ok(Self { graph: Arc::new(graph) })
+        Ok(Self {
+            graph: Arc::new(graph),
+        })
     }
 }
 
@@ -41,7 +44,9 @@ impl GraphStore for Neo4jStore {
                 let col = collection.to_string();
                 async move {
                     let id = entity.id.0.to_string();
-                    let source_chunks: Vec<String> = entity.source_chunks.iter()
+                    let source_chunks: Vec<String> = entity
+                        .source_chunks
+                        .iter()
                         .map(|c| c.0.to_string())
                         .collect();
                     graph
@@ -77,9 +82,8 @@ impl GraphStore for Neo4jStore {
                 let graph = Arc::clone(&self.graph);
                 let col = collection.to_string();
                 async move {
-                    let source_chunks: Vec<String> = rel.source_chunks.iter()
-                        .map(|c| c.0.to_string())
-                        .collect();
+                    let source_chunks: Vec<String> =
+                        rel.source_chunks.iter().map(|c| c.0.to_string()).collect();
                     graph
                         .run(
                             query(
@@ -136,29 +140,38 @@ impl GraphStore for Neo4jStore {
              LIMIT 100"
         };
 
-        let mut stream = self.graph.execute(
-            query(cypher)
-                .param("collection", collection.to_string())
-                .param("name", name_pattern)
-                .param("entity_type", entity_type),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("query error: {}", e)))?;
+        let mut stream = self
+            .graph
+            .execute(
+                query(cypher)
+                    .param("collection", collection.to_string())
+                    .param("name", name_pattern)
+                    .param("entity_type", entity_type),
+            )
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("query error: {}", e)))?;
 
         let mut entities = vec![];
-        while let Some(row) = stream.next().await
-            .map_err(|e| ArcanumError::Storage(format!("stream next error: {}", e)))? {
-            let id_str: String = row.get("id")
+        while let Some(row) = stream
+            .next()
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("stream next error: {}", e)))?
+        {
+            let id_str: String = row
+                .get("id")
                 .map_err(|e| ArcanumError::Storage(format!("get id: {}", e)))?;
-            let name: String = row.get("name")
+            let name: String = row
+                .get("name")
                 .map_err(|e| ArcanumError::Storage(format!("get name: {}", e)))?;
-            let entity_type: String = row.get("entity_type")
+            let entity_type: String = row
+                .get("entity_type")
                 .map_err(|e| ArcanumError::Storage(format!("get entity_type: {}", e)))?;
             let canonical_id: Option<String> = row.get("canonical_id").ok();
             let source_uri: String = row.get("source_uri").unwrap_or_default();
             let source_chunks_raw: Vec<String> = row.get("source_chunks").unwrap_or_default();
             let source_chunks = parse_chunk_ids(&source_chunks_raw)?;
-            let id = id_str.parse::<uuid::Uuid>()
+            let id = id_str
+                .parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse uuid: {}", e)))?;
             entities.push(Entity {
                 id: EntityId(id),
@@ -176,7 +189,10 @@ impl GraphStore for Neo4jStore {
     #[instrument(skip(self), fields(store = "neo4j", collection, source_uri), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
         if source_uri.is_empty() {
-            tracing::warn!(store = "neo4j", "delete_by_source_uri called with empty source_uri — skipping");
+            tracing::warn!(
+                store = "neo4j",
+                "delete_by_source_uri called with empty source_uri — skipping"
+            );
             return Ok(());
         }
         self.graph.run(
@@ -201,15 +217,21 @@ impl GraphStore for Neo4jStore {
         .map_err(|e| ArcanumError::Storage(format!("get_relations error: {}", e)))?;
 
         let mut relations = vec![];
-        while let Some(row) = stream.next().await
-            .map_err(|e| ArcanumError::Storage(format!("stream next error: {}", e)))? {
-            let target_id_str: String = row.get("target_id")
+        while let Some(row) = stream
+            .next()
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("stream next error: {}", e)))?
+        {
+            let target_id_str: String = row
+                .get("target_id")
                 .map_err(|e| ArcanumError::Storage(format!("get target_id: {}", e)))?;
-            let relation_type: String = row.get("relation_type")
+            let relation_type: String = row
+                .get("relation_type")
                 .map_err(|e| ArcanumError::Storage(format!("get relation_type: {}", e)))?;
             let confidence: f64 = row.get("confidence").unwrap_or(1.0);
 
-            let target_id = target_id_str.parse::<uuid::Uuid>()
+            let target_id = target_id_str
+                .parse::<uuid::Uuid>()
                 .map_err(|e| ArcanumError::Storage(format!("parse target uuid: {}", e)))?;
 
             // Read source_chunks from the relation if stored.
@@ -231,30 +253,41 @@ impl GraphStore for Neo4jStore {
         let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         // Source 1: explicitly created collections (GraphCollection metadata nodes)
-        let mut meta_stream = self.graph.execute(
-            query("MATCH (c:GraphCollection) RETURN c.name AS name"),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("list_collections meta: {}", e)))?;
-        while let Some(row) = meta_stream.next().await
+        let mut meta_stream = self
+            .graph
+            .execute(query("MATCH (c:GraphCollection) RETURN c.name AS name"))
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("list_collections meta: {}", e)))?;
+        while let Some(row) = meta_stream
+            .next()
+            .await
             .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
         {
             if let Ok(name) = row.get::<String>("name") {
-                if !name.is_empty() { names.insert(name); }
+                if !name.is_empty() {
+                    names.insert(name);
+                }
             }
         }
 
         // Source 2: collections discovered from upserted entities (pipeline path)
-        let mut entity_stream = self.graph.execute(
-            query("MATCH (e:Entity) WHERE e.collection IS NOT NULL \
-                   RETURN DISTINCT e.collection AS name"),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("list_collections entities: {}", e)))?;
-        while let Some(row) = entity_stream.next().await
-            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))? {
+        let mut entity_stream = self
+            .graph
+            .execute(query(
+                "MATCH (e:Entity) WHERE e.collection IS NOT NULL \
+                   RETURN DISTINCT e.collection AS name",
+            ))
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("list_collections entities: {}", e)))?;
+        while let Some(row) = entity_stream
+            .next()
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
+        {
             if let Ok(name) = row.get::<String>("name") {
-                if !name.is_empty() { names.insert(name); }
+                if !name.is_empty() {
+                    names.insert(name);
+                }
             }
         }
 
@@ -264,19 +297,23 @@ impl GraphStore for Neo4jStore {
     }
 
     async fn create_collection(&self, collection: &str) -> Result<()> {
-        let mut stream = self.graph.execute(
-            query(
-                "MERGE (c:GraphCollection {name: $name}) \
+        let mut stream = self
+            .graph
+            .execute(
+                query(
+                    "MERGE (c:GraphCollection {name: $name}) \
                  ON CREATE SET c.just_created = true \
                  ON MATCH  SET c.just_created = false \
                  RETURN c.just_created AS just_created",
+                )
+                .param("name", collection.to_string()),
             )
-            .param("name", collection.to_string()),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("create_collection error: {}", e)))?;
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("create_collection error: {}", e)))?;
 
-        let just_created: bool = if let Some(row) = stream.next().await
+        let just_created: bool = if let Some(row) = stream
+            .next()
+            .await
             .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
         {
             row.get("just_created").unwrap_or(false)
@@ -285,9 +322,10 @@ impl GraphStore for Neo4jStore {
         };
 
         if !just_created {
-            return Err(ArcanumError::AlreadyExists(
-                format!("collection '{}' already exists", collection),
-            ));
+            return Err(ArcanumError::AlreadyExists(format!(
+                "collection '{}' already exists",
+                collection
+            )));
         }
         Ok(())
     }
@@ -308,11 +346,16 @@ impl GraphStore for Neo4jStore {
         if collection.is_some() {
             q = q.param("collection", col_param);
         }
-        let mut stream = self.graph.execute(q)
+        let mut stream = self
+            .graph
+            .execute(q)
             .await
             .map_err(|e| ArcanumError::Storage(format!("count_documents error: {}", e)))?;
-        let count: i64 = if let Some(row) = stream.next().await
-            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))? {
+        let count: i64 = if let Some(row) = stream
+            .next()
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
+        {
             row.get("cnt").unwrap_or(0)
         } else {
             0
@@ -330,79 +373,109 @@ impl GraphStore for Neo4jStore {
             .collect();
 
         // One aggregated query returns counts for all collections with data.
-        let mut stream = self.graph.execute(
-            query(
+        let mut stream = self
+            .graph
+            .execute(query(
                 "MATCH (e:Entity) \
                  WHERE e.collection IS NOT NULL \
                    AND e.source_uri IS NOT NULL AND e.source_uri <> '' \
                  RETURN e.collection AS col, COUNT(DISTINCT e.source_uri) AS cnt",
-            ),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("count_documents_all error: {}", e)))?;
+            ))
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("count_documents_all error: {}", e)))?;
 
-        while let Some(row) = stream.next().await
+        while let Some(row) = stream
+            .next()
+            .await
             .map_err(|e| ArcanumError::Storage(format!("stream next: {}", e)))?
         {
-            let col: String = row.get("col")
+            let col: String = row
+                .get("col")
                 .map_err(|e| ArcanumError::Storage(format!("get col: {}", e)))?;
             let cnt: i64 = row.get("cnt").unwrap_or(0);
-            map.entry(col).and_modify(|v| *v = cnt as u64).or_insert(cnt as u64);
+            map.entry(col)
+                .and_modify(|v| *v = cnt as u64)
+                .or_insert(cnt as u64);
         }
         Ok(map)
     }
 
     async fn delete_collection(&self, collection: &str) -> Result<()> {
         // Delete all entities in the collection (DETACH DELETE cascades relations).
-        self.graph.run(
-            query("MATCH (e:Entity {collection: $collection}) DETACH DELETE e")
-                .param("collection", collection.to_string()),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("delete_collection entities: {}", e)))?;
+        self.graph
+            .run(
+                query("MATCH (e:Entity {collection: $collection}) DETACH DELETE e")
+                    .param("collection", collection.to_string()),
+            )
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_collection entities: {}", e)))?;
         // Remove the collection metadata node.
-        self.graph.run(
-            query("MATCH (c:GraphCollection {name: $name}) DELETE c")
-                .param("name", collection.to_string()),
-        )
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("delete_collection metadata: {}", e)))?;
+        self.graph
+            .run(
+                query("MATCH (c:GraphCollection {name: $name}) DELETE c")
+                    .param("name", collection.to_string()),
+            )
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("delete_collection metadata: {}", e)))?;
         Ok(())
     }
 
     #[instrument(skip(self), fields(store = "neo4j", entity_id = %entity_id.0), err)]
     async fn get_entity_by_id(&self, entity_id: &EntityId) -> Result<Option<Entity>> {
         let id_str = entity_id.0.to_string();
-        let mut result = self.graph.execute(query(
-            "MATCH (e:Entity {id: $id}) \
+        let mut result = self
+            .graph
+            .execute(
+                query(
+                    "MATCH (e:Entity {id: $id}) \
              RETURN e.id AS id, e.name AS name, e.entity_type AS entity_type, \
                     e.canonical_id AS canonical_id, e.source_uri AS source_uri, \
-                    e.collection AS collection, e.source_chunks AS source_chunks"
-        ).param("id", id_str))
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("get_entity_by_id: {}", e)))?;
+                    e.collection AS collection, e.source_chunks AS source_chunks",
+                )
+                .param("id", id_str),
+            )
+            .await
+            .map_err(|e| ArcanumError::Storage(format!("get_entity_by_id: {}", e)))?;
 
-        if let Some(row) = result.next().await
+        if let Some(row) = result
+            .next()
+            .await
             .map_err(|e| ArcanumError::Storage(format!("get_entity_by_id row: {}", e)))?
         {
-            let id_s: String = row.get("id")
+            let id_s: String = row
+                .get("id")
                 .map_err(|e| ArcanumError::Storage(format!("get id: {}", e)))?;
-            let name: String = row.get("name")
+            let name: String = row
+                .get("name")
                 .map_err(|e| ArcanumError::Storage(format!("get name: {}", e)))?;
-            let entity_type: String = row.get("entity_type")
+            let entity_type: String = row
+                .get("entity_type")
                 .map_err(|e| ArcanumError::Storage(format!("get entity_type: {}", e)))?;
-            let canonical_id: Option<String> = row.get("canonical_id").ok()
-                .and_then(|s: String| if s.is_empty() { None } else { Some(s) });
-            let source_uri: String = row.get("source_uri")
+            let canonical_id: Option<String> = row
+                .get("canonical_id")
+                .ok()
+                .filter(|s: &String| !s.is_empty());
+            let source_uri: String = row
+                .get("source_uri")
                 .map_err(|e| ArcanumError::Storage(format!("get source_uri: {}", e)))?;
-            let collection_id: String = row.get("collection")
+            let collection_id: String = row
+                .get("collection")
                 .map_err(|e| ArcanumError::Storage(format!("get collection: {}", e)))?;
-            let chunk_strs: Vec<String> = row.get("source_chunks")
+            let chunk_strs: Vec<String> = row
+                .get("source_chunks")
                 .map_err(|e| ArcanumError::Storage(format!("get source_chunks: {}", e)))?;
             let source_chunks = parse_chunk_ids(&chunk_strs)?;
             let uuid = uuid::Uuid::parse_str(&id_s)
                 .map_err(|e| ArcanumError::Storage(format!("parse entity uuid: {}", e)))?;
-            Ok(Some(Entity { id: EntityId(uuid), name, entity_type, canonical_id, source_chunks, source_uri, collection_id }))
+            Ok(Some(Entity {
+                id: EntityId(uuid),
+                name,
+                entity_type,
+                canonical_id,
+                source_chunks,
+                source_uri,
+                collection_id,
+            }))
         } else {
             Ok(None)
         }
@@ -411,9 +484,9 @@ impl GraphStore for Neo4jStore {
     #[instrument(skip(self), fields(store = "neo4j", relation_type), err)]
     async fn get_relation(
         &self,
-        source_id:     &EntityId,
+        source_id: &EntityId,
         relation_type: &str,
-        target_id:     &EntityId,
+        target_id: &EntityId,
     ) -> Result<Option<Relation>> {
         let mut result = self.graph.execute(query(
             "MATCH (s:Entity {id: $source_id})-[r:RELATION {relation_type: $relation_type}]->(t:Entity {id: $target_id}) \
@@ -425,19 +498,23 @@ impl GraphStore for Neo4jStore {
         .await
         .map_err(|e| ArcanumError::Storage(format!("get_relation: {}", e)))?;
 
-        if let Some(row) = result.next().await
+        if let Some(row) = result
+            .next()
+            .await
             .map_err(|e| ArcanumError::Storage(format!("get_relation row: {}", e)))?
         {
-            let chunk_strs: Vec<String> = row.get("source_chunks")
+            let chunk_strs: Vec<String> = row
+                .get("source_chunks")
                 .map_err(|e| ArcanumError::Storage(format!("get source_chunks: {}", e)))?;
             let source_chunks = parse_chunk_ids(&chunk_strs)?;
-            let confidence: f64 = row.get("confidence")
+            let confidence: f64 = row
+                .get("confidence")
                 .map_err(|e| ArcanumError::Storage(format!("get confidence: {}", e)))?;
             Ok(Some(Relation {
-                source:        source_id.clone(),
+                source: source_id.clone(),
                 relation_type: relation_type.to_string(),
-                target:        target_id.clone(),
-                confidence:    confidence as f32,
+                target: target_id.clone(),
+                confidence: confidence as f32,
                 source_chunks,
             }))
         } else {
@@ -461,12 +538,14 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_neo4j_store_integration() {
-        let uri = std::env::var("NEO4J_URI")
-            .unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+        let uri =
+            std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
         let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
         let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string());
 
-        let store = Neo4jStore::new(&uri, &user, &password).await.expect("connect");
+        let store = Neo4jStore::new(&uri, &user, &password)
+            .await
+            .expect("connect");
 
         let entity = Entity {
             id: EntityId::new(),
@@ -477,7 +556,10 @@ mod tests {
             source_uri: "".to_string(),
             collection_id: "test-col".to_string(),
         };
-        store.upsert_entities("test-col", vec![entity.clone()]).await.expect("upsert");
+        store
+            .upsert_entities("test-col", vec![entity.clone()])
+            .await
+            .expect("upsert");
 
         let q = GraphQuery {
             entity_name: Some("Test Entity".to_string()),
@@ -495,23 +577,35 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_list_collections_includes_entity_collections() {
-        let uri = std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
+        let uri =
+            std::env::var("NEO4J_URI").unwrap_or_else(|_| "bolt://localhost:7687".to_string());
         let user = std::env::var("NEO4J_USER").unwrap_or_else(|_| "neo4j".to_string());
         let password = std::env::var("NEO4J_PASSWORD").unwrap_or_else(|_| "password".to_string());
-        let store = Neo4jStore::new(&uri, &user, &password).await.expect("connect");
+        let store = Neo4jStore::new(&uri, &user, &password)
+            .await
+            .expect("connect");
 
         let col = format!("test-entity-col-{}", uuid::Uuid::new_v4());
         let entity = Entity {
-            id: EntityId::new(), name: "Pipeline Entity".into(),
-            entity_type: "T".into(), canonical_id: None, source_chunks: vec![],
-            source_uri: "file://doc.md".into(), collection_id: col.clone(),
+            id: EntityId::new(),
+            name: "Pipeline Entity".into(),
+            entity_type: "T".into(),
+            canonical_id: None,
+            source_chunks: vec![],
+            source_uri: "file://doc.md".into(),
+            collection_id: col.clone(),
         };
         // Intentionally NOT calling create_collection first:
-        store.upsert_entities(&col, vec![entity]).await.expect("upsert");
+        store
+            .upsert_entities(&col, vec![entity])
+            .await
+            .expect("upsert");
 
         let cols = store.list_collections().await.expect("list");
-        assert!(cols.contains(&col),
-            "list_collections must include collections populated by upsert_entities");
+        assert!(
+            cols.contains(&col),
+            "list_collections must include collections populated by upsert_entities"
+        );
 
         // Cleanup
         store.delete_collection(&col).await.ok();

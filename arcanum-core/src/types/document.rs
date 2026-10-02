@@ -1,9 +1,15 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ChunkId(pub Uuid);
+impl Default for ChunkId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ChunkId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
@@ -12,6 +18,12 @@ impl ChunkId {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DocumentId(pub Uuid);
+impl Default for DocumentId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentId {
     pub fn new() -> Self {
         Self(Uuid::new_v4())
@@ -19,6 +31,7 @@ impl DocumentId {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct CollectionId(pub String);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -32,7 +45,7 @@ pub struct RawDocument {
 
 impl RawDocument {
     pub fn content_hash(&self) -> String {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
         hasher.update(&self.content);
         hex::encode(hasher.finalize())
@@ -42,11 +55,11 @@ impl RawDocument {
     /// Uses a fresh DocumentId and empty metadata; callers only specify what the test cares about.
     pub fn for_test(content: impl Into<Vec<u8>>, mime_type: impl Into<String>) -> Self {
         Self {
-            id:         DocumentId::new(),
-            content:    content.into(),
-            mime_type:  mime_type.into(),
+            id: DocumentId::new(),
+            content: content.into(),
+            mime_type: mime_type.into(),
             source_uri: "test://fixture".into(),
-            metadata:   HashMap::new(),
+            metadata: HashMap::new(),
         }
     }
 }

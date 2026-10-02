@@ -12,7 +12,11 @@ pub struct RetryPolicy {
 
 impl RetryPolicy {
     pub fn new(max_attempts: u32, base_delay_ms: u64, max_delay_ms: u64) -> Self {
-        Self { max_attempts, base_delay_ms, max_delay_ms }
+        Self {
+            max_attempts,
+            base_delay_ms,
+            max_delay_ms,
+        }
     }
 
     #[instrument(skip(self), fields(attempt, will_retry))]
@@ -30,16 +34,19 @@ impl RetryPolicy {
         let exp = self.base_delay_ms.saturating_mul(1u64 << shift);
         let cap = exp.min(self.max_delay_ms);
         // LCG-based jitter with time seed — no external rand dep
-        let seed = attempt as u64 ^ std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as u64;
+        let seed = attempt as u64
+            ^ std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .subsec_nanos() as u64;
         let jitter = if cap > 0 {
             seed.wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407)
                 .wrapping_shr(33)
                 % cap
-        } else { 0 };
+        } else {
+            0
+        };
         Duration::from_millis(jitter)
     }
 }
@@ -71,10 +78,10 @@ mod tests {
 
     #[test]
     fn test_retry_policy_cap_grows_with_attempt() {
-        let policy = RetryPolicy::new(5, 100, 10_000);
+        let _policy = RetryPolicy::new(5, 100, 10_000);
         // cap(0)=100, cap(1)=200, cap(2)=400 — verify caps grow
-        let cap0 = 100u64.min(10_000);
-        let cap1 = 200u64.min(10_000);
+        let cap0 = 100u64;
+        let cap1 = 200u64;
         assert!(cap1 > cap0);
     }
 }

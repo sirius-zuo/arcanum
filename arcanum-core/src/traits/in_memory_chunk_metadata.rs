@@ -32,7 +32,10 @@ impl Default for InMemoryChunkMetadataStore {
 #[async_trait]
 impl ChunkMetadataStore for InMemoryChunkMetadataStore {
     async fn put(&self, record: &ChunkMetadataRecord) -> Result<()> {
-        self.data.lock().await.insert(record.chunk_id.clone(), record.clone());
+        self.data
+            .lock()
+            .await
+            .insert(record.chunk_id.clone(), record.clone());
         Ok(())
     }
 
@@ -80,19 +83,19 @@ mod tests {
     async fn test_put_and_get() {
         let store = InMemoryChunkMetadataStore::new();
         let record = ChunkMetadataRecord {
-            chunk_id:      ChunkId::new(),
-            document_id:   DocumentId::new(),
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
             collection_id: "col".into(),
-            version_num:   1,
-            source_uri:    "file://test.txt".into(),
-            snapshot_uri:  "file:///snap/test/1.raw".into(),
+            version_num: 1,
+            source_uri: "file://test.txt".into(),
+            snapshot_uri: "file:///snap/test/1.raw".into(),
             canonical_uri: None,
-            page:          Some(1),
-            section:       Some("§1".into()),
-            block_ids:     vec!["b1".into()],
-            offset_start:  0,
-            offset_end:    100,
-            ingested_at:   Utc::now(),
+            page: Some(1),
+            section: Some("§1".into()),
+            block_ids: vec!["b1".into()],
+            offset_start: 0,
+            offset_end: 100,
+            ingested_at: Utc::now(),
         };
         let id = record.chunk_id.clone();
         store.put(&record).await.unwrap();
@@ -106,23 +109,26 @@ mod tests {
     async fn test_delete_by_source_uri() {
         let store = InMemoryChunkMetadataStore::new();
         let record = ChunkMetadataRecord {
-            chunk_id:      ChunkId::new(),
-            document_id:   DocumentId::new(),
+            chunk_id: ChunkId::new(),
+            document_id: DocumentId::new(),
             collection_id: "col".into(),
-            version_num:   1,
-            source_uri:    "file://delete_me.txt".into(),
-            snapshot_uri:  "file:///snap/d/1.raw".into(),
+            version_num: 1,
+            source_uri: "file://delete_me.txt".into(),
+            snapshot_uri: "file:///snap/d/1.raw".into(),
             canonical_uri: None,
-            page:          None,
-            section:       None,
-            block_ids:     vec![],
-            offset_start:  0,
-            offset_end:    50,
-            ingested_at:   Utc::now(),
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 0,
+            offset_end: 50,
+            ingested_at: Utc::now(),
         };
         let id = record.chunk_id.clone();
         store.put(&record).await.unwrap();
-        store.delete_by_source_uri("col", "file://delete_me.txt").await.unwrap();
+        store
+            .delete_by_source_uri("col", "file://delete_me.txt")
+            .await
+            .unwrap();
         assert!(store.get(&id).await.unwrap().is_none());
     }
 
@@ -138,19 +144,19 @@ mod tests {
         let doc_id = DocumentId::new();
 
         let mut v1 = ChunkMetadataRecord {
-            chunk_id:      ChunkId::new(),
-            document_id:   doc_id.clone(),
+            chunk_id: ChunkId::new(),
+            document_id: doc_id.clone(),
             collection_id: "col".into(),
-            version_num:   1,
-            source_uri:    "file://doc.pdf".into(),
-            snapshot_uri:  "file:///snap/d/1.raw".into(),
+            version_num: 1,
+            source_uri: "file://doc.pdf".into(),
+            snapshot_uri: "file:///snap/d/1.raw".into(),
             canonical_uri: None,
-            page:          None,
-            section:       None,
-            block_ids:     vec![],
-            offset_start:  0,
-            offset_end:    10,
-            ingested_at:   Utc::now(),
+            page: None,
+            section: None,
+            block_ids: vec![],
+            offset_start: 0,
+            offset_end: 10,
+            ingested_at: Utc::now(),
         };
         let mut v2 = v1.clone();
         v2.chunk_id = ChunkId::new();

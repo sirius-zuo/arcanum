@@ -1,4 +1,4 @@
-use arcanum_core::traits::{Source, VectorStore, VectorQuery, ScoredChunk};
+use arcanum_core::traits::{ScoredChunk, Source, VectorQuery, VectorStore};
 use arcanum_core::types::*;
 use arcanum_pipeline::{ingestion_state::IngestionState, stages::make_vector_write_stage};
 use arcanum_vector::Bm25Index;
@@ -10,11 +10,21 @@ use tokio::sync::Mutex;
 struct NoopVectorStore;
 #[async_trait]
 impl VectorStore for NoopVectorStore {
-    async fn upsert(&self, _: &str, _: Vec<IndexedChunk>) -> arcanum_core::Result<()> { Ok(()) }
-    async fn search(&self, _: &str, _: &VectorQuery) -> arcanum_core::Result<Vec<ScoredChunk>> { Ok(vec![]) }
-    async fn delete(&self, _: &str, _: &[ChunkId]) -> arcanum_core::Result<()> { Ok(()) }
-    async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> { Ok(true) }
-    async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> { Ok(()) }
+    async fn upsert(&self, _: &str, _: Vec<IndexedChunk>) -> arcanum_core::Result<()> {
+        Ok(())
+    }
+    async fn search(&self, _: &str, _: &VectorQuery) -> arcanum_core::Result<Vec<ScoredChunk>> {
+        Ok(vec![])
+    }
+    async fn delete(&self, _: &str, _: &[ChunkId]) -> arcanum_core::Result<()> {
+        Ok(())
+    }
+    async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> {
+        Ok(true)
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> {
+        Ok(())
+    }
 }
 
 fn make_state_with_chunks() -> Arc<Mutex<IngestionState>> {
@@ -30,12 +40,20 @@ fn make_state_with_chunks() -> Arc<Mutex<IngestionState>> {
         text: "the quick brown fox jumps".into(),
         document_id: DocumentId::new(),
         collection_id: CollectionId("test-collection".into()),
-        position: ChunkPosition { start: 0, end: 25, index: 0 },
+        position: ChunkPosition {
+            start: 0,
+            end: 25,
+            index: 0,
+        },
         metadata: ChunkMetadata::default(),
         provenance: ChunkProvenance::default(),
     };
     Arc::new(Mutex::new(IngestionState {
-        source: Source::Raw { content: doc.content.clone(), mime_hint: Some("text/plain".into()), uri: doc.source_uri.clone() },
+        source: Source::Raw {
+            content: doc.content.clone(),
+            mime_hint: Some("text/plain".into()),
+            uri: doc.source_uri.clone(),
+        },
         collection_id: CollectionId("test-collection".into()),
         doc: Some(doc.clone()),
         chunks: vec![chunk],
@@ -59,11 +77,18 @@ async fn vector_write_stage_also_populates_bm25_index() {
     let dir = tempfile::tempdir().unwrap();
     let bm25 = Arc::new(Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
     let vector_store: Arc<dyn VectorStore> = Arc::new(NoopVectorStore);
-    let cb = Arc::new(arcanum_middleware::CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
+    let cb = Arc::new(arcanum_middleware::CircuitBreaker::new(
+        "vector_store",
+        5,
+        Duration::from_secs(30),
+    ));
 
     let stage = make_vector_write_stage(state, vector_store, cb, None, Some(bm25.clone()));
     (stage.run)(std::collections::HashMap::new()).await.unwrap();
 
     let results = bm25.search("quick fox", 5).unwrap();
-    assert!(!results.is_empty(), "vector_write should have populated the bm25 index");
+    assert!(
+        !results.is_empty(),
+        "vector_write should have populated the bm25 index"
+    );
 }

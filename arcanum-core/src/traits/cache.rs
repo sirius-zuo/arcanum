@@ -17,7 +17,9 @@ impl CacheInvalidationBroadcaster {
     }
 
     pub async fn invalidate_document(&self, source_uri: &str, collection_id: &CollectionId) {
-        let futs: Vec<_> = self.invalidators.iter()
+        let futs: Vec<_> = self
+            .invalidators
+            .iter()
             .map(|inv| {
                 let inv = inv.clone();
                 let uri = source_uri.to_string();
@@ -25,7 +27,9 @@ impl CacheInvalidationBroadcaster {
                 tokio::spawn(async move { inv.invalidate_document(&uri, &col).await })
             })
             .collect();
-        for f in futs { let _ = f.await; }
+        for f in futs {
+            let _ = f.await;
+        }
     }
 }
 
@@ -50,7 +54,9 @@ mod tests {
         let b = Arc::new(RecordingInvalidator(log.clone()));
         let broadcaster = CacheInvalidationBroadcaster::new(vec![a, b]);
         let col = CollectionId("my-collection".to_string());
-        broadcaster.invalidate_document("file://doc.pdf", &col).await;
+        broadcaster
+            .invalidate_document("file://doc.pdf", &col)
+            .await;
         let calls = log.lock().await;
         assert_eq!(calls.len(), 2);
         assert!(calls.iter().all(|s| s == "file://doc.pdf"));
@@ -60,6 +66,8 @@ mod tests {
     async fn test_broadcaster_empty_is_noop() {
         let broadcaster = CacheInvalidationBroadcaster::new(vec![]);
         let col = CollectionId("x".to_string());
-        broadcaster.invalidate_document("file://doc.pdf", &col).await;
+        broadcaster
+            .invalidate_document("file://doc.pdf", &col)
+            .await;
     }
 }

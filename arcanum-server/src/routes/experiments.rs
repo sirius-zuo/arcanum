@@ -1,5 +1,6 @@
-use arcanum_core::{types::{ChunkId, CollectionId, PerBackendChunkConfig, ExperimentId, Query}};
-use arcanum_engine::{ArcanumEngine, auth::ApiKeyClaims, services::experiment::ExperimentMetrics};
+use crate::routes::auth::validate_bearer;
+use arcanum_core::types::{ChunkId, CollectionId, ExperimentId, PerBackendChunkConfig, Query};
+use arcanum_engine::{auth::ApiKeyClaims, services::experiment::ExperimentMetrics, ArcanumEngine};
 use arcanum_eval::{EvalRunner, GoldenSample};
 use axum::{
     extract::{Path, State},
@@ -8,7 +9,6 @@ use axum::{
     Json,
 };
 use std::sync::Arc;
-use crate::routes::auth::validate_bearer;
 
 /// POST /api/v1/collections/{collection_id}/experiments
 pub async fn start_experiment(
@@ -22,17 +22,31 @@ pub async fn start_experiment(
         Err(e) => return e.into_response(),
     };
     let eng = engine.as_ref().unwrap();
-    match eng.experiment.start(CollectionId(collection_id), challenger_config).await {
-        Ok(exp) => (StatusCode::CREATED, Json(serde_json::json!({
-            "experiment_id": exp.id.0.to_string(),
-            "status": exp.status,
-            "started_at": exp.started_at,
-            "challenger_config": exp.challenger_config,
-        }))).into_response(),
-        Err(e) if e.to_string().contains("active") => {
-            (StatusCode::CONFLICT, Json(serde_json::json!({ "error": e.to_string() }))).into_response()
-        }
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    match eng
+        .experiment
+        .start(CollectionId(collection_id), challenger_config)
+        .await
+    {
+        Ok(exp) => (
+            StatusCode::CREATED,
+            Json(serde_json::json!({
+                "experiment_id": exp.id.0.to_string(),
+                "status": exp.status,
+                "started_at": exp.started_at,
+                "challenger_config": exp.challenger_config,
+            })),
+        )
+            .into_response(),
+        Err(e) if e.to_string().contains("active") => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -49,14 +63,22 @@ pub async fn get_experiment(
     let eng = engine.as_ref().unwrap();
     let exp_id = ExperimentId(experiment_id);
     match eng.experiment.get(&collection_id, &exp_id).await {
-        Ok(exp) => (StatusCode::OK, Json(serde_json::json!({
-            "experiment_id": exp.id.0.to_string(),
-            "status": exp.status,
-            "challenger_config": exp.challenger_config,
-            "metrics": exp.metrics,
-            "started_at": exp.started_at,
-        }))).into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(exp) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "experiment_id": exp.id.0.to_string(),
+                "status": exp.status,
+                "challenger_config": exp.challenger_config,
+                "metrics": exp.metrics,
+                "started_at": exp.started_at,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -94,8 +116,16 @@ pub async fn abandon_experiment(
     let eng = engine.as_ref().unwrap();
     let exp_id = ExperimentId(experiment_id);
     match eng.experiment.abandon(&collection_id, &exp_id).await {
-        Ok(()) => (StatusCode::OK, Json(serde_json::json!({ "status": "closed" }))).into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(()) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "closed" })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -120,13 +150,22 @@ pub async fn eval_experiment(
     };
     let eng = engine.as_ref().unwrap();
     if !eng.auth.can_access_collection(&claims, &collection_id) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "access denied" }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "access denied" })),
+        )
+            .into_response();
     }
     let exp_id = ExperimentId(experiment_id);
     let exp = match eng.experiment.get(&collection_id, &exp_id).await {
         Ok(e) => e,
-        Err(e) => return (StatusCode::NOT_FOUND, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
     };
     let shadow_namespace = exp.shadow_namespace(&collection_id);
 
@@ -157,12 +196,27 @@ pub async fn eval_experiment(
         ) {
             (Ok(c), Ok(h)) => (c, h),
             (Err(e), _) | (_, Err(e)) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({ "error": e.to_string() })),
+                )
+                    .into_response();
             }
         };
-        champion_results.push(champion.chunks.iter().map(|c| c.indexed_chunk.chunk.id.clone()).collect());
-        challenger_results.push(challenger.chunks.iter().map(|c| c.indexed_chunk.chunk.id.clone()).collect());
+        champion_results.push(
+            champion
+                .chunks
+                .iter()
+                .map(|c| c.indexed_chunk.chunk.id.clone())
+                .collect(),
+        );
+        challenger_results.push(
+            challenger
+                .chunks
+                .iter()
+                .map(|c| c.indexed_chunk.chunk.id.clone())
+                .collect(),
+        );
     }
 
     let runner = EvalRunner::new(5);
@@ -170,17 +224,29 @@ pub async fn eval_experiment(
     let challenger_report = runner.evaluate(&challenger_results, &samples);
 
     let metrics = ExperimentMetrics {
-        champion_recall_at_5:   champion_report.recall_at_k,
+        champion_recall_at_5: champion_report.recall_at_k,
         challenger_recall_at_5: challenger_report.recall_at_k,
-        sample_size:            samples.len(),
-        computed_at:            chrono::Utc::now().to_rfc3339(),
+        sample_size: samples.len(),
+        computed_at: chrono::Utc::now().to_rfc3339(),
     };
 
-    match eng.experiment.update_metrics(&collection_id, &exp_id, metrics.clone()).await {
-        Ok(status) => (StatusCode::OK, Json(serde_json::json!({
-            "status": status,
-            "metrics": metrics,
-        }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+    match eng
+        .experiment
+        .update_metrics(&collection_id, &exp_id, metrics.clone())
+        .await
+    {
+        Ok(status) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "status": status,
+                "metrics": metrics,
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }

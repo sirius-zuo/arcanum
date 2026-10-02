@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use crate::types::*;
 use crate::Result;
+use async_trait::async_trait;
 
 #[derive(Debug, Clone)]
 pub struct VectorQuery {
@@ -25,17 +25,25 @@ pub trait VectorStore: Send + Sync {
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
 
     /// Returns all collection names in this store, including empty collections.
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
 
     /// Create a new empty collection. Returns `AlreadyExists` if the name is taken.
-    async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn create_collection(&self, _collection: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Count distinct documents (by document_id) in this store.
     /// `None` → total across all collections; `Some("col")` → count for that collection.
-    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> {
+        Ok(0)
+    }
 
     /// Delete all data for the given collection. Idempotent — no-op if it does not exist.
-    async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn delete_collection(&self, _collection: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -56,11 +64,17 @@ pub trait GraphStore: Send + Sync {
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()>;
 
     /// Returns all collection names, including empty ones.
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
     /// Create a new empty collection. Returns `AlreadyExists` if name is taken.
-    async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn create_collection(&self, _collection: &str) -> Result<()> {
+        Ok(())
+    }
     /// Count distinct source_uri values. None = whole store; Some(col) = one collection.
-    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
+    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> {
+        Ok(0)
+    }
     /// Count distinct source_uri values per collection in a single operation.
     /// Returns a map of collection_name → document_count.
     /// The default impl calls list_collections + count_documents(Some) in a loop.
@@ -74,7 +88,9 @@ pub trait GraphStore: Send + Sync {
         Ok(map)
     }
     /// Delete all data for the collection. Idempotent.
-    async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn delete_collection(&self, _collection: &str) -> Result<()> {
+        Ok(())
+    }
 
     /// Look up a single entity by its UUID, including source_chunks.
     async fn get_entity_by_id(&self, _entity_id: &EntityId) -> Result<Option<Entity>> {
@@ -84,9 +100,9 @@ pub trait GraphStore: Send + Sync {
     /// Look up a specific directed relation by endpoints and type.
     async fn get_relation(
         &self,
-        source_id:     &EntityId,
+        source_id: &EntityId,
         relation_type: &str,
-        target_id:     &EntityId,
+        target_id: &EntityId,
     ) -> Result<Option<Relation>> {
         let _ = (source_id, relation_type, target_id);
         Ok(None)
@@ -101,11 +117,7 @@ pub trait GraphStore: Send + Sync {
 /// contains: the fixed-width, NUL-free source/target segments pin the
 /// string's prefix and suffix, which forces the middle segment — and
 /// therefore the whole key — to be unique per distinct triple.
-pub fn relation_identity_key(
-    source: &EntityId,
-    relation_type: &str,
-    target: &EntityId,
-) -> Vec<u8> {
+pub fn relation_identity_key(source: &EntityId, relation_type: &str, target: &EntityId) -> Vec<u8> {
     format!("{}\0{}\0{}", source.0, relation_type, target.0).into_bytes()
 }
 
@@ -157,10 +169,18 @@ pub trait TreeStore: Send + Sync {
         Ok(None)
     }
 
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
-    async fn create_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
-    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> { Ok(0) }
-    async fn delete_collection(&self, _collection: &str) -> Result<()> { Ok(()) }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn create_collection(&self, _collection: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn count_documents(&self, _collection: Option<&str>) -> Result<u64> {
+        Ok(0)
+    }
+    async fn delete_collection(&self, _collection: &str) -> Result<()> {
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -182,7 +202,10 @@ mod helper_tests {
         let k2 = relation_identity_key(&a, "WORKS_AT", &b);
         let k3 = relation_identity_key(&a, "MANAGES", &b);
         assert_eq!(k1, k2, "same triple must produce the same key");
-        assert_ne!(k1, k3, "different relation_type must produce a different key");
+        assert_ne!(
+            k1, k3,
+            "different relation_type must produce a different key"
+        );
     }
 
     #[test]
@@ -202,20 +225,32 @@ mod helper_tests {
         let tgt = EntityId::new();
         let other = EntityId::new();
         let rel = Relation {
-            source: src.clone(), relation_type: "X".into(), target: tgt.clone(),
-            confidence: 1.0, source_chunks: vec![],
+            source: src.clone(),
+            relation_type: "X".into(),
+            target: tgt.clone(),
+            confidence: 1.0,
+            source_chunks: vec![],
         };
         let mut removed = std::collections::HashSet::new();
         removed.insert(src.0.to_string());
-        assert!(relation_touches_removed_entity(&removed, &rel), "source match must cascade");
+        assert!(
+            relation_touches_removed_entity(&removed, &rel),
+            "source match must cascade"
+        );
 
         let mut removed_target = std::collections::HashSet::new();
         removed_target.insert(tgt.0.to_string());
-        assert!(relation_touches_removed_entity(&removed_target, &rel), "target match must cascade");
+        assert!(
+            relation_touches_removed_entity(&removed_target, &rel),
+            "target match must cascade"
+        );
 
         let mut removed_other = std::collections::HashSet::new();
         removed_other.insert(other.0.to_string());
-        assert!(!relation_touches_removed_entity(&removed_other, &rel), "unrelated id must not cascade");
+        assert!(
+            !relation_touches_removed_entity(&removed_other, &rel),
+            "unrelated id must not cascade"
+        );
     }
 
     #[test]
@@ -225,16 +260,29 @@ mod helper_tests {
         let c1 = ChunkId::new();
         let c2 = ChunkId::new();
         let existing = Relation {
-            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
-            confidence: 0.5, source_chunks: vec![c1.clone()],
+            source: src.clone(),
+            relation_type: "WORKS_AT".into(),
+            target: tgt.clone(),
+            confidence: 0.5,
+            source_chunks: vec![c1.clone()],
         };
         let incoming = Relation {
-            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
-            confidence: 0.9, source_chunks: vec![c2.clone()],
+            source: src.clone(),
+            relation_type: "WORKS_AT".into(),
+            target: tgt.clone(),
+            confidence: 0.9,
+            source_chunks: vec![c2.clone()],
         };
         let merged = merge_relation(existing, incoming);
-        assert_eq!(merged.confidence, 0.9, "merge must keep the higher confidence");
-        assert_eq!(merged.source_chunks.len(), 2, "merge must union source_chunks, not overwrite");
+        assert_eq!(
+            merged.confidence, 0.9,
+            "merge must keep the higher confidence"
+        );
+        assert_eq!(
+            merged.source_chunks.len(),
+            2,
+            "merge must union source_chunks, not overwrite"
+        );
         assert!(merged.source_chunks.contains(&c1));
         assert!(merged.source_chunks.contains(&c2));
     }
@@ -245,15 +293,25 @@ mod helper_tests {
         let tgt = EntityId::new();
         let shared = ChunkId::new();
         let existing = Relation {
-            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
-            confidence: 0.5, source_chunks: vec![shared.clone()],
+            source: src.clone(),
+            relation_type: "WORKS_AT".into(),
+            target: tgt.clone(),
+            confidence: 0.5,
+            source_chunks: vec![shared.clone()],
         };
         let incoming = Relation {
-            source: src.clone(), relation_type: "WORKS_AT".into(), target: tgt.clone(),
-            confidence: 0.9, source_chunks: vec![shared.clone()],
+            source: src.clone(),
+            relation_type: "WORKS_AT".into(),
+            target: tgt.clone(),
+            confidence: 0.9,
+            source_chunks: vec![shared.clone()],
         };
         let merged = merge_relation(existing, incoming);
-        assert_eq!(merged.source_chunks.len(), 1, "re-citing the same chunk must not duplicate it");
+        assert_eq!(
+            merged.source_chunks.len(),
+            1,
+            "re-citing the same chunk must not duplicate it"
+        );
     }
 }
 
@@ -268,19 +326,39 @@ mod tests {
     #[async_trait::async_trait]
     impl VectorStore for InMemoryVectorStore {
         async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> crate::Result<()> {
-            self.0.lock().unwrap().entry(collection.to_string()).or_default().extend(chunks);
+            self.0
+                .lock()
+                .unwrap()
+                .entry(collection.to_string())
+                .or_default()
+                .extend(chunks);
             Ok(())
         }
-        async fn search(&self, collection: &str, query: &VectorQuery) -> crate::Result<Vec<ScoredChunk>> {
+        async fn search(
+            &self,
+            collection: &str,
+            query: &VectorQuery,
+        ) -> crate::Result<Vec<ScoredChunk>> {
             let store = self.0.lock().unwrap();
             let chunks = store.get(collection).cloned().unwrap_or_default();
-            Ok(chunks.into_iter().take(query.top_k).map(|c| ScoredChunk { chunk: c, score: 0.9 }).collect())
+            Ok(chunks
+                .into_iter()
+                .take(query.top_k)
+                .map(|c| ScoredChunk {
+                    chunk: c,
+                    score: 0.9,
+                })
+                .collect())
         }
-        async fn delete(&self, _collection: &str, _ids: &[ChunkId]) -> crate::Result<()> { Ok(()) }
+        async fn delete(&self, _collection: &str, _ids: &[ChunkId]) -> crate::Result<()> {
+            Ok(())
+        }
         async fn collection_exists(&self, collection: &str) -> crate::Result<bool> {
             Ok(self.0.lock().unwrap().contains_key(collection))
         }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> crate::Result<()> { Ok(()) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> crate::Result<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -288,10 +366,15 @@ mod tests {
         let store = InMemoryVectorStore(Mutex::new(HashMap::new()));
         let chunk = IndexedChunk {
             chunk: Chunk {
-                id: ChunkId::new(), text: "hello".into(),
+                id: ChunkId::new(),
+                text: "hello".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("test".into()),
-                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: Default::default(),
             },
@@ -300,7 +383,17 @@ mod tests {
             store_id: "".into(),
         };
         store.upsert("test", vec![chunk]).await.unwrap();
-        let results = store.search("test", &VectorQuery { vector: Vector(vec![0.1, 0.2]), top_k: 5, filters: vec![] }).await.unwrap();
+        let results = store
+            .search(
+                "test",
+                &VectorQuery {
+                    vector: Vector(vec![0.1, 0.2]),
+                    top_k: 5,
+                    filters: vec![],
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(results.len(), 1);
     }
 }

@@ -1,6 +1,6 @@
-use async_trait::async_trait;
 use crate::types::*;
 use crate::Result;
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait Retriever: Send + Sync {
@@ -10,7 +10,11 @@ pub trait Retriever: Send + Sync {
 
 #[async_trait]
 pub trait Reranker: Send + Sync {
-    async fn rerank(&self, query: &Query, chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>>;
+    async fn rerank(
+        &self,
+        query: &Query,
+        chunks: Vec<RetrievedChunk>,
+    ) -> Result<Vec<RetrievedChunk>>;
 }
 
 #[derive(Debug, Clone)]
@@ -44,7 +48,11 @@ mod tests {
     struct PassthroughReranker;
     #[async_trait]
     impl Reranker for PassthroughReranker {
-        async fn rerank(&self, _q: &Query, chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
+        async fn rerank(
+            &self,
+            _q: &Query,
+            chunks: Vec<RetrievedChunk>,
+        ) -> Result<Vec<RetrievedChunk>> {
             Ok(chunks)
         }
     }

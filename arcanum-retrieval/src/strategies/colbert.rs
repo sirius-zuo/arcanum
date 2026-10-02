@@ -21,22 +21,34 @@ impl ColBertRetriever {
 
     /// Cosine similarity between two vectors (returns 0.0 if either is zero-length).
     fn cosine(a: &[f32], b: &[f32]) -> f32 {
-        if a.len() != b.len() || a.is_empty() { return 0.0; }
+        if a.len() != b.len() || a.is_empty() {
+            return 0.0;
+        }
         let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
         let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
     }
 
     /// MaxSim scoring: for each query token vector, find the max cosine sim
     /// across all document token vectors, then sum those maxima.
     fn max_sim(query_tokens: &[Vector], doc_tokens: &[Vector]) -> f32 {
-        if query_tokens.is_empty() || doc_tokens.is_empty() { return 0.0; }
-        query_tokens.iter().map(|qt| {
-            doc_tokens.iter()
-                .map(|dt| Self::cosine(&qt.0, &dt.0))
-                .fold(f32::NEG_INFINITY, f32::max)
-        }).sum()
+        if query_tokens.is_empty() || doc_tokens.is_empty() {
+            return 0.0;
+        }
+        query_tokens
+            .iter()
+            .map(|qt| {
+                doc_tokens
+                    .iter()
+                    .map(|dt| Self::cosine(&qt.0, &dt.0))
+                    .fold(f32::NEG_INFINITY, f32::max)
+            })
+            .sum()
     }
 }
 
@@ -44,10 +56,11 @@ impl ColBertRetriever {
 impl Retriever for ColBertRetriever {
     #[instrument(skip(self), fields(strategy = "colbert", top_k = ?query.top_k), err)]
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
-        let collection_id = query.collection_id.as_ref()
-            .ok_or_else(|| arcanum_core::ArcanumError::Config(
-                "ColBertRetriever requires an explicit collection_id".into()
-            ))?;
+        let collection_id = query.collection_id.as_ref().ok_or_else(|| {
+            arcanum_core::ArcanumError::Config(
+                "ColBertRetriever requires an explicit collection_id".into(),
+            )
+        })?;
         let collection = collection_id.0.as_str();
 
         // Step 1: coarse ANN pass — embed query as single vector.
@@ -66,25 +79,33 @@ impl Retriever for ColBertRetriever {
         // Step 2: MaxSim reranking. Use single query vector as a 1-token list
         // so behaviour degrades gracefully when no token_vectors are present.
         let query_tokens = vec![query_vec];
-        let mut scored: Vec<(f32, IndexedChunk)> = candidates.into_iter().map(|s| {
-            let score = match &s.chunk.token_vectors {
-                Some(tv) if !tv.is_empty() => Self::max_sim(&query_tokens, tv),
-                _ => s.score, // fallback to coarse score
-            };
-            (score, s.chunk)
-        }).collect();
+        let mut scored: Vec<(f32, IndexedChunk)> = candidates
+            .into_iter()
+            .map(|s| {
+                let score = match &s.chunk.token_vectors {
+                    Some(tv) if !tv.is_empty() => Self::max_sim(&query_tokens, tv),
+                    _ => s.score, // fallback to coarse score
+                };
+                (score, s.chunk)
+            })
+            .collect();
 
         scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
         scored.truncate(query.top_k);
 
-        Ok(scored.into_iter().map(|(score, chunk)| RetrievedChunk {
-            indexed_chunk: chunk,
-            score,
-            strategy: RetrievalStrategy::ColBert,
-        }).collect())
+        Ok(scored
+            .into_iter()
+            .map(|(score, chunk)| RetrievedChunk {
+                indexed_chunk: chunk,
+                score,
+                strategy: RetrievalStrategy::ColBert,
+            })
+            .collect())
     }
 
-    fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::ColBert }
+    fn strategy(&self) -> RetrievalStrategy {
+        RetrievalStrategy::ColBert
+    }
 }
 
 #[cfg(test)]
@@ -98,19 +119,35 @@ mod tests {
     #[async_trait::async_trait]
     impl VectorStore for MockVectorStore {
         async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
-            self.0.lock().unwrap().entry(collection.to_string()).or_default().extend(chunks);
+            self.0
+                .lock()
+                .unwrap()
+                .entry(collection.to_string())
+                .or_default()
+                .extend(chunks);
             Ok(())
         }
         async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
             let store = self.0.lock().unwrap();
             let chunks = store.get(collection).cloned().unwrap_or_default();
-            Ok(chunks.into_iter().take(query.top_k).map(|c| ScoredChunk { chunk: c, score: 0.8 }).collect())
+            Ok(chunks
+                .into_iter()
+                .take(query.top_k)
+                .map(|c| ScoredChunk {
+                    chunk: c,
+                    score: 0.8,
+                })
+                .collect())
         }
-        async fn delete(&self, _: &str, _: &[ChunkId]) -> Result<()> { Ok(()) }
+        async fn delete(&self, _: &str, _: &[ChunkId]) -> Result<()> {
+            Ok(())
+        }
         async fn collection_exists(&self, c: &str) -> Result<bool> {
             Ok(self.0.lock().unwrap().contains_key(c))
         }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct MockEmbedder;
@@ -119,7 +156,9 @@ mod tests {
         async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
             Ok(texts.iter().map(|_| Vector(vec![0.1, 0.2, 0.3])).collect())
         }
-        fn dimension(&self) -> usize { 3 }
+        fn dimension(&self) -> usize {
+            3
+        }
     }
 
     #[tokio::test]
@@ -145,6 +184,9 @@ mod tests {
         let q = vec![Vector(vec![1.0, 0.0])];
         let d = vec![Vector(vec![1.0, 0.0]), Vector(vec![0.0, 1.0])];
         let score = ColBertRetriever::max_sim(&q, &d);
-        assert!((score - 1.0).abs() < 1e-5, "MaxSim should be 1.0 for identical vectors");
+        assert!(
+            (score - 1.0).abs() < 1e-5,
+            "MaxSim should be 1.0 for identical vectors"
+        );
     }
 }

@@ -22,25 +22,34 @@ pub fn builder() -> TemplateBuilder {
                 deps.graph_store.clone(),
                 deps.tree_store.clone(),
             ))
-            .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
+            .add_stage(make_preprocess_stage(
+                state.clone(),
+                deps.preprocessors.clone(),
+            ))
             .add_stage(make_snapshot_stage(
                 state.clone(),
                 deps.version_store.clone(),
                 deps.snapshot_store.clone(),
             ))
             .add_stage(make_vector_chunk_stage(
-                    state.clone(),
-                    deps.chunkers.vector.clone(),
-                    deps.shadow.as_ref().map(|s| stages::ShadowWriteContext {
-                        chunker:              s.chunkers.vector.clone(),
-                        shadow_collection_id: s.shadow_collection_id.clone(),
-                        embedder:             deps.embedder.clone(),
-                        vector_store:         deps.vector_store.clone(),
-                        vector_store_cb:      deps.vector_store_cb.clone(),
-                    }),
-                ))
-            .add_stage(make_graph_chunk_stage(state.clone(), deps.chunkers.graph.clone()))
-            .add_stage(make_tree_chunk_stage(state.clone(), deps.chunkers.tree.clone()));
+                state.clone(),
+                deps.chunkers.vector.clone(),
+                deps.shadow.as_ref().map(|s| stages::ShadowWriteContext {
+                    chunker: s.chunkers.vector.clone(),
+                    shadow_collection_id: s.shadow_collection_id.clone(),
+                    embedder: deps.embedder.clone(),
+                    vector_store: deps.vector_store.clone(),
+                    vector_store_cb: deps.vector_store_cb.clone(),
+                }),
+            ))
+            .add_stage(make_graph_chunk_stage(
+                state.clone(),
+                deps.chunkers.graph.clone(),
+            ))
+            .add_stage(make_tree_chunk_stage(
+                state.clone(),
+                deps.chunkers.tree.clone(),
+            ));
 
         let embed_dep = match &deps.context_enricher {
             Some(e) => {
@@ -50,19 +59,44 @@ pub fn builder() -> TemplateBuilder {
             None => "vector_chunk",
         };
 
-        dag = dag.add_stage(make_embed_stage_after(embed_dep, state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()));
-        dag = dag.add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone(), deps.chunk_metadata.clone(), deps.bm25_index.clone()));
-        dag = dag.add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()));
+        dag = dag.add_stage(make_embed_stage_after(
+            embed_dep,
+            state.clone(),
+            deps.embedder.clone(),
+            deps.embedding_cb.clone(),
+        ));
+        dag = dag.add_stage(make_vector_write_stage(
+            state.clone(),
+            deps.vector_store.clone(),
+            deps.vector_store_cb.clone(),
+            deps.chunk_metadata.clone(),
+            deps.bm25_index.clone(),
+        ));
+        dag = dag.add_stage(make_register_version_stage(
+            state.clone(),
+            deps.version_store.clone(),
+        ));
 
         if let (Some(ext), Some(gs)) = (&deps.entity_extractor, &deps.graph_store) {
-            dag = dag.add_stage(make_entity_extract_stage(state.clone(), ext.clone(), gs.clone()));
+            dag = dag.add_stage(make_entity_extract_stage(
+                state.clone(),
+                ext.clone(),
+                gs.clone(),
+            ));
         }
 
         if let Some(ts) = &deps.tree_store {
             dag = dag.add_stage(make_tree_embed_stage(
-                state.clone(), deps.embedder.clone(), deps.embedding_cb.clone(),
+                state.clone(),
+                deps.embedder.clone(),
+                deps.embedding_cb.clone(),
             ));
-            dag = dag.add_stage(make_raptor_build_stage(state.clone(), ts.clone(), DEFAULT_RAPTOR_DEPTH, deps.context_enricher.clone()));
+            dag = dag.add_stage(make_raptor_build_stage(
+                state.clone(),
+                ts.clone(),
+                DEFAULT_RAPTOR_DEPTH,
+                deps.context_enricher.clone(),
+            ));
         }
 
         dag

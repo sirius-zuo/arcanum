@@ -21,7 +21,10 @@ pub fn builder() -> TemplateBuilder {
                 deps.graph_store.clone(),
                 deps.tree_store.clone(),
             ))
-            .add_stage(make_preprocess_stage(state.clone(), deps.preprocessors.clone()))
+            .add_stage(make_preprocess_stage(
+                state.clone(),
+                deps.preprocessors.clone(),
+            ))
             .add_stage(make_snapshot_stage(
                 state.clone(),
                 deps.version_store.clone(),
@@ -31,17 +34,36 @@ pub fn builder() -> TemplateBuilder {
                 state.clone(),
                 deps.chunkers.vector.clone(),
                 deps.shadow.as_ref().map(|s| stages::ShadowWriteContext {
-                    chunker:              s.chunkers.vector.clone(),
+                    chunker: s.chunkers.vector.clone(),
                     shadow_collection_id: s.shadow_collection_id.clone(),
-                    embedder:             deps.embedder.clone(),
-                    vector_store:         deps.vector_store.clone(),
-                    vector_store_cb:      deps.vector_store_cb.clone(),
+                    embedder: deps.embedder.clone(),
+                    vector_store: deps.vector_store.clone(),
+                    vector_store_cb: deps.vector_store_cb.clone(),
                 }),
             ))
-            .add_stage(make_graph_chunk_stage(state.clone(), deps.chunkers.graph.clone()))
-            .add_stage(make_tree_chunk_stage(state.clone(), deps.chunkers.tree.clone()))
-            .add_stage(make_embed_stage(state.clone(), deps.embedder.clone(), deps.embedding_cb.clone()))
-            .add_stage(make_vector_write_stage(state.clone(), deps.vector_store.clone(), deps.vector_store_cb.clone(), deps.chunk_metadata.clone(), deps.bm25_index.clone()))
-            .add_stage(make_register_version_stage(state.clone(), deps.version_store.clone()))
+            .add_stage(make_graph_chunk_stage(
+                state.clone(),
+                deps.chunkers.graph.clone(),
+            ))
+            .add_stage(make_tree_chunk_stage(
+                state.clone(),
+                deps.chunkers.tree.clone(),
+            ))
+            .add_stage(make_embed_stage(
+                state.clone(),
+                deps.embedder.clone(),
+                deps.embedding_cb.clone(),
+            ))
+            .add_stage(make_vector_write_stage(
+                state.clone(),
+                deps.vector_store.clone(),
+                deps.vector_store_cb.clone(),
+                deps.chunk_metadata.clone(),
+                deps.bm25_index.clone(),
+            ))
+            .add_stage(make_register_version_stage(
+                state.clone(),
+                deps.version_store.clone(),
+            ))
     })
 }

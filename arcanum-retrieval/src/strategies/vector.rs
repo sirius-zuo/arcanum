@@ -20,23 +20,36 @@ impl Retriever for VectorRetriever {
     async fn retrieve(&self, query: &Query) -> Result<Vec<RetrievedChunk>> {
         let vectors = self.embedder.embed(vec![query.text.clone()]).await?;
         // Require explicit collection_id — fail-open fallback would allow cross-collection access.
-        let collection_id = query.collection_id.as_ref()
-            .ok_or_else(|| arcanum_core::ArcanumError::Config(
-                "VectorRetriever requires an explicit collection_id".into()
-            ))?;
+        let collection_id = query.collection_id.as_ref().ok_or_else(|| {
+            arcanum_core::ArcanumError::Config(
+                "VectorRetriever requires an explicit collection_id".into(),
+            )
+        })?;
         let collection = collection_id.0.as_str();
-        let results = self.store.search(collection, &VectorQuery {
-            vector: vectors.into_iter().next().unwrap_or(Vector(vec![])),
-            top_k: query.top_k,
-            filters: query.filters.clone(),
-        }).await?;
-        Ok(results.into_iter().map(|s| RetrievedChunk {
-            indexed_chunk: s.chunk, score: s.score,
-            strategy: RetrievalStrategy::Vector,
-        }).collect())
+        let results = self
+            .store
+            .search(
+                collection,
+                &VectorQuery {
+                    vector: vectors.into_iter().next().unwrap_or(Vector(vec![])),
+                    top_k: query.top_k,
+                    filters: query.filters.clone(),
+                },
+            )
+            .await?;
+        Ok(results
+            .into_iter()
+            .map(|s| RetrievedChunk {
+                indexed_chunk: s.chunk,
+                score: s.score,
+                strategy: RetrievalStrategy::Vector,
+            })
+            .collect())
     }
 
-    fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::Vector }
+    fn strategy(&self) -> RetrievalStrategy {
+        RetrievalStrategy::Vector
+    }
 }
 
 #[cfg(test)]
@@ -50,19 +63,35 @@ mod tests {
     #[async_trait::async_trait]
     impl VectorStore for MockVectorStore {
         async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
-            self.0.lock().unwrap().entry(collection.to_string()).or_default().extend(chunks);
+            self.0
+                .lock()
+                .unwrap()
+                .entry(collection.to_string())
+                .or_default()
+                .extend(chunks);
             Ok(())
         }
         async fn search(&self, collection: &str, query: &VectorQuery) -> Result<Vec<ScoredChunk>> {
             let store = self.0.lock().unwrap();
             let chunks = store.get(collection).cloned().unwrap_or_default();
-            Ok(chunks.into_iter().take(query.top_k).map(|c| ScoredChunk { chunk: c, score: 0.9 }).collect())
+            Ok(chunks
+                .into_iter()
+                .take(query.top_k)
+                .map(|c| ScoredChunk {
+                    chunk: c,
+                    score: 0.9,
+                })
+                .collect())
         }
-        async fn delete(&self, _collection: &str, _ids: &[ChunkId]) -> Result<()> { Ok(()) }
+        async fn delete(&self, _collection: &str, _ids: &[ChunkId]) -> Result<()> {
+            Ok(())
+        }
         async fn collection_exists(&self, collection: &str) -> Result<bool> {
             Ok(self.0.lock().unwrap().contains_key(collection))
         }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+            Ok(())
+        }
     }
 
     struct MockEmbedder;
@@ -71,7 +100,9 @@ mod tests {
         async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
             Ok(texts.iter().map(|_| Vector(vec![0.1, 0.2, 0.3])).collect())
         }
-        fn dimension(&self) -> usize { 3 }
+        fn dimension(&self) -> usize {
+            3
+        }
     }
 
     #[tokio::test]

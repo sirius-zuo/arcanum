@@ -1,8 +1,8 @@
 use arcanum_core::{traits::TreeStore, types::*, ArcanumError, Result};
 use async_trait::async_trait;
 use sqlx::PgPool;
-use uuid::Uuid;
 use tracing::instrument;
+use uuid::Uuid;
 
 /// PostgreSQL-backed TreeStore for production deployments.
 pub struct PgTreeStore {
@@ -11,7 +11,8 @@ pub struct PgTreeStore {
 
 impl PgTreeStore {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = PgPool::connect(database_url).await
+        let pool = PgPool::connect(database_url)
+            .await
             .map_err(|e| ArcanumError::Storage(format!("PgTreeStore connect error: {}", e)))?;
         let store = Self { pool };
         store.ensure_schema().await?;
@@ -19,7 +20,8 @@ impl PgTreeStore {
     }
 
     async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS arcanum_tree_nodes (
                 id             UUID PRIMARY KEY,
                 collection     TEXT NOT NULL,
@@ -32,7 +34,8 @@ impl PgTreeStore {
                 source_uri     TEXT NOT NULL DEFAULT '',
                 leaf_chunk_ids JSONB NOT NULL DEFAULT '[]'
             )
-        "#)
+        "#,
+        )
         .execute(&self.pool)
         .await
         .map_err(|e| ArcanumError::Storage(format!("ensure_schema error: {}", e)))?;
@@ -52,11 +55,13 @@ impl PgTreeStore {
             .await
             .ok();
 
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS arcanum_tree_collections (
                 name TEXT PRIMARY KEY
             )
-        "#)
+        "#,
+        )
         .execute(&self.pool)
         .await
         .map_err(|e| ArcanumError::Storage(format!("ensure_schema tree_collections: {}", e)))?;
@@ -73,8 +78,10 @@ impl TreeStore for PgTreeStore {
         let parent_id = node.parent.as_ref().map(|p| p.0);
         let vector_json = serde_json::to_value(&node.vector)
             .map_err(|e| ArcanumError::Storage(format!("serialize vector: {}", e)))?;
-        let centroid_json = node.cluster_centroid.as_ref()
-            .map(|c| serde_json::to_value(c))
+        let centroid_json = node
+            .cluster_centroid
+            .as_ref()
+            .map(serde_json::to_value)
             .transpose()
             .map_err(|e| ArcanumError::Storage(format!("serialize centroid: {}", e)))?;
         let children_json = serde_json::to_value(&node.children)
@@ -129,7 +136,10 @@ impl TreeStore for PgTreeStore {
     #[instrument(skip(self), fields(store = "postgres_tree", collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
         if source_uri.is_empty() {
-            tracing::warn!(store = "postgres_tree", "delete_by_source_uri called with empty source_uri — skipping");
+            tracing::warn!(
+                store = "postgres_tree",
+                "delete_by_source_uri called with empty source_uri — skipping"
+            );
             return Ok(());
         }
         sqlx::query("DELETE FROM arcanum_tree_nodes WHERE collection = $1 AND source_uri = $2")
@@ -143,12 +153,11 @@ impl TreeStore for PgTreeStore {
 
     #[instrument(skip(self), fields(store = "postgres_tree"), err)]
     async fn list_collections(&self) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT name FROM arcanum_tree_collections ORDER BY name",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM arcanum_tree_collections ORDER BY name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
@@ -163,9 +172,10 @@ impl TreeStore for PgTreeStore {
         .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
 
         if result.rows_affected() == 0 {
-            return Err(ArcanumError::AlreadyExists(
-                format!("collection '{}' already exists", collection),
-            ));
+            return Err(ArcanumError::AlreadyExists(format!(
+                "collection '{}' already exists",
+                collection
+            )));
         }
         Ok(())
     }
@@ -249,8 +259,9 @@ struct PgTreeNodeRow {
 fn row_to_node(row: PgTreeNodeRow) -> Result<TreeNode> {
     let vector: Vector = serde_json::from_value(row.vector)
         .map_err(|e| ArcanumError::Storage(format!("deserialize vector: {}", e)))?;
-    let cluster_centroid: Option<Vector> = row.centroid
-        .map(|c| serde_json::from_value(c))
+    let cluster_centroid: Option<Vector> = row
+        .centroid
+        .map(serde_json::from_value)
         .transpose()
         .map_err(|e| ArcanumError::Storage(format!("deserialize centroid: {}", e)))?;
     let children: Vec<TreeNodeId> = serde_json::from_value(row.children)
@@ -303,11 +314,20 @@ mod tests {
             source_uri: "".to_string(),
             leaf_chunk_ids: vec![],
         };
-        store.insert_node("test_collection", node).await.expect("insert");
+        store
+            .insert_node("test_collection", node)
+            .await
+            .expect("insert");
 
-        let nodes = store.get_level("test_collection", 0).await.expect("get_level");
+        let nodes = store
+            .get_level("test_collection", 0)
+            .await
+            .expect("get_level");
         assert!(!nodes.is_empty());
 
-        store.delete_collection("test_collection").await.expect("delete");
+        store
+            .delete_collection("test_collection")
+            .await
+            .expect("delete");
     }
 }

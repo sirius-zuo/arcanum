@@ -1,24 +1,51 @@
-use async_trait::async_trait;
-use crate::types::*;
 use crate::types::DocumentId;
+use crate::types::*;
 use crate::Result;
+use async_trait::async_trait;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone)]
-pub enum CloudProvider { S3, Gcs, AzureBlob }
+pub enum CloudProvider {
+    S3,
+    Gcs,
+    AzureBlob,
+}
 
 #[derive(Debug, Clone)]
-pub enum ConnectorKind { GoogleDrive, Notion, Confluence }
+pub enum ConnectorKind {
+    GoogleDrive,
+    Notion,
+    Confluence,
+}
 
 #[derive(Debug, Clone)]
 pub enum Source {
     File(PathBuf),
     Url(String),
-    Database { connection_string: String, query: String, display_uri: String },
-    Raw { content: Vec<u8>, mime_hint: Option<String>, uri: String },
-    CloudStorage { provider: CloudProvider, bucket: String, key: String },
-    Git { repo_url: String, branch: String, path_glob: Option<String> },
-    Connector { provider: ConnectorKind, resource_id: String },
+    Database {
+        connection_string: String,
+        query: String,
+        display_uri: String,
+    },
+    Raw {
+        content: Vec<u8>,
+        mime_hint: Option<String>,
+        uri: String,
+    },
+    CloudStorage {
+        provider: CloudProvider,
+        bucket: String,
+        key: String,
+    },
+    Git {
+        repo_url: String,
+        branch: String,
+        path_glob: Option<String>,
+    },
+    Connector {
+        provider: ConnectorKind,
+        resource_id: String,
+    },
 }
 
 impl Source {
@@ -36,12 +63,19 @@ impl Source {
 
     pub fn display_uri(&self) -> String {
         match self {
-            Source::CloudStorage { provider, bucket, key } => match provider {
+            Source::CloudStorage {
+                provider,
+                bucket,
+                key,
+            } => match provider {
                 CloudProvider::S3 => format!("s3://{}/{}", bucket, key),
                 CloudProvider::Gcs => format!("gs://{}/{}", bucket, key),
                 CloudProvider::AzureBlob => format!("az://{}/{}", bucket, key),
             },
-            Source::Connector { provider, resource_id } => match provider {
+            Source::Connector {
+                provider,
+                resource_id,
+            } => match provider {
                 ConnectorKind::GoogleDrive => format!("gdrive://{}", resource_id),
                 ConnectorKind::Notion => format!("notion://{}", resource_id),
                 ConnectorKind::Confluence => format!("confluence://{}", resource_id),
@@ -55,19 +89,35 @@ impl Source {
             return Ok(Source::Url(uri.to_string()));
         }
         if uri.starts_with("raw://") {
-            return Ok(Source::Raw { content: Vec::new(), mime_hint: None, uri: uri.to_string() });
+            return Ok(Source::Raw {
+                content: Vec::new(),
+                mime_hint: None,
+                uri: uri.to_string(),
+            });
         }
         if let Some(rest) = uri.strip_prefix("s3://") {
             let (bucket, key) = split_bucket_key(rest);
-            return Ok(Source::CloudStorage { provider: CloudProvider::S3, bucket, key });
+            return Ok(Source::CloudStorage {
+                provider: CloudProvider::S3,
+                bucket,
+                key,
+            });
         }
         if let Some(rest) = uri.strip_prefix("gs://") {
             let (bucket, key) = split_bucket_key(rest);
-            return Ok(Source::CloudStorage { provider: CloudProvider::Gcs, bucket, key });
+            return Ok(Source::CloudStorage {
+                provider: CloudProvider::Gcs,
+                bucket,
+                key,
+            });
         }
         if let Some(rest) = uri.strip_prefix("az://") {
             let (bucket, key) = split_bucket_key(rest);
-            return Ok(Source::CloudStorage { provider: CloudProvider::AzureBlob, bucket, key });
+            return Ok(Source::CloudStorage {
+                provider: CloudProvider::AzureBlob,
+                bucket,
+                key,
+            });
         }
         Ok(Source::File(PathBuf::from(uri)))
     }
@@ -92,7 +142,9 @@ pub trait Preprocessor: Send + Sync {
 
     /// Return structured canonical JSON (e.g. Docling blocks) for this document,
     /// if the preprocessor produces one during `process()`.
-    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> { None }
+    fn canonical(&self, _doc_id: &DocumentId) -> Option<serde_json::Value> {
+        None
+    }
 
     /// Set the canonical JSON produced by `process()` for a given document.
     fn set_canonical(&self, _doc_id: &DocumentId, _canonical: serde_json::Value) {}
@@ -162,20 +214,32 @@ mod tests {
     #[test]
     fn test_source_from_uri_s3() {
         let s = Source::from_uri("s3://my-bucket/path/doc.pdf").unwrap();
-        assert!(matches!(s, Source::CloudStorage { provider: CloudProvider::S3, .. }));
+        assert!(matches!(
+            s,
+            Source::CloudStorage {
+                provider: CloudProvider::S3,
+                ..
+            }
+        ));
     }
 
     #[test]
     fn test_cloud_storage_uri_display() {
         let s = Source::CloudStorage {
-            provider: CloudProvider::Gcs, bucket: "b".into(), key: "k/doc.pdf".into(),
+            provider: CloudProvider::Gcs,
+            bucket: "b".into(),
+            key: "k/doc.pdf".into(),
         };
         assert_eq!(s.display_uri(), "gs://b/k/doc.pdf");
     }
 
     #[test]
     fn test_raw_mime_hint_optional() {
-        let s = Source::Raw { content: b"data".to_vec(), mime_hint: None, uri: "raw://1".into() };
+        let s = Source::Raw {
+            content: b"data".to_vec(),
+            mime_hint: None,
+            uri: "raw://1".into(),
+        };
         assert_eq!(s.uri(), "raw://1");
     }
 }

@@ -1,14 +1,14 @@
-use async_trait::async_trait;
 use crate::{
     types::{DocumentEntry, DocumentId, DocumentVersion, VersioningPolicy},
     Result,
 };
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait DocumentVersionStore: Send + Sync {
     async fn get_latest(
         &self,
-        source_uri:    &str,
+        source_uri: &str,
         collection_id: &str,
     ) -> Result<Option<DocumentVersion>>;
 
@@ -16,17 +16,14 @@ pub trait DocumentVersionStore: Send + Sync {
 
     async fn supersede_active(&self, document_id: &DocumentId) -> Result<()>;
 
-    async fn list_versions(
-        &self,
-        document_id: &DocumentId,
-    ) -> Result<Vec<DocumentVersion>>;
+    async fn list_versions(&self, document_id: &DocumentId) -> Result<Vec<DocumentVersion>>;
 
     async fn get_versioning_policy(&self, collection_id: &str) -> Result<VersioningPolicy>;
 
     async fn set_versioning_policy(
         &self,
         collection_id: &str,
-        policy:        VersioningPolicy,
+        policy: VersioningPolicy,
     ) -> Result<()>;
 
     /// Remove all version records for a given source URI in a collection.
@@ -45,10 +42,7 @@ pub trait DocumentVersionStore: Send + Sync {
 
     /// List active (non-deleted) documents in a collection, returning
     /// source_uri and the timestamp of the active version.
-    async fn list_documents(
-        &self,
-        collection_id: &str,
-    ) -> Result<Vec<DocumentEntry>>;
+    async fn list_documents(&self, collection_id: &str) -> Result<Vec<DocumentEntry>>;
 }
 
 /// No-op implementation for tests and dev setups without Postgres.
@@ -60,15 +54,27 @@ impl DocumentVersionStore for NoOpDocumentVersionStore {
     async fn get_latest(&self, _: &str, _: &str) -> Result<Option<DocumentVersion>> {
         Ok(None)
     }
-    async fn add_version(&self, _: DocumentVersion) -> Result<()> { Ok(()) }
-    async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
-    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
+    async fn add_version(&self, _: DocumentVersion) -> Result<()> {
+        Ok(())
+    }
+    async fn supersede_active(&self, _: &DocumentId) -> Result<()> {
+        Ok(())
+    }
+    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> {
+        Ok(vec![])
+    }
     async fn get_versioning_policy(&self, _: &str) -> Result<VersioningPolicy> {
         Ok(VersioningPolicy::Replace)
     }
-    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
-    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
+    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> {
+        Ok(())
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
     async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
         Ok(None)
     }

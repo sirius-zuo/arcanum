@@ -21,6 +21,15 @@ sqlx          = { version = "0.8", features = ["runtime-tokio", "tls-rustls", "p
 tempfile      = "3"
 uuid          = { version = "1", features = ["serde", "v4"] }
 chrono         = { version = "0.4", features = ["serde"] }
+bytes          = "1"
+futures        = "0.3"
+sha2           = "0.10"
+hex            = "0.4"
+
+# No [features] section is required: the SQLite store runs in-process and the
+# S3 payload adapter is driven by config — it takes an injected `S3ObjectStore`
+# client, so both adapters are exercised by plain `cargo test` without a live
+# MinIO endpoint or an optional `s3` feature.
 
 [dev-dependencies]
 tokio    = { workspace = true }

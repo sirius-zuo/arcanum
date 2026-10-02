@@ -18,15 +18,17 @@ pub struct PostgresExperimentStore {
 
 impl PostgresExperimentStore {
     pub async fn new(database_url: &str) -> Result<Self> {
-        let pool = PgPool::connect(database_url).await
-            .map_err(|e| ArcanumError::Storage(format!("PostgresExperimentStore connect: {}", e)))?;
+        let pool = PgPool::connect(database_url).await.map_err(|e| {
+            ArcanumError::Storage(format!("PostgresExperimentStore connect: {}", e))
+        })?;
         let store = Self { pool };
         store.ensure_schema().await?;
         Ok(store)
     }
 
     async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS chunk_experiments (
                 id                UUID        NOT NULL PRIMARY KEY,
                 collection_id     TEXT        NOT NULL,
@@ -37,8 +39,11 @@ impl PostgresExperimentStore {
                 started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 closed_at         TIMESTAMPTZ
             )
-        "#).execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("ensure chunk_experiments: {}", e)))?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure chunk_experiments: {}", e)))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_chunk_experiments_collection_status ON chunk_experiments (collection_id, status)")
             .execute(&self.pool).await
@@ -46,12 +51,16 @@ impl PostgresExperimentStore {
 
         // Enforces one Active experiment per collection at the database level, so
         // try_start is race-free across processes/connections (migrations/0002).
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE UNIQUE INDEX IF NOT EXISTS idx_chunk_experiments_one_active
                 ON chunk_experiments (collection_id)
                 WHERE status = 'active'
-        "#).execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("ensure one-active index: {}", e)))?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure one-active index: {}", e)))?;
 
         Ok(())
     }
@@ -59,22 +68,25 @@ impl PostgresExperimentStore {
 
 #[derive(sqlx::FromRow)]
 struct ExperimentRow {
-    id:                uuid::Uuid,
-    status:            String,
+    id: uuid::Uuid,
+    status: String,
     challenger_config: serde_json::Value,
-    metrics:           Option<serde_json::Value>,
-    started_at:        chrono::DateTime<chrono::Utc>,
+    metrics: Option<serde_json::Value>,
+    started_at: chrono::DateTime<chrono::Utc>,
 }
 
 impl ExperimentRow {
     fn into_experiment(self) -> Result<ShadowExperiment> {
         Ok(ShadowExperiment {
             id: ExperimentId(self.id),
-            challenger_config: serde_json::from_value(self.challenger_config)
-                .map_err(|e| ArcanumError::Storage(format!("deserialize challenger_config: {}", e)))?,
+            challenger_config: serde_json::from_value(self.challenger_config).map_err(|e| {
+                ArcanumError::Storage(format!("deserialize challenger_config: {}", e))
+            })?,
             started_at: self.started_at.to_rfc3339(),
             status: status_from_str(&self.status)?,
-            metrics: self.metrics.map(serde_json::from_value)
+            metrics: self
+                .metrics
+                .map(serde_json::from_value)
                 .transpose()
                 .map_err(|e| ArcanumError::Storage(format!("deserialize metrics: {}", e)))?,
         })
@@ -88,7 +100,10 @@ fn status_to_str(status: &ExperimentStatus) -> Result<String> {
         .map_err(|e| ArcanumError::Storage(format!("serialize status: {}", e)))?
     {
         serde_json::Value::String(s) => Ok(s),
-        other => Err(ArcanumError::Storage(format!("unexpected status serialization: {}", other))),
+        other => Err(ArcanumError::Storage(format!(
+            "unexpected status serialization: {}",
+            other
+        ))),
     }
 }
 
@@ -112,22 +127,33 @@ impl ExperimentStore for PostgresExperimentStore {
             .execute(&self.pool).await;
         match res {
             Ok(_) => Ok(()),
-            Err(sqlx::Error::Database(db)) if db.constraint() == Some("idx_chunk_experiments_one_active") =>
+            Err(sqlx::Error::Database(db))
+                if db.constraint() == Some("idx_chunk_experiments_one_active") =>
+            {
                 Err(ArcanumError::Storage(format!(
-                    "collection '{}' already has an active experiment", collection_id))),
+                    "collection '{}' already has an active experiment",
+                    collection_id
+                )))
+            }
             Err(e) => Err(ArcanumError::Storage(format!("experiment insert: {}", e))),
         }
     }
 
     #[instrument(skip(self), fields(store = "postgres_experiment", collection_id, exp_id = %exp_id.0), err)]
-    async fn get(&self, collection_id: &str, exp_id: &ExperimentId) -> Result<Option<ShadowExperiment>> {
+    async fn get(
+        &self,
+        collection_id: &str,
+        exp_id: &ExperimentId,
+    ) -> Result<Option<ShadowExperiment>> {
         let row = sqlx::query_as::<_, ExperimentRow>(
             r#"SELECT id, status, challenger_config, metrics, started_at
-               FROM chunk_experiments WHERE id = $1 AND collection_id = $2"#)
-            .bind(exp_id.0)
-            .bind(collection_id)
-            .fetch_optional(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("get experiment: {}", e)))?;
+               FROM chunk_experiments WHERE id = $1 AND collection_id = $2"#,
+        )
+        .bind(exp_id.0)
+        .bind(collection_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("get experiment: {}", e)))?;
 
         row.map(ExperimentRow::into_experiment).transpose()
     }
@@ -147,17 +173,26 @@ impl ExperimentStore for PostgresExperimentStore {
             r#"UPDATE chunk_experiments
                SET status = $3, metrics = $4,
                    closed_at = CASE WHEN $3 = 'closed' THEN NOW() ELSE closed_at END
-               WHERE id = $1 AND collection_id = $2 AND status != 'closed'"#)
-            .bind(exp.id.0)
-            .bind(collection_id)
-            .bind(&status)
-            .bind(exp.metrics.as_ref().map(serde_json::to_value).transpose()
-                .map_err(|e| ArcanumError::Storage(format!("metrics serialize: {}", e)))?)
-            .execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("experiment update: {}", e)))?;
+               WHERE id = $1 AND collection_id = $2 AND status != 'closed'"#,
+        )
+        .bind(exp.id.0)
+        .bind(collection_id)
+        .bind(&status)
+        .bind(
+            exp.metrics
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| ArcanumError::Storage(format!("metrics serialize: {}", e)))?,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("experiment update: {}", e)))?;
         if done.rows_affected() == 0 {
             return Err(ArcanumError::NotFound(format!(
-                "experiment '{}' (missing or already closed)", exp.id.0)));
+                "experiment '{}' (missing or already closed)",
+                exp.id.0
+            )));
         }
         Ok(())
     }
@@ -173,9 +208,11 @@ impl ExperimentStore for PostgresExperimentStore {
 
         let rows = sqlx::query_as::<_, ActiveRow>(
             r#"SELECT collection_id, id, status, challenger_config, metrics, started_at
-               FROM chunk_experiments WHERE status = 'active'"#)
-            .fetch_all(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("active_experiments: {}", e)))?;
+               FROM chunk_experiments WHERE status = 'active'"#,
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("active_experiments: {}", e)))?;
 
         rows.into_iter()
             .map(|r| Ok((r.collection_id, r.experiment.into_experiment()?)))
@@ -253,7 +290,11 @@ mod tests {
         let exp = sample_exp();
         store.try_start(&col1, &exp).await.unwrap();
         assert_eq!(store.get(&col1, &exp.id).await.unwrap().unwrap().id, exp.id);
-        assert!(store.get(&col1, &ExperimentId::new()).await.unwrap().is_none());
+        assert!(store
+            .get(&col1, &ExperimentId::new())
+            .await
+            .unwrap()
+            .is_none());
         let active = store.active_experiments().await.unwrap();
         assert!(active.contains(&(col1.clone(), exp.clone())));
     }
@@ -265,12 +306,13 @@ mod tests {
         let col1 = unique_collection("concurrent-try-start-col1");
 
         let (exp1, exp2) = (sample_exp(), sample_exp());
-        let (r1, r2) = tokio::join!(
-            store.try_start(&col1, &exp1),
-            store.try_start(&col1, &exp2),
-        );
+        let (r1, r2) = tokio::join!(store.try_start(&col1, &exp1), store.try_start(&col1, &exp2),);
         let successes = [&r1, &r2].iter().filter(|r| r.is_ok()).count();
-        assert_eq!(successes, 1, "exactly one concurrent try_start must succeed: {:?} / {:?}", r1, r2);
+        assert_eq!(
+            successes, 1,
+            "exactly one concurrent try_start must succeed: {:?} / {:?}",
+            r1, r2
+        );
     }
 
     #[tokio::test]

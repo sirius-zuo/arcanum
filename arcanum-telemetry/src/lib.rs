@@ -14,14 +14,14 @@ mod tests {
     #[test]
     fn default_config_does_not_panic_on_init() {
         let config = TelemetryConfig {
-            log_filter:    "off".into(),
-            log_format:    LogFormat::Pretty,
+            log_filter: "off".into(),
+            log_format: LogFormat::Pretty,
             otlp_endpoint: None,
             otlp_protocol: OtlpProtocol::Grpc,
-            service_name:  "test".into(),
+            service_name: "test".into(),
             metrics_enabled: false,
-            metrics_otlp:    false,
-            metrics_token:   None,
+            metrics_otlp: false,
+            metrics_token: None,
         };
         let _guard = init(config);
         // No panic = success

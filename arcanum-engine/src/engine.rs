@@ -1,25 +1,3 @@
-use arcanum_core::{
-    config::{ArcanumConfig, OrchestrationMode as CfgMode},
-    traits::{VectorStore, Embedder, TextEnricher, GraphStore, TreeStore, SecretStore,
-             CacheInvalidationBroadcaster, LexicalIndex, IngestionDepsOverrideResolver,
-             SnapshotStore, DocumentVersionStore, ChunkMetadataStore, EvidenceResolver, GcWorker,
-             Preprocessor, Reranker},
-    types::{RetrievalStrategy, EnrichIntent},
-    Result, ArcanumError,
-};
-use arcanum_ingestion::LocalSnapshotStore;
-use arcanum_graph::GraphQueryPlanner;
-use arcanum_ingestion::{LoaderRegistry, PreprocessorCatalog,
-                        RawLoader, FileLoader, HttpLoader,
-                        DoclingPreprocessor, DoclingBackend, PostgresChunkMetadataStore, PostgresExperimentStore};
-use arcanum_middleware::{CircuitBreaker, RetryPolicy, BoundedQueue};
-use arcanum_pipeline::{PipelineDeps, ArcanumPipelineRegistry, worker::IngestionWorker};
-use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode,
-                        VectorRetriever, GraphRetriever, RaptorRetriever, Bm25Retriever,
-                        ColBertRetriever, QueryTransformer, QueryCache};
-use arcanum_vector::Bm25Index;
-use arcanum_evidence::{DefaultEvidenceResolver, PostgresGcWorker};
-use std::{collections::HashMap, sync::Arc, time::Duration};
 use crate::{
     audit::AuditLogger,
     auth::AuthMiddleware,
@@ -28,14 +6,42 @@ use crate::{
     rate_limit::RateLimiter,
     services::{
         admin::AdminService,
+        collection::CollectionService,
         eval::EvalService,
         experiment::{ExperimentService, ExperimentStore, InMemoryExperimentStore},
         ingestion::IngestionService,
         retrieval::RetrievalService,
-        collection::CollectionService,
         source::IngestionSourceService,
     },
 };
+use arcanum_core::{
+    config::{ArcanumConfig, MetadataBackend, OrchestrationMode as CfgMode},
+    traits::{
+        CacheInvalidationBroadcaster, ChunkMetadataStore, DocumentVersionStore, Embedder,
+        EvidenceResolver, GcWorker, GraphStore, IngestionDepsOverrideResolver, LexicalIndex,
+        OperationPayloadStore, OperationStore, Preprocessor, Reranker, SecretStore, SnapshotStore,
+        TextEnricher, TreeStore, VectorStore,
+    },
+    types::{EnrichIntent, RetrievalStrategy},
+    ArcanumError, Result,
+};
+use arcanum_evidence::{DefaultEvidenceResolver, PostgresGcWorker};
+use arcanum_graph::GraphQueryPlanner;
+use arcanum_ingestion::{
+    DoclingBackend, DoclingPreprocessor, FileLoader, HttpLoader, LoaderRegistry,
+    PostgresChunkMetadataStore, PostgresExperimentStore, PreprocessorCatalog, RawLoader,
+};
+use arcanum_ingestion::{
+    LocalOperationPayloadStore, LocalSnapshotStore, PostgresOperationStore, SqliteOperationStore,
+};
+use arcanum_middleware::{BoundedQueue, CircuitBreaker};
+use arcanum_pipeline::{worker::IngestionWorker, ArcanumPipelineRegistry, PipelineDeps};
+use arcanum_retrieval::{
+    Bm25Retriever, ColBertRetriever, GraphRetriever, OrchestratorMode, QueryCache,
+    QueryTransformer, RaptorRetriever, RetrievalOrchestrator, VectorRetriever,
+};
+use arcanum_vector::Bm25Index;
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 pub struct ArcanumEngine {
     pub config: ArcanumConfig,
@@ -127,11 +133,16 @@ fn compose_embedder(
     if let Some(bad) = all.iter().find(|e| e.dimension() != dim) {
         return Err(ArcanumError::Config(format!(
             "all embedders must share one dimension; primary is {} but another reports {}",
-            dim, bad.dimension())));
+            dim,
+            bad.dimension()
+        )));
     }
-    Ok(Arc::new(arcanum_models::EmbeddingParallelismRouter::new(all)))
+    Ok(Arc::new(arcanum_models::EmbeddingParallelismRouter::new(
+        all,
+    )))
 }
 
+#[derive(Default)]
 pub struct ArcanumEngineBuilder {
     config: ArcanumConfig,
     auth_secret: Option<String>,
@@ -146,6 +157,8 @@ pub struct ArcanumEngineBuilder {
     version_store: Option<Arc<dyn DocumentVersionStore>>,
     snapshot_store: Option<Arc<dyn SnapshotStore>>,
     chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>>,
+    operation_store: Option<Arc<dyn OperationStore>>,
+    payload_store: Option<Arc<dyn OperationPayloadStore>>,
     evidence: Option<Arc<dyn EvidenceResolver>>,
     gc_worker: Option<Arc<dyn GcWorker>>,
     experiment_store: Option<Arc<dyn ExperimentStore>>,
@@ -156,40 +169,14 @@ pub struct ArcanumEngineBuilder {
     additional_embedders: Vec<Arc<dyn Embedder>>,
 }
 
-
-impl Default for ArcanumEngineBuilder {
-    fn default() -> Self {
-        Self {
-            config: ArcanumConfig::default(),
-            auth_secret: None,
-            vector_store: None,
-            embedder: None,
-            enricher: None,
-            named_enrichers: HashMap::new(),
-            graph_store: None,
-            tree_store: None,
-            secret_store: None,
-            bm25_index: None,
-            version_store: None,
-            snapshot_store: None,
-            chunk_metadata_store: None,
-            evidence: None,
-            gc_worker: None,
-            experiment_store: None,
-            preprocessor_overrides: Vec::new(),
-            query_transformer: None,
-            reranker: None,
-            dedup_threshold: None,
-            additional_embedders: Vec::new(),
-        }
-    }
-}
-
 impl ArcanumEngineBuilder {
     /// Create a builder. Call `with_auth_secret` or set `ARCANUM_AUTH_SECRET` env var
     /// before calling `build()`. No hardcoded default is provided.
     pub fn new(config: ArcanumConfig) -> Self {
-        Self { config, ..Self::default() }
+        Self {
+            config,
+            ..Self::default()
+        }
     }
 
     pub fn config(mut self, config: ArcanumConfig) -> Self {
@@ -238,7 +225,11 @@ impl ArcanumEngineBuilder {
 
     /// Registers an enricher under `name` so `EnrichmentConfig`'s per-intent
     /// provider names (e.g. `entity_extraction_provider`) can route to it.
-    pub fn named_enricher(mut self, name: impl Into<String>, provider: Arc<dyn TextEnricher>) -> Self {
+    pub fn named_enricher(
+        mut self,
+        name: impl Into<String>,
+        provider: Arc<dyn TextEnricher>,
+    ) -> Self {
         self.named_enrichers.insert(name.into(), provider);
         self
     }
@@ -278,6 +269,16 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    pub fn operation_store(mut self, store: Arc<dyn OperationStore>) -> Self {
+        self.operation_store = Some(store);
+        self
+    }
+
+    pub fn payload_store(mut self, store: Arc<dyn OperationPayloadStore>) -> Self {
+        self.payload_store = Some(store);
+        self
+    }
+
     pub fn evidence(mut self, resolver: Arc<dyn EvidenceResolver>) -> Self {
         self.evidence = Some(resolver);
         self
@@ -293,7 +294,11 @@ impl ArcanumEngineBuilder {
         self
     }
 
-    pub fn register_preprocessor(mut self, name: impl Into<String>, p: Arc<dyn Preprocessor>) -> Self {
+    pub fn register_preprocessor(
+        mut self,
+        name: impl Into<String>,
+        p: Arc<dyn Preprocessor>,
+    ) -> Self {
         self.preprocessor_overrides.push((name.into(), p));
         self
     }
@@ -330,25 +335,34 @@ impl ArcanumEngineBuilder {
     fn resolve_enricher(&self) -> Result<Option<Arc<dyn TextEnricher>>> {
         let ec = &self.config.enrichment;
         let intent_names = [
-            (EnrichIntent::ContextPrefix,   &ec.context_prefix_provider),
-            (EnrichIntent::ExtractEntities, &ec.entity_extraction_provider),
-            (EnrichIntent::Summarize,       &ec.summarize_provider),
-            (EnrichIntent::Caption,         &ec.caption_provider),
+            (EnrichIntent::ContextPrefix, &ec.context_prefix_provider),
+            (
+                EnrichIntent::ExtractEntities,
+                &ec.entity_extraction_provider,
+            ),
+            (EnrichIntent::Summarize, &ec.summarize_provider),
+            (EnrichIntent::Caption, &ec.caption_provider),
         ];
         let any_named = intent_names.iter().any(|(_, n)| n.is_some());
         if !any_named {
             return Ok(self.enricher.clone());
         }
-        let default = self.enricher.clone().ok_or_else(|| ArcanumError::Config(
-            "enrichment providers are named in config but no default enricher is set — \
-             call .enricher(...) with the fallback provider".into()))?;
+        let default = self.enricher.clone().ok_or_else(|| {
+            ArcanumError::Config(
+                "enrichment providers are named in config but no default enricher is set — \
+             call .enricher(...) with the fallback provider"
+                    .into(),
+            )
+        })?;
         let mut dispatcher = arcanum_models::EnrichmentDispatcher::new(default);
         for (intent, name) in intent_names {
             if let Some(name) = name {
                 let provider = self.named_enrichers.get(name).cloned().ok_or_else(|| {
                     ArcanumError::Config(format!(
                         "enrichment config names provider '{}' but no enricher was registered \
-                         under that name — call .named_enricher(\"{}\", ...)", name, name))
+                         under that name — call .named_enricher(\"{}\", ...)",
+                        name, name
+                    ))
                 })?;
                 dispatcher = dispatcher.with_override(intent, provider);
             }
@@ -356,8 +370,76 @@ impl ArcanumEngineBuilder {
         Ok(Some(Arc::new(dispatcher)))
     }
 
+    /// Resolve the durable operation store. A builder-supplied store always
+    /// wins; otherwise the store is wired from configuration so durable
+    /// operation state is initialized before any submission is accepted.
+    ///
+    /// Production (Postgres) requires `storage.database_url` and fails if the
+    /// store cannot initialize. A local Sqlite configuration with a
+    /// `sqlite://` database_url opens a durable Sqlite store; a bare default
+    /// (no durable backend configured) falls back to an in-memory store so
+    /// development and tests stay hermetic.
+    async fn resolve_operation_store(&self) -> Result<Arc<dyn OperationStore>> {
+        if let Some(store) = &self.operation_store {
+            return Ok(store.clone());
+        }
+        match self.config.storage.metadata_backend {
+            MetadataBackend::Postgres => {
+                let url = self.config.storage.database_url.clone().ok_or_else(|| {
+                    ArcanumError::Config(
+                        "storage.database_url is required to initialize the Postgres operation store"
+                            .into(),
+                    )
+                })?;
+                Ok(
+                    Arc::new(PostgresOperationStore::new(&url).await.map_err(|e| {
+                        ArcanumError::Config(format!(
+                            "failed to initialize Postgres operation store: {e}"
+                        ))
+                    })?) as Arc<dyn OperationStore>,
+                )
+            }
+            MetadataBackend::Sqlite => match &self.config.storage.database_url {
+                Some(url) if url.starts_with("sqlite:") => {
+                    Ok(Arc::new(SqliteOperationStore::open(url).await.map_err(|e| {
+                        ArcanumError::Config(format!(
+                            "failed to initialize Sqlite operation store: {e}"
+                        ))
+                    })?) as Arc<dyn OperationStore>)
+                }
+                _ => {
+                    tracing::warn!(
+                        "no durable operation store configured (Sqlite backend without a \
+                         sqlite database_url); using an in-memory store — operation state \
+                         will not survive restart"
+                    );
+                    Ok(
+                        Arc::new(arcanum_core::traits::InMemoryOperationStore::new())
+                            as Arc<dyn OperationStore>,
+                    )
+                }
+            },
+        }
+    }
+
+    /// Resolve the durable operation-payload store. A builder-supplied store
+    /// always wins; otherwise inline payloads are staged under a local,
+    /// non-public filesystem root (matching the local snapshot-store default).
+    fn resolve_payload_store(&self) -> Arc<dyn OperationPayloadStore> {
+        if let Some(store) = &self.payload_store {
+            return store.clone();
+        }
+        Arc::new(LocalOperationPayloadStore::new("/tmp/arcanum-payloads"))
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
         self.config.validate()?;
+
+        // Resolve the durable operation store before the queue is shared: every
+        // submission persists Accepted here and every worker persists Running +
+        // the terminal report here.
+        let operation_store = self.resolve_operation_store().await?;
+        let payload_store = self.resolve_payload_store();
 
         // Resolved unconditionally (not just when pipeline workers are wired) so an
         // unknown provider name in enrichment config always fails build().
@@ -370,17 +452,21 @@ impl ArcanumEngineBuilder {
             ))?;
         if secret.len() < 32 {
             return Err(ArcanumError::Config(
-                "ARCANUM_AUTH_SECRET must be at least 32 characters".into()
+                "ARCANUM_AUTH_SECRET must be at least 32 characters".into(),
             ));
         }
 
-        let auth  = Arc::new(AuthMiddleware::new(&secret));
+        let auth = Arc::new(AuthMiddleware::new(&secret));
         let audit = Arc::new(AuditLogger::new());
         let events = Arc::new(EventBus::new());
 
-        let embedding_cb    = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
-        let vector_store_cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
-        let rate_limiter    = Arc::new(RateLimiter::with_window(120, Duration::from_secs(60)));
+        let embedding_cb = Arc::new(CircuitBreaker::new("embedding", 5, Duration::from_secs(30)));
+        let vector_store_cb = Arc::new(CircuitBreaker::new(
+            "vector_store",
+            5,
+            Duration::from_secs(30),
+        ));
+        let rate_limiter = Arc::new(RateLimiter::with_window(120, Duration::from_secs(60)));
 
         // Build the preprocessor catalog: docling (if configured) registers as
         // "default"; builder-supplied overrides apply on top and can replace
@@ -391,7 +477,10 @@ impl ArcanumEngineBuilder {
         let mut preprocessor_catalog = PreprocessorCatalog::new();
         if let Some(dc) = &self.config.ingestion.docling {
             let backend = DoclingBackend::from(&dc.backend);
-            preprocessor_catalog.register("default", Arc::new(DoclingPreprocessor::new(backend)) as Arc<dyn Preprocessor>);
+            preprocessor_catalog.register(
+                "default",
+                Arc::new(DoclingPreprocessor::new(backend)) as Arc<dyn Preprocessor>,
+            );
         }
         for (name, p) in &self.preprocessor_overrides {
             preprocessor_catalog.register(name.clone(), p.clone());
@@ -404,32 +493,43 @@ impl ArcanumEngineBuilder {
         ))?;
 
         // Collection and experiment services — needed early for per-job resolver.
-        let collection = Arc::new(CollectionService::new(self.config.clone(), audit.clone(), auth.clone(), preprocessor_catalog.clone()));
+        let collection = Arc::new(CollectionService::new(
+            self.config.clone(),
+            audit.clone(),
+            auth.clone(),
+            preprocessor_catalog.clone(),
+        ));
 
         // Auto-wire experiment store from storage.database_url when the builder didn't
         // supply one directly. Builder-supplied stores always win.
-        let experiment_store: Arc<dyn ExperimentStore> = match (&self.experiment_store, &self.config.storage.database_url) {
-            (Some(s), _) => s.clone(),
-            (None, Some(url)) => Arc::new(
-                PostgresExperimentStore::new(url).await
-                    .map_err(|e| ArcanumError::Config(format!(
-                        "storage.database_url is set but PostgresExperimentStore failed: {}", e)))?,
-            ),
-            (None, None) => Arc::new(InMemoryExperimentStore::new()),
-        };
+        let experiment_store: Arc<dyn ExperimentStore> =
+            match (&self.experiment_store, &self.config.storage.database_url) {
+                (Some(s), _) => s.clone(),
+                (None, Some(url)) => {
+                    Arc::new(PostgresExperimentStore::new(url).await.map_err(|e| {
+                        ArcanumError::Config(format!(
+                            "storage.database_url is set but PostgresExperimentStore failed: {}",
+                            e
+                        ))
+                    })?)
+                }
+                (None, None) => Arc::new(InMemoryExperimentStore::new()),
+            };
 
-        let experiment = Arc::new(ExperimentService::new(
-            collection.clone(),
-            experiment_store,
-        ));
+        let experiment = Arc::new(ExperimentService::new(collection.clone(), experiment_store));
 
         // Shared queue — passed to both IngestionService (push) and workers (pop).
-        let queue = Arc::new(BoundedQueue::new("ingestion", self.config.ingestion.queue_capacity));
+        let queue = Arc::new(BoundedQueue::new(
+            "ingestion",
+            self.config.ingestion.queue_capacity,
+        ));
 
         let ingestion = Arc::new(IngestionService::new_from_parts(
             queue.clone(),
             events.clone(),
             audit.clone(),
+            operation_store.clone(),
+            payload_store.clone(),
         ));
 
         // Per-job deps resolver: enables per-collection chunker overrides and
@@ -438,62 +538,84 @@ impl ArcanumEngineBuilder {
         let deps_resolver = Arc::new(EngineIngestionDepsResolver {
             collection_service: collection.clone(),
             experiment_service: experiment.clone(),
-            global_chunking:    self.config.ingestion.chunking.clone(),
+            global_chunking: self.config.ingestion.chunking.clone(),
             preprocessor_catalog: preprocessor_catalog.clone(),
         }) as Arc<dyn IngestionDepsOverrideResolver>;
 
-        let snapshot_store: Arc<dyn SnapshotStore> = self.snapshot_store
-            .clone()
-            .unwrap_or_else(|| {
-                Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots")) as Arc<dyn SnapshotStore>
+        let snapshot_store: Arc<dyn SnapshotStore> =
+            self.snapshot_store.clone().unwrap_or_else(|| {
+                Arc::new(LocalSnapshotStore::new("/tmp/arcanum-snapshots"))
+                    as Arc<dyn SnapshotStore>
             });
 
         // Auto-wire a Postgres chunk-metadata store from storage.database_url when the
         // builder didn't supply one directly. Builder-supplied stores always win.
-        let chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>> =
-            match (&self.chunk_metadata_store, &self.config.storage.database_url) {
-                (Some(s), _) => Some(s.clone()),
-                (None, Some(url)) => Some(Arc::new(
-                    PostgresChunkMetadataStore::new(url).await
-                        .map_err(|e| ArcanumError::Config(format!(
-                            "storage.database_url is set but PostgresChunkMetadataStore failed: {}", e)))?,
-                ) as Arc<dyn ChunkMetadataStore>),
-                (None, None) => None,
-            };
+        let chunk_metadata_store: Option<Arc<dyn ChunkMetadataStore>> = match (
+            &self.chunk_metadata_store,
+            &self.config.storage.database_url,
+        ) {
+            (Some(s), _) => Some(s.clone()),
+            (None, Some(url)) => Some(Arc::new(PostgresChunkMetadataStore::new(url).await.map_err(
+                |e| {
+                    ArcanumError::Config(format!(
+                        "storage.database_url is set but PostgresChunkMetadataStore failed: {}",
+                        e
+                    ))
+                },
+            )?) as Arc<dyn ChunkMetadataStore>),
+            (None, None) => None,
+        };
 
         let query_cache: Option<Arc<QueryCache>> =
             self.config.retrieval.query_cache.as_ref().map(|qc| {
                 Arc::new(QueryCache::new(
-                    qc.max_entries, Duration::from_secs(qc.ttl_secs),
+                    qc.max_entries,
+                    Duration::from_secs(qc.ttl_secs),
                 ))
             });
         let mut invalidators: Vec<Arc<dyn arcanum_core::traits::CacheInvalidator>> = vec![];
-        if let Some(c) = &query_cache { invalidators.push(c.clone()); }
+        if let Some(c) = &query_cache {
+            invalidators.push(c.clone());
+        }
 
         // Compose + validate additional embedders unconditionally — not just when a
         // vector_store is also configured — so a dimension mismatch is always caught
         // and additional embedders are never silently ignored.
         let composed_embedder: Option<Arc<dyn Embedder>> = match &self.embedder {
-            Some(embedder) => Some(compose_embedder(embedder.clone(), self.additional_embedders.clone())?),
+            Some(embedder) => Some(compose_embedder(
+                embedder.clone(),
+                self.additional_embedders.clone(),
+            )?),
             None if self.additional_embedders.is_empty() => None,
-            None => return Err(ArcanumError::Config(
-                "additional embedders require a primary .embedder(...)".into()
-            )),
+            None => {
+                return Err(ArcanumError::Config(
+                    "additional embedders require a primary .embedder(...)".into(),
+                ))
+            }
         };
 
         // Wire pipeline workers if embedder + vector_store are available.
         if let (Some(embedder), Some(vector_store)) = (&composed_embedder, &self.vector_store) {
             // Monitor sits inside the cache so cache hits don't pollute provider health stats.
             let embedder: Arc<dyn Embedder> = Arc::new(arcanum_models::MonitoredEmbedder::new(
-                embedder.clone(), &self.config.embedding.provider,
+                embedder.clone(),
+                &self.config.embedding.provider,
             ));
             let embedder: Arc<dyn Embedder> = match &self.config.embedding.cache_redis_url {
                 Some(url) => {
-                    let cache = Arc::new(arcanum_models::EmbeddingCache::new(
-                        url, &self.config.embedding.model_id, embedder.dimension(),
-                    ).await?);
+                    let cache = Arc::new(
+                        arcanum_models::EmbeddingCache::new(
+                            url,
+                            &self.config.embedding.model_id,
+                            embedder.dimension(),
+                        )
+                        .await?,
+                    );
                     invalidators.push(cache.clone());
-                    Arc::new(arcanum_models::CachingEmbedder::new(embedder.clone(), cache))
+                    Arc::new(arcanum_models::CachingEmbedder::new(
+                        embedder.clone(),
+                        cache,
+                    ))
                 }
                 None => embedder.clone(),
             };
@@ -504,37 +626,38 @@ impl ArcanumEngineBuilder {
                         .register(Arc::new(FileLoader::new()))
                         .register(Arc::new(HttpLoader::new())),
                 ),
-                preprocessors:     preprocessor_catalog.get("default"),
-                chunkers:          resolve_chunkers(None, &self.config.ingestion.chunking)?,
-                shadow:            None,
-                context_enricher:  enricher.clone(),
-                entity_extractor:  enricher.clone(),
-                embedder:          embedder.clone(),
-                vector_store:      vector_store.clone(),
-                graph_store:       self.graph_store.clone(),
-                tree_store:        self.tree_store.clone(),
-                version_store:     version_store.clone(),
-                snapshot_store:    snapshot_store.clone(),
-                chunk_metadata:    chunk_metadata_store.clone(),
-                bm25_index:        self.bm25_index.clone(),
-                retry_policy:      RetryPolicy::new(
-                    self.config.ingestion.retry_max_attempts,
-                    self.config.ingestion.retry_base_delay_ms,
-                    5_000,
-                ),
-                cache_invalidator: Arc::new(CacheInvalidationBroadcaster::new(invalidators.clone())),
-                embedding_cb:      embedding_cb.clone(),
-                vector_store_cb:   vector_store_cb.clone(),
+                preprocessors: preprocessor_catalog.get("default"),
+                chunkers: resolve_chunkers(None, &self.config.ingestion.chunking)?,
+                shadow: None,
+                context_enricher: enricher.clone(),
+                entity_extractor: enricher.clone(),
+                embedder: embedder.clone(),
+                vector_store: vector_store.clone(),
+                graph_store: self.graph_store.clone(),
+                tree_store: self.tree_store.clone(),
+                version_store: version_store.clone(),
+                snapshot_store: snapshot_store.clone(),
+                chunk_metadata: chunk_metadata_store.clone(),
+                bm25_index: self.bm25_index.clone(),
+                cache_invalidator: Arc::new(CacheInvalidationBroadcaster::new(
+                    invalidators.clone(),
+                )),
+                embedding_cb: embedding_cb.clone(),
+                vector_store_cb: vector_store_cb.clone(),
             });
             let registry = Arc::new(ArcanumPipelineRegistry::default());
             let emitter: Arc<dyn arcanum_core::traits::ProgressEmitter> = events.clone();
             for _ in 0..self.config.ingestion.worker_pool_size {
                 let worker = IngestionWorker::new(
-                    registry.clone(), deps.clone(), emitter.clone(), queue.clone(),
-                ).with_resolver(deps_resolver.clone());
-                tokio::spawn(async move {
-                    while let Some(_) = worker.process_next().await {}
-                });
+                    registry.clone(),
+                    deps.clone(),
+                    emitter.clone(),
+                    queue.clone(),
+                    operation_store.clone(),
+                    Some(payload_store.clone()),
+                )
+                .with_resolver(deps_resolver.clone());
+                tokio::spawn(async move { while worker.process_next().await.is_some() {} });
             }
         } else {
             tracing::warn!(
@@ -546,36 +669,48 @@ impl ArcanumEngineBuilder {
         // Auto-wire a Postgres GC worker from storage.database_url when the builder
         // didn't supply one directly, and vector/tree/graph/chunk-metadata stores are
         // all present. Builder-supplied workers always win.
-        let gc_worker: Option<Arc<dyn GcWorker>> = match (&self.gc_worker, &self.config.storage.database_url) {
-            (Some(w), _) => Some(w.clone()),
-            (None, Some(url)) => {
-                match (&self.vector_store, &self.tree_store, &self.graph_store, &chunk_metadata_store) {
-                    (Some(vs), Some(ts), Some(gs), Some(cms)) => Some(Arc::new(
-                        PostgresGcWorker::new(
-                            url, version_store.clone(), snapshot_store.clone(),
-                            vs.clone(), ts.clone(), gs.clone(), cms.clone(),
-                        ).await?,
-                    ) as Arc<dyn GcWorker>),
-                    _ => {
-                        tracing::warn!(
-                            "storage.database_url set but gc worker not auto-wired: \
+        let gc_worker: Option<Arc<dyn GcWorker>> =
+            match (&self.gc_worker, &self.config.storage.database_url) {
+                (Some(w), _) => Some(w.clone()),
+                (None, Some(url)) => {
+                    match (
+                        &self.vector_store,
+                        &self.tree_store,
+                        &self.graph_store,
+                        &chunk_metadata_store,
+                    ) {
+                        (Some(vs), Some(ts), Some(gs), Some(cms)) => Some(Arc::new(
+                            PostgresGcWorker::new(
+                                url,
+                                version_store.clone(),
+                                snapshot_store.clone(),
+                                vs.clone(),
+                                ts.clone(),
+                                gs.clone(),
+                                cms.clone(),
+                            )
+                            .await?,
+                        )
+                            as Arc<dyn GcWorker>),
+                        _ => {
+                            tracing::warn!(
+                                "storage.database_url set but gc worker not auto-wired: \
                              requires vector, tree, graph, and chunk-metadata stores"
-                        );
-                        None
+                            );
+                            None
+                        }
                     }
                 }
-            }
-            (None, None) => None,
-        };
+                (None, None) => None,
+            };
 
         // Build RetrievalOrchestrator with whichever retrievers are available.
         let orch_mode = match self.config.retrieval.orchestration_mode {
-            CfgMode::Static          => OrchestratorMode::Static(vec![
-                RetrievalStrategy::Vector,
-                RetrievalStrategy::Bm25,
-            ]),
-            CfgMode::QueryClassified  => OrchestratorMode::QueryClassified,
-            CfgMode::ParallelFusion   => OrchestratorMode::ParallelFusion,
+            CfgMode::Static => {
+                OrchestratorMode::Static(vec![RetrievalStrategy::Vector, RetrievalStrategy::Bm25])
+            }
+            CfgMode::QueryClassified => OrchestratorMode::QueryClassified,
+            CfgMode::ParallelFusion => OrchestratorMode::ParallelFusion,
         };
         if matches!(self.config.retrieval.orchestration_mode, CfgMode::Static)
             && self.bm25_index.is_none()
@@ -588,35 +723,44 @@ impl ArcanumEngineBuilder {
         let mut orchestrator = RetrievalOrchestrator::new(orch_mode);
         let mut retriever_count = 0;
         if let (Some(vs), Some(emb)) = (&self.vector_store, &self.embedder) {
-            orchestrator = orchestrator
-                .add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
+            orchestrator =
+                orchestrator.add_retriever(Arc::new(VectorRetriever::new(vs.clone(), emb.clone())));
             orchestrator = orchestrator
                 .add_retriever(Arc::new(ColBertRetriever::new(vs.clone(), emb.clone())));
             retriever_count += 2;
         }
         if let (Some(gs), Some(vs), Some(emb), Some(resolved_enricher)) = (
-            &self.graph_store, &self.vector_store, &self.embedder, &enricher,
+            &self.graph_store,
+            &self.vector_store,
+            &self.embedder,
+            &enricher,
         ) {
             // Use the resolved (possibly per-intent-routing) enricher, not the raw
             // builder field, so GraphQueryPlanner's ExtractEntities calls honor
             // entity_extraction_provider routing like ingestion does.
             let planner: Arc<dyn arcanum_core::traits::GraphPlanner> =
                 Arc::new(GraphQueryPlanner::new(resolved_enricher.clone(), 2));
-            orchestrator = orchestrator
-                .add_retriever(Arc::new(GraphRetriever::new(
-                    gs.clone(), vs.clone(), planner, emb.clone(), 2,
-                )));
+            orchestrator = orchestrator.add_retriever(Arc::new(GraphRetriever::new(
+                gs.clone(),
+                vs.clone(),
+                planner,
+                emb.clone(),
+                2,
+            )));
             retriever_count += 1;
         }
         if let (Some(ts), Some(emb)) = (&self.tree_store, &self.embedder) {
-            orchestrator = orchestrator
-                .add_retriever(Arc::new(RaptorRetriever::new(ts.clone(), emb.clone(), 3)));
+            orchestrator = orchestrator.add_retriever(Arc::new(RaptorRetriever::new(
+                ts.clone(),
+                emb.clone(),
+                3,
+            )));
             retriever_count += 1;
         }
         if let Some(bm25) = &self.bm25_index {
-            orchestrator = orchestrator.add_retriever(Arc::new(
-                Bm25Retriever::new_global(bm25.clone() as Arc<dyn LexicalIndex>)
-            ));
+            orchestrator = orchestrator.add_retriever(Arc::new(Bm25Retriever::new_global(
+                bm25.clone() as Arc<dyn LexicalIndex>,
+            )));
             retriever_count += 1;
         }
         metrics::gauge!("arcanum_active_retrievers").set(retriever_count as f64);
@@ -637,20 +781,20 @@ impl ArcanumEngineBuilder {
             audit.clone(),
             vector_store_cb.clone(),
         );
-        if let Some(c) = &query_cache { retrieval_svc = retrieval_svc.with_cache(c.clone()); }
+        if let Some(c) = &query_cache {
+            retrieval_svc = retrieval_svc.with_cache(c.clone());
+        }
         let retrieval = Arc::new(retrieval_svc);
-        let eval       = Arc::new(EvalService::new());
-        let source     = Arc::new(IngestionSourceService::new());
-        let admin      = Arc::new(AdminService::new(audit.clone()));
+        let eval = Arc::new(EvalService::new());
+        let source = Arc::new(IngestionSourceService::new());
+        let admin = Arc::new(AdminService::new(audit.clone()));
 
         let secret_store = self.secret_store.clone();
         if let Some(store) = &secret_store {
             let store = store.clone();
             let interval_secs = self.config.admin.secret_store_reload_interval_secs;
             tokio::spawn(async move {
-                let mut ticker = tokio::time::interval(
-                    Duration::from_secs(interval_secs)
-                );
+                let mut ticker = tokio::time::interval(Duration::from_secs(interval_secs));
                 ticker.tick().await; // skip immediate first tick
                 loop {
                     ticker.tick().await;
@@ -712,10 +856,14 @@ impl ArcanumEngineBuilder {
             snapshot_store,
             chunk_metadata_store: chunk_metadata_store.clone(),
             evidence: self.evidence.clone().or_else(|| {
-                chunk_metadata_store.as_ref().map(|cms| Arc::new(DefaultEvidenceResolver::new(
-                    cms.clone(), version_store.clone(),
-                    self.tree_store.clone(), self.graph_store.clone(),
-                )) as Arc<dyn EvidenceResolver>)
+                chunk_metadata_store.as_ref().map(|cms| {
+                    Arc::new(DefaultEvidenceResolver::new(
+                        cms.clone(),
+                        version_store.clone(),
+                        self.tree_store.clone(),
+                        self.graph_store.clone(),
+                    )) as Arc<dyn EvidenceResolver>
+                })
             }),
             gc_worker,
         }))
@@ -726,8 +874,8 @@ impl ArcanumEngineBuilder {
 mod tests {
     use super::*;
     use arcanum_core::{
+        traits::{Embedder, ScoredChunk, TextEnricher, VectorQuery, VectorStore},
         types::*,
-        traits::{VectorStore, VectorQuery, ScoredChunk, Embedder, TextEnricher},
         Result as AResult,
     };
     use async_trait::async_trait;
@@ -735,11 +883,21 @@ mod tests {
     struct FakeVectorStore;
     #[async_trait]
     impl VectorStore for FakeVectorStore {
-        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> { Ok(()) }
-        async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> { Ok(vec![]) }
-        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
-        async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(false) }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
+        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> {
+            Ok(())
+        }
+        async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> {
+            Ok(vec![])
+        }
+        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> {
+            Ok(())
+        }
+        async fn collection_exists(&self, _c: &str) -> AResult<bool> {
+            Ok(false)
+        }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> {
+            Ok(())
+        }
     }
 
     struct FakeEmbedder;
@@ -748,7 +906,9 @@ mod tests {
         async fn embed(&self, texts: Vec<String>) -> AResult<Vec<Vector>> {
             Ok(texts.iter().map(|_| Vector(vec![0.1, 0.2])).collect())
         }
-        fn dimension(&self) -> usize { 2 }
+        fn dimension(&self) -> usize {
+            2
+        }
     }
 
     struct FakeEnricher;
@@ -780,23 +940,36 @@ mod tests {
             .enricher(Arc::new(TaggingEnricher("default")))
             .named_enricher("gliner", Arc::new(TaggingEnricher("gliner")));
 
-        let enricher = builder.resolve_enricher()
+        let enricher = builder
+            .resolve_enricher()
             .expect("resolve_enricher should succeed")
             .expect("an enricher should be resolved once a provider name is set");
 
-        let entities = enricher.enrich(EnrichRequest {
-            text: "irrelevant".into(),
-            intent: EnrichIntent::ExtractEntities,
-            context: None,
-        }).await.expect("enrich should succeed");
-        assert_eq!(entities.0, "gliner", "ExtractEntities should route to the named 'gliner' provider");
+        let entities = enricher
+            .enrich(EnrichRequest {
+                text: "irrelevant".into(),
+                intent: EnrichIntent::ExtractEntities,
+                context: None,
+            })
+            .await
+            .expect("enrich should succeed");
+        assert_eq!(
+            entities.0, "gliner",
+            "ExtractEntities should route to the named 'gliner' provider"
+        );
 
-        let summary = enricher.enrich(EnrichRequest {
-            text: "irrelevant".into(),
-            intent: EnrichIntent::Summarize,
-            context: None,
-        }).await.expect("enrich should succeed");
-        assert_eq!(summary.0, "default", "Summarize has no named provider and should fall back to the default");
+        let summary = enricher
+            .enrich(EnrichRequest {
+                text: "irrelevant".into(),
+                intent: EnrichIntent::Summarize,
+                context: None,
+            })
+            .await
+            .expect("enrich should succeed");
+        assert_eq!(
+            summary.0, "default",
+            "Summarize has no named provider and should fall back to the default"
+        );
     }
 
     #[tokio::test]
@@ -808,8 +981,14 @@ mod tests {
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .enricher(Arc::new(TaggingEnricher("default")))
-            .build().await.err().expect("must fail");
-        assert!(err.to_string().contains("no-such-provider"), "error should name the unknown provider: {}", err);
+            .build()
+            .await
+            .expect_err("must fail");
+        assert!(
+            err.to_string().contains("no-such-provider"),
+            "error should name the unknown provider: {}",
+            err
+        );
     }
 
     #[tokio::test]
@@ -823,15 +1002,19 @@ mod tests {
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
             .enricher(Arc::new(TaggingEnricher("default")));
 
-        let enricher = builder.resolve_enricher()
+        let enricher = builder
+            .resolve_enricher()
             .expect("resolve_enricher should succeed")
             .expect("default enricher should be passed through");
 
-        let result = enricher.enrich(EnrichRequest {
-            text: "irrelevant".into(),
-            intent: EnrichIntent::Summarize,
-            context: None,
-        }).await.expect("enrich should succeed");
+        let result = enricher
+            .enrich(EnrichRequest {
+                text: "irrelevant".into(),
+                intent: EnrichIntent::Summarize,
+                context: None,
+            })
+            .await
+            .expect("enrich should succeed");
         assert_eq!(result.0, "default");
     }
 
@@ -840,10 +1023,13 @@ mod tests {
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
             .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
             .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
         assert!(
@@ -858,10 +1044,13 @@ mod tests {
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
             .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
             // graph_store deliberately omitted
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
         assert!(
@@ -879,7 +1068,8 @@ mod tests {
             // chunk_metadata_store deliberately omitted
             .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
             .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
         assert!(
@@ -899,18 +1089,27 @@ mod tests {
             .vector_store(Arc::new(FakeVectorStore))
             .embedder(Arc::new(FakeEmbedder))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
-        assert!(engine.chunk_metadata_store.is_none(), "chunk_metadata_store must stay unset when database_url is unset");
-        assert!(engine.gc_worker.is_none(), "gc_worker must stay unset when database_url is unset");
+        assert!(
+            engine.chunk_metadata_store.is_none(),
+            "chunk_metadata_store must stay unset when database_url is unset"
+        );
+        assert!(
+            engine.gc_worker.is_none(),
+            "gc_worker must stay unset when database_url is unset"
+        );
     }
 
     #[tokio::test]
     #[ignore] // needs TEST_DATABASE_URL pointing at a reachable Postgres
     async fn database_url_auto_wires_chunk_metadata_and_gc() {
         let mut config = ArcanumConfig::default();
-        config.storage.database_url = Some(std::env::var("TEST_DATABASE_URL").expect("set TEST_DATABASE_URL to run this test"));
+        config.storage.database_url = Some(
+            std::env::var("TEST_DATABASE_URL").expect("set TEST_DATABASE_URL to run this test"),
+        );
 
         let engine = ArcanumEngine::builder()
             .config(config)
@@ -920,10 +1119,14 @@ mod tests {
             .tree_store(Arc::new(arcanum_tree::InMemoryTreeStore::new()))
             .graph_store(Arc::new(arcanum_graph::InMemoryGraphStore::new()))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
-        assert!(engine.chunk_metadata_store.is_some(), "chunk_metadata_store should be auto-wired from storage.database_url");
+        assert!(
+            engine.chunk_metadata_store.is_some(),
+            "chunk_metadata_store should be auto-wired from storage.database_url"
+        );
         assert!(engine.gc_worker.is_some(), "gc_worker should be auto-wired once database_url plus vector/tree/graph/chunk-metadata stores are present");
     }
 
@@ -939,10 +1142,13 @@ mod tests {
         let engine = ArcanumEngine::builder()
             .config(config)
             .auth_secret("a-32-char-secret-for-testing-ok!")
-            .chunk_metadata_store(Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new()))
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
             .experiment_store(Arc::new(InMemoryExperimentStore::new()))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed even with partial stores");
 
         assert!(
@@ -960,7 +1166,8 @@ mod tests {
             .embedder(Arc::new(FakeEmbedder))
             .enricher(Arc::new(FakeEnricher))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await;
+            .build()
+            .await;
         assert!(engine.is_ok(), "builder should succeed: {:?}", engine.err());
     }
 
@@ -977,14 +1184,20 @@ mod tests {
             .embedder(Arc::new(FakeEmbedder))
             .enricher(Arc::new(FakeEnricher))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await;
-        assert!(engine.is_ok(), "builder should succeed with cache_redis_url unset: {:?}", engine.err());
+            .build()
+            .await;
+        assert!(
+            engine.is_ok(),
+            "builder should succeed with cache_redis_url unset: {:?}",
+            engine.err()
+        );
     }
 
     #[tokio::test]
     #[ignore] // requires a live Redis server
     async fn embedding_cache_redis_url_wires_caching_embedder() {
-        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
         let mut config = ArcanumConfig::default();
         config.embedding.cache_redis_url = Some(url);
         let engine = ArcanumEngine::builder()
@@ -994,14 +1207,21 @@ mod tests {
             .embedder(Arc::new(FakeEmbedder))
             .enricher(Arc::new(FakeEnricher))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await;
-        assert!(engine.is_ok(), "builder should succeed when cache_redis_url points at a live Redis: {:?}", engine.err());
+            .build()
+            .await;
+        assert!(
+            engine.is_ok(),
+            "builder should succeed when cache_redis_url points at a live Redis: {:?}",
+            engine.err()
+        );
     }
 
     struct OneChunkVectorStore;
     #[async_trait]
     impl VectorStore for OneChunkVectorStore {
-        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> { Ok(()) }
+        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> {
+            Ok(())
+        }
         async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> {
             Ok(vec![ScoredChunk {
                 chunk: IndexedChunk {
@@ -1010,7 +1230,11 @@ mod tests {
                         text: "hello world".into(),
                         document_id: DocumentId::new(),
                         collection_id: CollectionId("col1".into()),
-                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        position: ChunkPosition {
+                            start: 0,
+                            end: 11,
+                            index: 0,
+                        },
                         metadata: ChunkMetadata::default(),
                         provenance: ChunkProvenance::default(),
                     },
@@ -1021,9 +1245,15 @@ mod tests {
                 score: 0.9,
             }])
         }
-        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
-        async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(true) }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
+        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> {
+            Ok(())
+        }
+        async fn collection_exists(&self, _c: &str) -> AResult<bool> {
+            Ok(true)
+        }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
@@ -1034,7 +1264,8 @@ mod tests {
             .vector_store(Arc::new(OneChunkVectorStore))
             .embedder(Arc::new(FakeEmbedder))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
         let token = engine.auth.generate_admin_key("tester");
@@ -1045,14 +1276,17 @@ mod tests {
         assert!(
             result.strategy_scores.keys().any(|k| k == "ColBert"),
             "ParallelFusion should include a ColBert-strategy result once vector_store+embedder \
-             are configured; strategy_scores keys: {:?}", result.strategy_scores.keys().collect::<Vec<_>>()
+             are configured; strategy_scores keys: {:?}",
+            result.strategy_scores.keys().collect::<Vec<_>>()
         );
     }
 
     struct CountingVectorStore(Arc<std::sync::atomic::AtomicUsize>);
     #[async_trait]
     impl VectorStore for CountingVectorStore {
-        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> { Ok(()) }
+        async fn upsert(&self, _c: &str, _chunks: Vec<IndexedChunk>) -> AResult<()> {
+            Ok(())
+        }
         async fn search(&self, _c: &str, _q: &VectorQuery) -> AResult<Vec<ScoredChunk>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(vec![ScoredChunk {
@@ -1062,7 +1296,11 @@ mod tests {
                         text: "hello world".into(),
                         document_id: DocumentId::new(),
                         collection_id: CollectionId("col1".into()),
-                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        position: ChunkPosition {
+                            start: 0,
+                            end: 11,
+                            index: 0,
+                        },
                         metadata: ChunkMetadata::default(),
                         provenance: ChunkProvenance::default(),
                     },
@@ -1073,16 +1311,23 @@ mod tests {
                 score: 0.9,
             }])
         }
-        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> { Ok(()) }
-        async fn collection_exists(&self, _c: &str) -> AResult<bool> { Ok(true) }
-        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> { Ok(()) }
+        async fn delete(&self, _c: &str, _ids: &[ChunkId]) -> AResult<()> {
+            Ok(())
+        }
+        async fn collection_exists(&self, _c: &str) -> AResult<bool> {
+            Ok(true)
+        }
+        async fn delete_by_source_uri(&self, _: &str, _: &str) -> AResult<()> {
+            Ok(())
+        }
     }
 
     #[tokio::test]
     async fn query_cache_config_wires_cache_into_retrieval() {
         let mut config = ArcanumConfig::default();
         config.retrieval.query_cache = Some(arcanum_core::config::QueryCacheConfig {
-            max_entries: 10, ttl_secs: 60,
+            max_entries: 10,
+            ttl_secs: 60,
         });
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
@@ -1092,7 +1337,8 @@ mod tests {
             .vector_store(Arc::new(CountingVectorStore(calls.clone())))
             .embedder(Arc::new(FakeEmbedder))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
         let token = engine.auth.generate_admin_key("tester");
@@ -1101,11 +1347,15 @@ mod tests {
 
         engine.retrieval.search(query(), &claims).await.unwrap();
         let calls_after_first = calls.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(calls_after_first > 0, "first search should reach the vector store");
+        assert!(
+            calls_after_first > 0,
+            "first search should reach the vector store"
+        );
 
         engine.retrieval.search(query(), &claims).await.unwrap();
         assert_eq!(
-            calls.load(std::sync::atomic::Ordering::SeqCst), calls_after_first,
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            calls_after_first,
             "second identical search should be served from the query cache, not the vector store"
         );
     }
@@ -1115,10 +1365,14 @@ mod tests {
         use arcanum_core::traits::SecretStore;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct FakeSecretStore { reload_count: Arc<AtomicUsize> }
+        struct FakeSecretStore {
+            reload_count: Arc<AtomicUsize>,
+        }
         #[async_trait]
         impl SecretStore for FakeSecretStore {
-            async fn get(&self, _key: &str) -> AResult<String> { Ok("value".into()) }
+            async fn get(&self, _key: &str) -> AResult<String> {
+                Ok("value".into())
+            }
             async fn reload(&self) -> AResult<()> {
                 self.reload_count.fetch_add(1, Ordering::SeqCst);
                 Ok(())
@@ -1126,7 +1380,9 @@ mod tests {
         }
 
         let reload_count = Arc::new(AtomicUsize::new(0));
-        let store = Arc::new(FakeSecretStore { reload_count: reload_count.clone() });
+        let store = Arc::new(FakeSecretStore {
+            reload_count: reload_count.clone(),
+        });
 
         let engine = ArcanumEngine::builder()
             .auth_secret("a-32-char-secret-for-testing-ok!")
@@ -1136,8 +1392,17 @@ mod tests {
             .await
             .expect("build should succeed");
 
-        assert!(engine.secret_store.is_some(), "secret_store should be stored in ArcanumEngine");
-        let val = engine.secret_store.as_ref().unwrap().get("any-key").await.unwrap();
+        assert!(
+            engine.secret_store.is_some(),
+            "secret_store should be stored in ArcanumEngine"
+        );
+        let val = engine
+            .secret_store
+            .as_ref()
+            .unwrap()
+            .get("any-key")
+            .await
+            .unwrap();
         assert_eq!(val, "value");
     }
 
@@ -1154,15 +1419,23 @@ mod tests {
             .vector_store(Arc::new(FakeVectorStore))
             .embedder(Arc::new(FakeEmbedder))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
+            .build()
+            .await
             .expect("build should succeed");
 
         // Verify the experiment service can start an experiment (proving in-memory store works)
         let claims = crate::auth::ApiKeyClaims {
-            user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+            user_id: "test".into(),
+            allowed_collections: vec![],
+            is_admin: true,
+            exp: 9999999999,
         };
         let col_id = arcanum_core::types::CollectionId("default-inmem-col".into());
-        engine.collection.create(col_id.clone(), "test".into(), &claims).await.unwrap();
+        engine
+            .collection
+            .create(col_id.clone(), "test".into(), &claims)
+            .await
+            .unwrap();
 
         let cfg = arcanum_core::types::PerBackendChunkConfig {
             vector: arcanum_core::types::ChunkStrategyConfig {
@@ -1172,13 +1445,22 @@ mod tests {
             graph: None,
             tree: None,
         };
-        let exp = engine.experiment.start(col_id.clone(), cfg).await
+        let exp = engine
+            .experiment
+            .start(col_id.clone(), cfg)
+            .await
             .expect("start should succeed with default in-memory store");
 
         // Verify the experiment was stored and can be retrieved
-        let retrieved = engine.experiment.get(&col_id.0, &exp.id).await
+        let retrieved = engine
+            .experiment
+            .get(&col_id.0, &exp.id)
+            .await
             .expect("get should find the experiment in in-memory store");
-        assert_eq!(retrieved.id, exp.id, "retrieved experiment should match the started one");
+        assert_eq!(
+            retrieved.id, exp.id,
+            "retrieved experiment should match the started one"
+        );
     }
 
     struct CountingEmbedder(std::sync::atomic::AtomicUsize, usize);
@@ -1188,7 +1470,9 @@ mod tests {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(texts.iter().map(|_| Vector(vec![0.0; self.1])).collect())
         }
-        fn dimension(&self) -> usize { self.1 }
+        fn dimension(&self) -> usize {
+            self.1
+        }
     }
 
     #[tokio::test]
@@ -1196,14 +1480,25 @@ mod tests {
         let primary = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 2));
         let additional = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 2));
 
-        let embedder = compose_embedder(primary.clone(), vec![additional.clone() as Arc<dyn Embedder>])
-            .expect("composing same-dimension embedders should succeed");
+        let embedder = compose_embedder(
+            primary.clone(),
+            vec![additional.clone() as Arc<dyn Embedder>],
+        )
+        .expect("composing same-dimension embedders should succeed");
 
         embedder.embed(vec!["a".into()]).await.unwrap();
         embedder.embed(vec!["b".into()]).await.unwrap();
 
-        assert_eq!(primary.0.load(std::sync::atomic::Ordering::SeqCst), 1, "primary should be hit exactly once");
-        assert_eq!(additional.0.load(std::sync::atomic::Ordering::SeqCst), 1, "additional should be hit exactly once");
+        assert_eq!(
+            primary.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "primary should be hit exactly once"
+        );
+        assert_eq!(
+            additional.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "additional should be hit exactly once"
+        );
     }
 
     #[tokio::test]
@@ -1214,16 +1509,34 @@ mod tests {
             .config(config)
             .auth_secret("a-32-char-secret-for-testing-ok!")
             .vector_store(Arc::new(FakeVectorStore))
-            .embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 3)))
-            .additional_embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 4)))
+            .embedder(Arc::new(CountingEmbedder(
+                std::sync::atomic::AtomicUsize::new(0),
+                3,
+            )))
+            .additional_embedder(Arc::new(CountingEmbedder(
+                std::sync::atomic::AtomicUsize::new(0),
+                4,
+            )))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
-            .err()
-            .expect("build must fail on mismatched embedder dimensions");
+            .build()
+            .await
+            .expect_err("build must fail on mismatched embedder dimensions");
         let msg = err.to_string();
-        assert!(msg.contains("dimension"), "error should mention 'dimension': {}", msg);
-        assert!(msg.contains("primary is 3"), "error should name the primary dimension (3): {}", msg);
-        assert!(msg.contains("reports 4"), "error should name the mismatched dimension (4): {}", msg);
+        assert!(
+            msg.contains("dimension"),
+            "error should mention 'dimension': {}",
+            msg
+        );
+        assert!(
+            msg.contains("primary is 3"),
+            "error should name the primary dimension (3): {}",
+            msg
+        );
+        assert!(
+            msg.contains("reports 4"),
+            "error should name the mismatched dimension (4): {}",
+            msg
+        );
     }
 
     #[tokio::test]
@@ -1236,14 +1549,21 @@ mod tests {
         let err = ArcanumEngine::builder()
             .config(config)
             .auth_secret("a-32-char-secret-for-testing-ok!")
-            .additional_embedder(Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0), 3)))
+            .additional_embedder(Arc::new(CountingEmbedder(
+                std::sync::atomic::AtomicUsize::new(0),
+                3,
+            )))
             .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-            .build().await
-            .err()
-            .expect("build must fail when additional embedders are set but no primary embedder is");
+            .build()
+            .await
+            .expect_err(
+                "build must fail when additional embedders are set but no primary embedder is",
+            );
         assert!(
-            err.to_string().contains("additional embedders require a primary"),
-            "error should explain the missing primary embedder: {}", err
+            err.to_string()
+                .contains("additional embedders require a primary"),
+            "error should explain the missing primary embedder: {}",
+            err
         );
     }
 
@@ -1252,14 +1572,15 @@ mod tests {
     async fn experiment_store_auto_wired_from_database_url() {
         // Verify experiments persist across engine restarts when database_url is set.
         // This is the restart-survival property the plan exists for.
-        let db_url = std::env::var("TEST_DATABASE_URL")
-            .expect("set TEST_DATABASE_URL to run this test");
+        let db_url =
+            std::env::var("TEST_DATABASE_URL").expect("set TEST_DATABASE_URL to run this test");
 
         // Generate a unique collection ID to avoid conflicts in parallel test runs
         let unique_suffix = uuid::Uuid::new_v4().to_string();
-        let col_id = arcanum_core::types::CollectionId(
-            format!("experiment-persistence-test-{}", unique_suffix)
-        );
+        let col_id = arcanum_core::types::CollectionId(format!(
+            "experiment-persistence-test-{}",
+            unique_suffix
+        ));
 
         let cfg = arcanum_core::types::PerBackendChunkConfig {
             vector: arcanum_core::types::ChunkStrategyConfig {
@@ -1271,7 +1592,10 @@ mod tests {
         };
 
         let claims = crate::auth::ApiKeyClaims {
-            user_id: "test".into(), allowed_collections: vec![], is_admin: true, exp: 9999999999,
+            user_id: "test".into(),
+            allowed_collections: vec![],
+            is_admin: true,
+            exp: 9999999999,
         };
 
         // Engine 1: Create an experiment with database_url auto-wiring
@@ -1283,15 +1607,22 @@ mod tests {
                 .config(config)
                 .auth_secret("a-32-char-secret-for-testing-ok!")
                 .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-                .build().await
+                .build()
+                .await
                 .expect("engine1 build should succeed");
 
             // Create the collection
-            engine1.collection.create(col_id.clone(), "test".into(), &claims).await
+            engine1
+                .collection
+                .create(col_id.clone(), "test".into(), &claims)
+                .await
                 .expect("collection.create should succeed");
 
             // Start an experiment
-            let exp = engine1.experiment.start(col_id.clone(), cfg.clone()).await
+            let exp = engine1
+                .experiment
+                .start(col_id.clone(), cfg.clone())
+                .await
                 .expect("start should succeed with auto-wired postgres store");
 
             tracing::info!(experiment_id = %exp.id.0, "experiment started with engine1");
@@ -1306,13 +1637,13 @@ mod tests {
                 .config(config)
                 .auth_secret("a-32-char-secret-for-testing-ok!")
                 .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
-                .build().await
+                .build()
+                .await
                 .expect("engine2 build should succeed");
 
             // List active experiments to verify persistence
             let active = engine2.experiment.active_experiments().await;
-            let found = active.iter()
-                .any(|(id, _)| id == &col_id.0);
+            let found = active.iter().any(|(id, _)| id == &col_id.0);
 
             assert!(
                 found,
@@ -1344,9 +1675,18 @@ mod builder_tests {
     async fn orchestration_mode_from_config_builds() {
         // Each variant must produce a valid engine — if the match were missing an arm
         // or were hardcoded, at least one of these would fail to build or panic.
-        assert!(build_with_mode(OrchestrationMode::ParallelFusion).await,  "ParallelFusion must build");
-        assert!(build_with_mode(OrchestrationMode::QueryClassified).await, "QueryClassified must build");
-        assert!(build_with_mode(OrchestrationMode::Static).await,          "Static must build");
+        assert!(
+            build_with_mode(OrchestrationMode::ParallelFusion).await,
+            "ParallelFusion must build"
+        );
+        assert!(
+            build_with_mode(OrchestrationMode::QueryClassified).await,
+            "QueryClassified must build"
+        );
+        assert!(
+            build_with_mode(OrchestrationMode::Static).await,
+            "Static must build"
+        );
     }
 }
 
@@ -1371,37 +1711,53 @@ mod resolution_tests {
 
     #[test]
     fn no_collection_override_uses_global_default() {
-        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        let global = PerBackendChunkConfig {
+            vector: make_fixed(512, 64),
+            graph: None,
+            tree: None,
+        };
         assert!(resolve_chunkers(None, &global).is_ok());
     }
 
     #[test]
     fn collection_vector_override_wins() {
-        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        let global = PerBackendChunkConfig {
+            vector: make_fixed(512, 64),
+            graph: None,
+            tree: None,
+        };
         let collection = PerBackendChunkConfig {
             vector: make_semantic(800),
-            graph:  None,
-            tree:   None,
+            graph: None,
+            tree: None,
         };
         assert!(resolve_chunkers(Some(&collection), &global).is_ok());
     }
 
     #[test]
     fn collection_none_graph_falls_back_to_global_then_vector() {
-        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        let global = PerBackendChunkConfig {
+            vector: make_fixed(512, 64),
+            graph: None,
+            tree: None,
+        };
         assert!(resolve_chunkers(None, &global).is_ok());
     }
 
     #[test]
     fn unknown_strategy_in_collection_config_returns_error() {
-        let global = PerBackendChunkConfig { vector: make_fixed(512, 64), graph: None, tree: None };
+        let global = PerBackendChunkConfig {
+            vector: make_fixed(512, 64),
+            graph: None,
+            tree: None,
+        };
         let bad = PerBackendChunkConfig {
             vector: ChunkStrategyConfig {
                 strategy: "nonexistent".to_string(),
-                params:   serde_json::json!({}),
+                params: serde_json::json!({}),
             },
             graph: None,
-            tree:  None,
+            tree: None,
         };
         match resolve_chunkers(Some(&bad), &global) {
             Ok(_) => panic!("should have returned error for unknown strategy"),

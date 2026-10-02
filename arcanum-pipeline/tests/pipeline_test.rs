@@ -1,7 +1,7 @@
 use arcanum_core::types::*;
 use arcanum_pipeline::{DagExecutor, PipelineDAG, PipelineStage};
-use std::sync::Arc;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_dag_executes_in_topological_order() {

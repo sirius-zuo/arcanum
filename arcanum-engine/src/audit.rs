@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use tracing::instrument;
 
@@ -22,12 +22,25 @@ pub struct AuditLogger {
     records: RwLock<Vec<AuditRecord>>,
 }
 
+impl Default for AuditLogger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AuditLogger {
-    pub fn new() -> Self { Self { records: RwLock::new(vec![]) } }
+    pub fn new() -> Self {
+        Self {
+            records: RwLock::new(vec![]),
+        }
+    }
 
     #[instrument(skip(self, entry), fields(operation = ?entry.operation, user_id = %entry.user_id))]
     pub async fn log(&self, entry: AuditEntry) {
-        let record = AuditRecord { entry, timestamp: Utc::now().to_rfc3339() };
+        let record = AuditRecord {
+            entry,
+            timestamp: Utc::now().to_rfc3339(),
+        };
         self.records.write().await.push(record);
     }
 

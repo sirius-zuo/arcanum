@@ -1,7 +1,7 @@
-use async_trait::async_trait;
-use crate::types::{PerBackendChunkers, ShadowContext, *};
 use crate::traits::Preprocessor;
+use crate::types::{PerBackendChunkers, ShadowContext, *};
 use crate::Result;
+use async_trait::async_trait;
 use std::sync::Arc;
 
 /// Implemented by the engine; called by each ingestion worker before running a task
@@ -11,7 +11,11 @@ pub trait IngestionDepsOverrideResolver: Send + Sync {
     async fn resolve_for_collection(
         &self,
         collection_id: &str,
-    ) -> Result<(PerBackendChunkers, Option<ShadowContext>, Option<Arc<dyn Preprocessor>>)>;
+    ) -> Result<(
+        PerBackendChunkers,
+        Option<ShadowContext>,
+        Option<Arc<dyn Preprocessor>>,
+    )>;
 }
 
 #[async_trait]
@@ -43,17 +47,22 @@ mod tests {
         async fn embed(&self, texts: Vec<String>) -> crate::Result<Vec<Vector>> {
             Ok(texts.iter().map(|_| Vector(vec![0.1, 0.2, 0.3])).collect())
         }
-        fn dimension(&self) -> usize { 3 }
+        fn dimension(&self) -> usize {
+            3
+        }
     }
 
     #[tokio::test]
     async fn test_enricher_context_prefix() {
         let e = MockEnricher;
-        let result = e.enrich(EnrichRequest {
-            text: "chunk text".to_string(),
-            intent: EnrichIntent::ContextPrefix,
-            context: None,
-        }).await.unwrap();
+        let result = e
+            .enrich(EnrichRequest {
+                text: "chunk text".to_string(),
+                intent: EnrichIntent::ContextPrefix,
+                context: None,
+            })
+            .await
+            .unwrap();
         assert!(result.0.contains("chunk text"));
     }
 

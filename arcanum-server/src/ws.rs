@@ -1,10 +1,13 @@
+use arcanum_engine::{auth::ApiKeyClaims, ArcanumEngine};
 use axum::{
-    extract::{ws::{WebSocket, WebSocketUpgrade, Message}, State},
-    http::{StatusCode, HeaderMap},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
 };
 use std::sync::Arc;
-use arcanum_engine::{ArcanumEngine, auth::ApiKeyClaims};
 
 /// Token delivery: client sends `Sec-WebSocket-Protocol: arcanum-v1, <jwt>`.
 /// This is the browser-compatible pattern — the browser WebSocket API does not
@@ -42,10 +45,11 @@ fn extract_and_validate_ws_token(
             .to_string()
     } else if let Some(proto) = headers.get("Sec-WebSocket-Protocol") {
         // Format: "arcanum-v1, <jwt>"
-        proto.to_str()
+        proto
+            .to_str()
             .unwrap_or("")
-            .splitn(2, ',')
-            .nth(1)
+            .split_once(',')
+            .map(|x| x.1)
             .unwrap_or("")
             .trim()
             .to_string()
@@ -57,7 +61,9 @@ fn extract_and_validate_ws_token(
         return Err(StatusCode::UNAUTHORIZED);
     }
 
-    let claims = engine.auth.validate_api_key(&token)
+    let claims = engine
+        .auth
+        .validate_api_key(&token)
         .map_err(|_| StatusCode::UNAUTHORIZED)?;
     Ok((claims, engine.clone()))
 }
@@ -75,7 +81,10 @@ fn topic_allowed(topic: &str, claims: &ApiKeyClaims) -> bool {
     }
     // Collection-scoped topics: exact match against allowed_collections.
     claims.is_admin
-        || claims.allowed_collections.iter().any(|c| c == collection_id)
+        || claims
+            .allowed_collections
+            .iter()
+            .any(|c| c == collection_id)
 }
 
 async fn handle_socket(mut socket: WebSocket, claims: ApiKeyClaims, engine: Arc<ArcanumEngine>) {

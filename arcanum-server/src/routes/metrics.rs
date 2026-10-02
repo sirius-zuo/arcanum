@@ -10,8 +10,11 @@ pub async fn get_metrics(headers: HeaderMap) -> Response {
     let expected = match std::env::var("ARCANUM_METRICS_TOKEN") {
         Ok(t) => t,
         Err(_) => {
-            return (StatusCode::INTERNAL_SERVER_ERROR,
-                "ARCANUM_METRICS_TOKEN is not set".to_string()).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "ARCANUM_METRICS_TOKEN is not set".to_string(),
+            )
+                .into_response();
         }
     };
     let provided = headers
@@ -24,7 +27,10 @@ pub async fn get_metrics(headers: HeaderMap) -> Response {
     let text = crate::metrics::get_metrics_text();
     (
         StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "text/plain; version=0.0.4")],
+        [(
+            axum::http::header::CONTENT_TYPE,
+            "text/plain; version=0.0.4",
+        )],
         text,
     )
         .into_response()

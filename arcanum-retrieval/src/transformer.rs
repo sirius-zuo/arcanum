@@ -58,7 +58,10 @@ pub struct MultiQueryTransformer {
 
 impl MultiQueryTransformer {
     pub fn new(enricher: Arc<dyn TextEnricher>, n_variants: usize) -> Self {
-        Self { enricher, n_variants }
+        Self {
+            enricher,
+            n_variants,
+        }
     }
 }
 

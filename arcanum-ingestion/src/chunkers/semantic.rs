@@ -1,18 +1,24 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
-pub struct SemanticChunker { max_chars: usize }
+pub struct SemanticChunker {
+    max_chars: usize,
+}
 
-impl SemanticChunker { pub fn new(max_chars: usize) -> Self { Self { max_chars } } }
+impl SemanticChunker {
+    pub fn new(max_chars: usize) -> Self {
+        Self { max_chars }
+    }
+}
 
 #[async_trait]
 impl Chunker for SemanticChunker {
     #[instrument(skip(self, doc), fields(chunker = "semantic", max_chars = self.max_chars, input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content);
-        let sentences: Vec<&str> = text.split_inclusive(|c| matches!(c, '.' | '!' | '?')).collect();
+        let sentences: Vec<&str> = text.split_inclusive(['.', '!', '?']).collect();
         let mut chunks = vec![];
         let mut current = String::new();
         let mut start = 0usize;
@@ -22,10 +28,15 @@ impl Chunker for SemanticChunker {
                 let trimmed = current.trim().to_string();
                 if !trimmed.is_empty() {
                     chunks.push(Chunk {
-                        id: ChunkId::new(), text: trimmed.clone(),
+                        id: ChunkId::new(),
+                        text: trimmed.clone(),
                         document_id: doc.id.clone(),
                         collection_id: CollectionId("default".into()),
-                        position: ChunkPosition { start, end: start + trimmed.len(), index },
+                        position: ChunkPosition {
+                            start,
+                            end: start + trimmed.len(),
+                            index,
+                        },
                         metadata: ChunkMetadata::default(),
                         provenance: Default::default(),
                     });
@@ -39,16 +50,22 @@ impl Chunker for SemanticChunker {
         }
         if !current.trim().is_empty() {
             chunks.push(Chunk {
-                id: ChunkId::new(), text: current.trim().to_string(),
+                id: ChunkId::new(),
+                text: current.trim().to_string(),
                 document_id: doc.id.clone(),
                 collection_id: CollectionId("default".into()),
-                position: ChunkPosition { start, end: start + current.len(), index },
+                position: ChunkPosition {
+                    start,
+                    end: start + current.len(),
+                    index,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: Default::default(),
             });
         }
         tracing::Span::current().record("chunk_count", chunks.len());
-        metrics::histogram!("arcanum_chunk_count", "chunker" => "semantic").record(chunks.len() as f64);
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "semantic")
+            .record(chunks.len() as f64);
         Ok(chunks)
     }
 }

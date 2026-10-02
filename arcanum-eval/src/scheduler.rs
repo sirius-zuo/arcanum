@@ -7,7 +7,9 @@ pub struct EvalScheduler {
 
 impl EvalScheduler {
     pub fn new(interval: Duration) -> Self {
-        Self { interval_secs: interval.as_secs() }
+        Self {
+            interval_secs: interval.as_secs(),
+        }
     }
 
     pub fn start<F, Fut>(self, run_eval_fn: F) -> tokio::task::JoinHandle<()>

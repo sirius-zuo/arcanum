@@ -1,11 +1,10 @@
+use arcanum_core::{ArcanumError, Result};
 use tantivy::{
-    schema::{Schema, TEXT, STORED, Value},
-    Index, IndexWriter, TantivyDocument,
     collector::TopDocs,
     query::QueryParser,
-    ReloadPolicy,
+    schema::{Schema, Value, STORED, TEXT},
+    Index, IndexWriter, ReloadPolicy, TantivyDocument,
 };
-use arcanum_core::{Result, ArcanumError};
 use tracing::instrument;
 
 pub struct Bm25Index {
@@ -17,7 +16,7 @@ pub struct Bm25Index {
 impl Bm25Index {
     pub fn new(path: &str) -> Result<Self> {
         let mut schema_builder = Schema::builder();
-        let id_field   = schema_builder.add_text_field("id", TEXT | STORED);
+        let id_field = schema_builder.add_text_field("id", TEXT | STORED);
         let body_field = schema_builder.add_text_field("body", TEXT);
         let schema = schema_builder.build();
 
@@ -25,19 +24,29 @@ impl Bm25Index {
             .or_else(|_| Index::open_in_dir(path))
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
-        Ok(Self { index, id_field, body_field })
+        Ok(Self {
+            index,
+            id_field,
+            body_field,
+        })
     }
 
     pub fn index_chunks(&self, chunks: Vec<(String, String)>) -> Result<()> {
-        let mut writer: IndexWriter = self.index.writer(50_000_000)
+        let mut writer: IndexWriter = self
+            .index
+            .writer(50_000_000)
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         for (id, text) in chunks {
             let mut doc = TantivyDocument::default();
             doc.add_text(self.id_field, &id);
             doc.add_text(self.body_field, &text);
-            writer.add_document(doc).map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            writer
+                .add_document(doc)
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         }
-        writer.commit().map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        writer
+            .commit()
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(())
     }
 
@@ -50,31 +59,39 @@ impl Bm25Index {
     /// Tantivy does not support single-document deletion by field value without a `DeleteQuery`;
     /// we reopen a writer, delete by term, and commit.
     pub fn delete_document(&self, id: &str) -> Result<()> {
-        let mut writer: IndexWriter = self.index.writer(50_000_000)
+        let mut writer: IndexWriter = self
+            .index
+            .writer(50_000_000)
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         let term = tantivy::Term::from_field_text(self.id_field, id);
         writer.delete_term(term);
-        writer.commit().map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        writer
+            .commit()
+            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         Ok(())
     }
 
     /// Returns (chunk_id, score) pairs sorted by score descending.
     pub fn search(&self, query_text: &str, top_k: usize) -> Result<Vec<(String, f32)>> {
-        let reader = self.index
+        let reader = self
+            .index
             .reader_builder()
             .reload_policy(ReloadPolicy::OnCommitWithDelay)
             .try_into()
             .map_err(|e: tantivy::TantivyError| ArcanumError::Storage(e.to_string()))?;
         let searcher = reader.searcher();
         let qp = QueryParser::for_index(&self.index, vec![self.body_field]);
-        let query = qp.parse_query(query_text)
+        let query = qp
+            .parse_query(query_text)
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
-        let top_docs = searcher.search(&query, &TopDocs::with_limit(top_k))
+        let top_docs = searcher
+            .search(&query, &TopDocs::with_limit(top_k))
             .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
         let mut results = vec![];
         for (score, addr) in top_docs {
-            let doc: TantivyDocument = searcher.doc(addr)
+            let doc: TantivyDocument = searcher
+                .doc(addr)
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
             if let Some(id_val) = doc.get_first(self.id_field) {
                 if let Some(id_str) = id_val.as_str() {

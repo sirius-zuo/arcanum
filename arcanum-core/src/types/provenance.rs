@@ -1,31 +1,17 @@
+use super::document::DocumentId;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use super::document::DocumentId;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct ChunkProvenance {
     pub document_version: u32,
-    pub source_uri:       String,
-    pub snapshot_uri:     String,
-    pub canonical_uri:    Option<String>,
-    pub page:             Option<u32>,
-    pub section:          Option<String>,
-    pub block_ids:        Vec<String>,
-}
-
-impl Default for ChunkProvenance {
-    fn default() -> Self {
-        Self {
-            document_version: 0,
-            source_uri:       String::new(),
-            snapshot_uri:     String::new(),
-            canonical_uri:    None,
-            page:             None,
-            section:          None,
-            block_ids:        vec![],
-        }
-    }
+    pub source_uri: String,
+    pub snapshot_uri: String,
+    pub canonical_uri: Option<String>,
+    pub page: Option<u32>,
+    pub section: Option<String>,
+    pub block_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -35,43 +21,42 @@ pub enum VersionStatus {
     Deleted,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub enum VersioningPolicy {
+    #[default]
     Replace,
     AppendOnly,
-    RetentionBased { days: u32 },
-}
-
-impl Default for VersioningPolicy {
-    fn default() -> Self { Self::Replace }
+    RetentionBased {
+        days: u32,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentVersion {
-    pub document_id:   DocumentId,
-    pub version_num:   u32,
-    pub source_uri:    String,
+    pub document_id: DocumentId,
+    pub version_num: u32,
+    pub source_uri: String,
     pub collection_id: String,
-    pub content_hash:  String,
-    pub snapshot_uri:  String,
+    pub content_hash: String,
+    pub snapshot_uri: String,
     pub canonical_uri: Option<String>,
-    pub mime_type:     String,
-    pub status:        VersionStatus,
-    pub ingested_at:   DateTime<Utc>,
-    pub extra:         HashMap<String, serde_json::Value>,
+    pub mime_type: String,
+    pub status: VersionStatus,
+    pub ingested_at: DateTime<Utc>,
+    pub extra: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
 pub struct SnapshotLocation {
-    pub raw_uri:       String,
+    pub raw_uri: String,
     pub canonical_uri: Option<String>,
 }
 
 /// Lightweight entry for listing active documents in a collection.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocumentEntry {
-    pub source_uri:    String,
-    pub registered_at: i64,  // Unix seconds
+    pub source_uri: String,
+    pub registered_at: i64, // Unix seconds
 }
 
 #[cfg(test)]
@@ -92,12 +77,12 @@ mod tests {
     fn chunk_provenance_roundtrips_json() {
         let p = ChunkProvenance {
             document_version: 3,
-            source_uri:       "confluence://page/42".into(),
-            snapshot_uri:     "file:///data/snapshots/abc/3.raw".into(),
-            canonical_uri:    Some("file:///data/snapshots/abc/3.canonical.json".into()),
-            page:             Some(7),
-            section:          Some("2.1 > Overview".into()),
-            block_ids:        vec!["b-007-a".into()],
+            source_uri: "confluence://page/42".into(),
+            snapshot_uri: "file:///data/snapshots/abc/3.raw".into(),
+            canonical_uri: Some("file:///data/snapshots/abc/3.canonical.json".into()),
+            page: Some(7),
+            section: Some("2.1 > Overview".into()),
+            block_ids: vec!["b-007-a".into()],
         };
         let json = serde_json::to_string(&p).unwrap();
         let back: ChunkProvenance = serde_json::from_str(&json).unwrap();

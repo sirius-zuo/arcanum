@@ -1,9 +1,15 @@
+use super::document::{ChunkId, Vector};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::document::{ChunkId, Vector};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TreeNodeId(pub Uuid);
+
+impl Default for TreeNodeId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl TreeNodeId {
     pub fn new() -> Self {
@@ -43,7 +49,8 @@ mod tests {
             "cluster_centroid": null,
             "source_uri": "file://doc.pdf"
         }"#;
-        let node: TreeNode = serde_json::from_str(json).expect("should deserialize with missing leaf_chunk_ids");
+        let node: TreeNode =
+            serde_json::from_str(json).expect("should deserialize with missing leaf_chunk_ids");
         assert!(node.leaf_chunk_ids.is_empty());
     }
 }

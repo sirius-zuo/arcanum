@@ -1,9 +1,9 @@
+use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use uuid::Uuid;
-use chrono::Utc;
 use tracing::instrument;
+use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct McpSession {
@@ -29,16 +29,27 @@ pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, McpSession>>>,
 }
 
+impl Default for SessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionManager {
     pub fn new() -> Self {
-        Self { sessions: Arc::new(RwLock::new(HashMap::new())) }
+        Self {
+            sessions: Arc::new(RwLock::new(HashMap::new())),
+        }
     }
 
     #[instrument(skip(self, client_info), fields(client = tracing::field::Empty))]
     pub async fn create(&self, client_info: impl Into<String>) -> McpSession {
         let info = client_info.into();
         let session = McpSession::new(info);
-        self.sessions.write().await.insert(session.id.clone(), session.clone());
+        self.sessions
+            .write()
+            .await
+            .insert(session.id.clone(), session.clone());
         tracing::Span::current().record("client", &session.client_info);
         session
     }
@@ -61,7 +72,12 @@ impl SessionManager {
 
     #[instrument(skip(self))]
     pub async fn active_count(&self) -> usize {
-        self.sessions.read().await.values().filter(|s| !s.closed).count()
+        self.sessions
+            .read()
+            .await
+            .values()
+            .filter(|s| !s.closed)
+            .count()
     }
 }
 

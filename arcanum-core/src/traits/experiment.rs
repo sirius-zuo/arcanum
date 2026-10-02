@@ -1,8 +1,8 @@
-use async_trait::async_trait;
 use crate::{
     types::{ExperimentId, PerBackendChunkConfig},
     ArcanumError, Result,
 };
+use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tokio::sync::RwLock;
@@ -17,19 +17,19 @@ pub enum ExperimentStatus {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ExperimentMetrics {
-    pub champion_recall_at_5:   f32,
+    pub champion_recall_at_5: f32,
     pub challenger_recall_at_5: f32,
-    pub sample_size:            usize,
-    pub computed_at:            String,  // ISO-8601
+    pub sample_size: usize,
+    pub computed_at: String, // ISO-8601
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShadowExperiment {
-    pub id:                ExperimentId,
+    pub id: ExperimentId,
     pub challenger_config: PerBackendChunkConfig,
-    pub started_at:        String,  // ISO-8601
-    pub status:            ExperimentStatus,
-    pub metrics:           Option<ExperimentMetrics>,
+    pub started_at: String, // ISO-8601
+    pub status: ExperimentStatus,
+    pub metrics: Option<ExperimentMetrics>,
 }
 
 impl ShadowExperiment {
@@ -44,7 +44,11 @@ pub trait ExperimentStore: Send + Sync {
     /// Atomically insert `exp` iff `collection_id` has no Active experiment.
     /// Err(ArcanumError::Storage("...already has an active experiment...")) otherwise.
     async fn try_start(&self, collection_id: &str, exp: &ShadowExperiment) -> Result<()>;
-    async fn get(&self, collection_id: &str, exp_id: &ExperimentId) -> Result<Option<ShadowExperiment>>;
+    async fn get(
+        &self,
+        collection_id: &str,
+        exp_id: &ExperimentId,
+    ) -> Result<Option<ShadowExperiment>>;
     /// Full-row update by (collection_id, exp.id). Err(NotFound) if absent or if the
     /// stored row is already Closed (guards stale writes from resurrecting a closed
     /// experiment).
@@ -58,14 +62,20 @@ pub struct InMemoryExperimentStore {
 }
 
 impl InMemoryExperimentStore {
-    pub fn new() -> Self { Self { experiments: RwLock::new(HashMap::new()) } }
+    pub fn new() -> Self {
+        Self {
+            experiments: RwLock::new(HashMap::new()),
+        }
+    }
     fn key(collection_id: &str, exp_id: &ExperimentId) -> String {
         format!("{}:{}", collection_id, exp_id.0)
     }
 }
 
 impl Default for InMemoryExperimentStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -80,32 +90,58 @@ impl ExperimentStore for InMemoryExperimentStore {
         });
         if has_active {
             return Err(ArcanumError::Storage(format!(
-                "collection '{}' already has an active experiment", collection_id)));
+                "collection '{}' already has an active experiment",
+                collection_id
+            )));
         }
         map.insert(Self::key(collection_id, &exp.id), exp.clone());
         Ok(())
     }
 
-    async fn get(&self, collection_id: &str, exp_id: &ExperimentId) -> Result<Option<ShadowExperiment>> {
-        Ok(self.experiments.read().await.get(&Self::key(collection_id, exp_id)).cloned())
+    async fn get(
+        &self,
+        collection_id: &str,
+        exp_id: &ExperimentId,
+    ) -> Result<Option<ShadowExperiment>> {
+        Ok(self
+            .experiments
+            .read()
+            .await
+            .get(&Self::key(collection_id, exp_id))
+            .cloned())
     }
 
     async fn update(&self, collection_id: &str, exp: &ShadowExperiment) -> Result<()> {
         let mut map = self.experiments.write().await;
         let key = Self::key(collection_id, &exp.id);
         match map.get_mut(&key) {
-            Some(slot) if slot.status == ExperimentStatus::Closed => Err(ArcanumError::NotFound(format!(
-                "experiment '{}' (missing or already closed)", exp.id.0))),
-            Some(slot) => { *slot = exp.clone(); Ok(()) }
+            Some(slot) if slot.status == ExperimentStatus::Closed => Err(ArcanumError::NotFound(
+                format!("experiment '{}' (missing or already closed)", exp.id.0),
+            )),
+            Some(slot) => {
+                *slot = exp.clone();
+                Ok(())
+            }
             None => Err(ArcanumError::NotFound(format!(
-                "experiment '{}' (missing or already closed)", exp.id.0))),
+                "experiment '{}' (missing or already closed)",
+                exp.id.0
+            ))),
         }
     }
 
     async fn active_experiments(&self) -> Result<Vec<(String, ShadowExperiment)>> {
-        Ok(self.experiments.read().await.iter()
+        Ok(self
+            .experiments
+            .read()
+            .await
+            .iter()
             .filter(|(_, e)| e.status == ExperimentStatus::Active)
-            .map(|(k, e)| (k.rsplitn(2, ':').nth(1).unwrap_or("").to_string(), e.clone()))
+            .map(|(k, e)| {
+                (
+                    k.rsplit_once(':').map(|x| x.0).unwrap_or("").to_string(),
+                    e.clone(),
+                )
+            })
             .collect())
     }
 }
@@ -177,8 +213,15 @@ mod tests {
         let store = InMemoryExperimentStore::new();
         let exp = sample_exp();
         store.try_start("col1", &exp).await.unwrap();
-        assert_eq!(store.get("col1", &exp.id).await.unwrap().unwrap().id, exp.id);
-        assert!(store.get("col1", &ExperimentId::new()).await.unwrap().is_none());
+        assert_eq!(
+            store.get("col1", &exp.id).await.unwrap().unwrap().id,
+            exp.id
+        );
+        assert!(store
+            .get("col1", &ExperimentId::new())
+            .await
+            .unwrap()
+            .is_none());
         let active = store.active_experiments().await.unwrap();
         assert_eq!(active, vec![("col1".to_string(), exp)]); // needs PartialEq on ShadowExperiment; derive it
     }

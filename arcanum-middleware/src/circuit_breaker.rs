@@ -1,28 +1,32 @@
 use std::{
     sync::atomic::{AtomicU32, AtomicU8, Ordering},
     sync::Arc,
-    time::{Duration, Instant},
     sync::Mutex,
+    time::{Duration, Instant},
 };
-use metrics;
 
 #[derive(Debug, Clone, PartialEq)]
-pub enum CircuitState { Closed, Open, HalfOpen }
+pub enum CircuitState {
+    Closed,
+    Open,
+    HalfOpen,
+}
 
 pub struct CircuitBreaker {
-    name: Arc<str>,               // Arc<str> — shares allocation across clones, no per-call leak
+    name: Arc<str>, // Arc<str> — shares allocation across clones, no per-call leak
     failure_threshold: u32,
     reset_timeout: Duration,
     failures: AtomicU32,
-    state: AtomicU8,                // 0=Closed, 1=Open, 2=HalfOpen
+    state: AtomicU8, // 0=Closed, 1=Open, 2=HalfOpen
     opened_at: Mutex<Option<Instant>>,
 }
 
 impl CircuitBreaker {
     pub fn new(name: &str, failure_threshold: u32, reset_timeout: Duration) -> Self {
         Self {
-            name: Arc::from(name),  // single heap alloc, no Box::leak
-            failure_threshold, reset_timeout,
+            name: Arc::from(name), // single heap alloc, no Box::leak
+            failure_threshold,
+            reset_timeout,
             failures: AtomicU32::new(0),
             state: AtomicU8::new(0),
             opened_at: Mutex::new(None),
@@ -77,7 +81,8 @@ impl CircuitBreaker {
             self.state.store(1, Ordering::SeqCst);
             *self.opened_at.lock().unwrap() = Some(Instant::now());
             metrics::counter!("arcanum_circuit_breaker_trips_total",
-                "breaker" => self.label()).increment(1);
+                "breaker" => self.label())
+            .increment(1);
         }
 
         // Gauge: 0.0=Closed, 1.0=Open, 2.0=HalfOpen — three distinct values.
@@ -87,7 +92,8 @@ impl CircuitBreaker {
             _ => 0.0f64,
         };
         metrics::gauge!("arcanum_circuit_breaker_state",
-            "breaker" => self.label()).set(state_value);
+            "breaker" => self.label())
+        .set(state_value);
     }
 
     pub fn record_success(&self) {
@@ -96,6 +102,7 @@ impl CircuitBreaker {
         self.state.store(0, Ordering::SeqCst);
         *self.opened_at.lock().unwrap() = None;
         metrics::gauge!("arcanum_circuit_breaker_state",
-            "breaker" => self.label()).set(0.0);
+            "breaker" => self.label())
+        .set(0.0);
     }
 }

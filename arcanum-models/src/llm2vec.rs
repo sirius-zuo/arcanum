@@ -1,7 +1,7 @@
-use arcanum_core::{traits::*, types::*, Result, ArcanumError};
+use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
 /// LLM2Vec: decoder LLM repurposed for embeddings and text enrichment via a local server.
 pub struct Llm2VecProvider {
@@ -28,18 +28,24 @@ impl Embedder for Llm2VecProvider {
         let result: Result<Vec<Vector>> = async {
             let mut results = Vec::new();
             for text in &texts {
-                let resp: Vec<Vec<f32>> = self.client
+                let resp: Vec<Vec<f32>> = self
+                    .client
                     .post(format!("{}/embed", self.base_url))
                     .json(&serde_json::json!({ "inputs": text }))
-                    .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                    .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                    .send()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?;
                 if let Some(v) = resp.into_iter().next() {
                     results.push(Vector(v));
                 }
             }
             tracing::Span::current().record("dimension", self.dim);
             Ok(results)
-        }.await;
+        }
+        .await;
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_model_calls_total", "provider" => "llm2vec", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "llm2vec", "operation" => "embed").record(start.elapsed().as_secs_f64());
@@ -57,11 +63,16 @@ impl TextEnricher for Llm2VecProvider {
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let start = std::time::Instant::now();
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
-        let result = self.client
+        let result = self
+            .client
             .post(format!("{}/generate", self.base_url))
             .json(&serde_json::json!({ "prompt": prompt }))
-            .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+            .send()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()));
         let result = result.map(|resp: serde_json::Value| {
             EnrichedText(resp["response"].as_str().unwrap_or("").to_string())
         });

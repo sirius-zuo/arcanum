@@ -1,0 +1,377 @@
+openapi: 3.0.3
+info:
+  title: Arcanum API
+  version: v1
+  description: |
+    Arcanum ingestion and retrieval API. This document covers the durable
+    ingestion-operation routes added by Plan 05 Task 4: enhanced submission
+    (`POST /api/v1/ingestion-operations`), durable query by id and by
+    idempotency key, and idempotent collection/source removal. The legacy
+    `/ingest` and `/upload` routes are preserved for a deprecation window.
+
+    All routes require a Bearer API key (`Authorization: Bearer <token>`).
+    Durable operation state is the system of record; WebSocket events are a
+    latency optimization and their loss never changes query results.
+
+security:
+  - bearerAuth: []
+
+paths:
+  /api/v1/ingestion-operations:
+    post:
+      operationId: submitIngestionOperation
+      summary: Submit a durable ingestion operation (multipart metadata + payload)
+      description: |
+        Accepts `multipart/form-data` with a `metadata` JSON part (deserialized
+        to `IngestionSubmission`) and an optional `payload` binary part. Inline
+        payload bytes are staged into the durable payload store before the
+        operation is persisted, so an `Accepted` operation survives restart and
+        the stored submission hash is reconstructable from the store alone.
+
+        The submission carries payload XOR `payload_locator`:
+        - `metadata` + `payload` part → inline bytes are staged.
+        - `metadata.payload_locator` names a retrievable durable location.
+
+        Returns 202 for a new operation and 200 for an idempotent replay
+        (identical submission under the same `idempotency_key`). A different
+        submission under the same key is a 409 conflict.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                metadata:
+                  type: string
+                  format: json
+                  description: JSON-encoded IngestionSubmission.
+                payload:
+                  type: string
+                  format: binary
+                  description: Inline payload bytes (optional; XOR with payload_locator).
+      responses:
+        '202':
+          description: New operation accepted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationAccepted'
+        '200':
+          description: Idempotent replay — the original operation is returned.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OperationAccepted'
+        '400':
+          description: Malformed metadata, duplicate/unknown parts, or payload XOR violation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          description: Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '403':
+          description: The caller cannot access the submission's collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '409':
+          description: The idempotency key was already used by a different submission.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '413':
+          description: Payload exceeds the configured maximum upload size.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+    get:
+      operationId: getOperationByIdempotencyKey
+      summary: Query an operation by idempotency key
+      description: |
+        Requires EXACTLY one `idempotency_key` query value. Collection access
+        is enforced against the resolved operation. Returns the canonical
+        `IngestionOperation` document.
+      parameters:
+        - name: idempotency_key
+          in: query
+          required: true
+          description: The stable idempotency key assigned by the caller.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The canonical operation document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionOperation'
+        '400':
+          description: Zero or multiple idempotency_key query values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller cannot access the operation's collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: No operation exists for the idempotency key.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
+  /api/v1/ingestion-operations/{id}:
+    get:
+      operationId: getIngestionOperation
+      summary: Query a durable operation by id
+      description: |
+        Returns the canonical `IngestionOperation` document. Only safe,
+        redacted error details (code + message + retryability) are exposed;
+        internal stack and connection details are never surfaced.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Operation UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: The canonical operation document.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IngestionOperation'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller cannot access the operation's collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '404':
+          description: Unknown operation id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
+  /api/v1/collections/{collectionId}/sources:
+    delete:
+      operationId: deleteCollectionSource
+      summary: Idempotently remove a source from one collection
+      description: |
+        Deletes the vector, graph, and tree entries for the stable source URI
+        within the collection and marks the collection-scoped document versions
+        deleted per the version-store contract. Repeating removal for an absent
+        source returns success (idempotent).
+      parameters:
+        - name: collectionId
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: source_uri
+          in: query
+          required: true
+          description: The stable logical source URI to remove.
+          schema:
+            type: string
+      responses:
+        '204':
+          description: Removal succeeded (or was a no-op for an absent source).
+        '400':
+          description: The required source_uri query parameter is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller cannot access the collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: A backing store failed during removal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
+  # ── Legacy routes preserved during the deprecation window ────────────────
+  /api/v1/ingest:
+    post:
+      deprecated: true
+      summary: Legacy JSON ingestion submission
+      description: Preserved for the deprecation window; Core does not use it.
+      responses:
+        '202':
+          description: Accepted (legacy).
+  /api/v1/upload:
+    post:
+      deprecated: true
+      summary: Legacy raw-bytes upload
+      description: Preserved for the deprecation window; Core does not use it.
+      responses:
+        '202':
+          description: Accepted (legacy).
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorBody'
+  schemas:
+    OperationId:
+      type: string
+      format: uuid
+      description: Stable identifier for a durable ingestion operation.
+    CollectionId:
+      type: string
+      description: Stable collection identifier.
+    OperationStatus:
+      type: string
+      enum: [Accepted, Running, Succeeded, Failed]
+      description: Lifecycle of a durable operation. Accepted or queued is not success.
+    IngestionOutcome:
+      type: string
+      enum: [Ingested, Unchanged]
+      description: What a terminal Succeeded report means for the original content.
+    PartialOutputDisposition:
+      type: string
+      enum: [Discarded, Isolated]
+      description: How partially-written outputs were handled on failure.
+    SafeOperationError:
+      type: object
+      description: Redacted error — no internal stack or connection details.
+      properties:
+        code:
+          type: string
+          example: QUEUE_REJECTED
+        message:
+          type: string
+        retryable:
+          type: boolean
+      required: [code, message, retryable]
+    IngestionReport:
+      type: object
+      description: |
+        The canonical terminal report. A Succeeded report MUST carry the
+        version-specific original-content URI.
+      properties:
+        operation_id:
+          $ref: '#/components/schemas/OperationId'
+        status:
+          $ref: '#/components/schemas/OperationStatus'
+        outcome:
+          $ref: '#/components/schemas/IngestionOutcome'
+        content_uri:
+          type: string
+          nullable: true
+          description: Version-specific original-content URI on success/unchanged.
+        error:
+          $ref: '#/components/schemas/SafeOperationError'
+        partial_output_disposition:
+          $ref: '#/components/schemas/PartialOutputDisposition'
+      required: [operation_id, status]
+    IngestionSubmission:
+      type: object
+      description: |
+        What Core submits to start a durable ingestion operation. The logical
+        source URI is stable and is never replaced by a filename or staging key.
+        Payload is XOR `payload_locator`: exactly one is set on submission.
+      properties:
+        idempotency_key:
+          type: string
+          description: Stable caller-assigned idempotency key.
+        logical_source_uri:
+          type: string
+          description: Stable logical source URI.
+        mime_hint:
+          type: string
+          nullable: true
+          description: Optional MIME hint; Arcanum's byte detector is authoritative.
+        collection_id:
+          $ref: '#/components/schemas/CollectionId'
+        pipeline_configuration:
+          type: object
+          description: 'Pipeline configuration, e.g. { "template": "standard" }.'
+        payload:
+          type: array
+          items:
+            type: integer
+          nullable: true
+          description: Inline payload bytes as a JSON byte array (never returned by query routes).
+        payload_locator:
+          type: string
+          nullable: true
+          description: Durable locator for an already-staged payload.
+      required: [idempotency_key, logical_source_uri, collection_id, pipeline_configuration]
+    IngestionOperation:
+      type: object
+      description: The canonical, queryable document for a durable operation.
+      properties:
+        operation_id:
+          $ref: '#/components/schemas/OperationId'
+        submission:
+          $ref: '#/components/schemas/IngestionSubmission'
+        status:
+          $ref: '#/components/schemas/OperationStatus'
+        accepted_at:
+          type: string
+          format: date-time
+        started_at:
+          type: string
+          format: date-time
+          nullable: true
+        terminal_report:
+          $ref: '#/components/schemas/IngestionReport'
+      required: [operation_id, submission, status, accepted_at]
+    OperationAccepted:
+      type: object
+      description: Response body for a successful submission.
+      properties:
+        operation_id:
+          $ref: '#/components/schemas/OperationId'
+        status:
+          type: string
+          example: accepted
+        resource:
+          type: string
+          description: Link to the durable operation resource.
+          example: /api/v1/ingestion-operations/3fa85f64-5717-4562-b3fc-2c963f66afa6
+      required: [operation_id, status, resource]
+    ErrorBody:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]

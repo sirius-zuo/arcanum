@@ -1,11 +1,11 @@
-use arcanum_core::{traits::*, types::*, Result};
 use crate::fusion::RrfFusion;
 use crate::processor::{CitationGenerator, Deduplicator};
 use crate::reranker::NullReranker;
 use crate::transformer::QueryTransformer;
+use arcanum_core::{traits::*, types::*, Result};
+use metrics;
 use std::{sync::Arc, time::Duration};
 use tracing::{instrument, Instrument};
-use metrics;
 
 pub enum OrchestratorMode {
     Static(Vec<RetrievalStrategy>),
@@ -70,7 +70,9 @@ impl RetrievalOrchestrator {
             Some(t) => match t.transform(query.clone()).await {
                 Ok(qs) if !qs.is_empty() => qs,
                 Ok(_) => {
-                    tracing::warn!("query transformer returned no queries; falling back to original");
+                    tracing::warn!(
+                        "query transformer returned no queries; falling back to original"
+                    );
                     vec![query.clone()]
                 }
                 Err(e) => {
@@ -95,8 +97,10 @@ impl RetrievalOrchestrator {
         } else {
             RrfFusion::fuse(per_query_fused, 60.0)
         };
-        let strategy_scores: std::collections::HashMap<String, f32> = fused.iter()
-            .map(|c| (format!("{:?}", c.strategy), c.score)).collect();
+        let strategy_scores: std::collections::HashMap<String, f32> = fused
+            .iter()
+            .map(|c| (format!("{:?}", c.strategy), c.score))
+            .collect();
 
         let reranked = match self.reranker.rerank(query, fused.clone()).await {
             Ok(r) => r,
@@ -111,14 +115,17 @@ impl RetrievalOrchestrator {
             None => reranked,
         };
 
-        let citations = CitationGenerator::generate(&deduped).into_iter().map(|c| Citation {
-            document_uri: c.source_uri,
-            document_title: c.title,
-            section: c.section,
-            chunk_index: c.chunk_index,
-            version: c.version,
-            snapshot_uri: c.snapshot_uri,
-        }).collect();
+        let citations = CitationGenerator::generate(&deduped)
+            .into_iter()
+            .map(|c| Citation {
+                document_uri: c.source_uri,
+                document_title: c.title,
+                section: c.section,
+                chunk_index: c.chunk_index,
+                version: c.version,
+                snapshot_uri: c.snapshot_uri,
+            })
+            .collect();
 
         Ok(RetrievalResult {
             chunks: deduped,
@@ -177,7 +184,9 @@ impl RetrievalOrchestrator {
 
         let mut strategy_results = vec![];
         for task in tasks {
-            if let Ok(Some(r)) = task.await { strategy_results.push(r); }
+            if let Ok(Some(r)) = task.await {
+                strategy_results.push(r);
+            }
         }
 
         RrfFusion::fuse(strategy_results, 60.0)
@@ -185,7 +194,7 @@ impl RetrievalOrchestrator {
 
     fn mode_name(&self) -> &'static str {
         match &self.mode {
-            OrchestratorMode::Static(_)     => "static",
+            OrchestratorMode::Static(_) => "static",
             OrchestratorMode::ParallelFusion => "parallel_fusion",
             OrchestratorMode::QueryClassified => "query_classified",
         }
@@ -194,13 +203,16 @@ impl RetrievalOrchestrator {
     fn active_retrievers(&self, query: &Query) -> Vec<Arc<dyn Retriever>> {
         match &self.mode {
             OrchestratorMode::ParallelFusion => self.retrievers.clone(),
-            OrchestratorMode::Static(strategies) => self.retrievers.iter()
+            OrchestratorMode::Static(strategies) => self
+                .retrievers
+                .iter()
                 .filter(|r| strategies.contains(&r.strategy()))
                 .cloned()
                 .collect(),
             OrchestratorMode::QueryClassified => {
                 let selected = classify_query(&query.text);
-                self.retrievers.iter()
+                self.retrievers
+                    .iter()
                     .filter(|r| selected.contains(&r.strategy()))
                     .cloned()
                     .collect()
@@ -222,7 +234,13 @@ pub fn classify_query(query: &str) -> Vec<RetrievalStrategy> {
     let lower = query.to_lowercase();
 
     // RAPTOR: document-level summarisation signals.
-    let raptor_signals = ["summarize", "summarise", "overview", "across all", "throughout"];
+    let raptor_signals = [
+        "summarize",
+        "summarise",
+        "overview",
+        "across all",
+        "throughout",
+    ];
     if raptor_signals.iter().any(|s| lower.contains(s)) {
         return vec![RetrievalStrategy::Raptor];
     }
@@ -242,7 +260,8 @@ pub fn classify_query(query: &str) -> Vec<RetrievalStrategy> {
 
 /// Count words that start with an uppercase letter (simple proper-noun heuristic).
 fn count_proper_nouns(query: &str) -> usize {
-    query.split_whitespace()
+    query
+        .split_whitespace()
         .filter(|w| w.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
         .count()
 }
@@ -254,13 +273,19 @@ mod tests {
     #[test]
     fn test_classify_entity_query_includes_graph() {
         let strategies = classify_query("who is the CEO of Anthropic?");
-        assert!(strategies.contains(&RetrievalStrategy::Graph), "Entity query should include Graph");
+        assert!(
+            strategies.contains(&RetrievalStrategy::Graph),
+            "Entity query should include Graph"
+        );
     }
 
     #[test]
     fn test_classify_summary_query_includes_raptor() {
         let strategies = classify_query("summarize the entire document");
-        assert!(strategies.contains(&RetrievalStrategy::Raptor), "Summary query should include Raptor");
+        assert!(
+            strategies.contains(&RetrievalStrategy::Raptor),
+            "Summary query should include Raptor"
+        );
     }
 
     #[test]

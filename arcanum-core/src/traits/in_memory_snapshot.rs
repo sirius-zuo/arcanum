@@ -1,6 +1,9 @@
-use async_trait::async_trait;
-use crate::{types::{DocumentId, SnapshotLocation}, Result};
 use super::SnapshotStore;
+use crate::{
+    types::{DocumentId, SnapshotLocation},
+    Result,
+};
+use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -11,17 +14,27 @@ pub struct InMemorySnapshotStore {
 
 impl InMemorySnapshotStore {
     pub fn new() -> Self {
-        Self { data: Arc::new(Mutex::new(HashMap::new())) }
+        Self {
+            data: Arc::new(Mutex::new(HashMap::new())),
+        }
     }
 }
 
 impl Default for InMemorySnapshotStore {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
 impl SnapshotStore for InMemorySnapshotStore {
-    async fn store(&self, _doc_id: &DocumentId, _version: u32, raw: &[u8], _canonical: Option<&serde_json::Value>) -> Result<SnapshotLocation> {
+    async fn store(
+        &self,
+        _doc_id: &DocumentId,
+        _version: u32,
+        raw: &[u8],
+        _canonical: Option<&serde_json::Value>,
+    ) -> Result<SnapshotLocation> {
         let mut data = self.data.lock().unwrap();
         let doc_str = _doc_id.0.to_string();
         let raw_key = format!("mem://{}/{}/raw.bin", doc_str, _version);
@@ -34,23 +47,30 @@ impl SnapshotStore for InMemorySnapshotStore {
             data.insert(canon_key.clone(), bytes);
             Some(canon_key)
         } else {
-            None   // was always Some(key2) — now correctly None
+            None // was always Some(key2) — now correctly None
         };
 
         Ok(SnapshotLocation {
-            raw_uri:       raw_key,
+            raw_uri: raw_key,
             canonical_uri,
         })
     }
 
     async fn fetch_raw(&self, uri: &str) -> Result<Vec<u8>> {
-        self.data.lock().unwrap().get(uri)
+        self.data
+            .lock()
+            .unwrap()
+            .get(uri)
             .cloned()
             .ok_or_else(|| crate::ArcanumError::NotFound(format!("snapshot not found: {}", uri)))
     }
 
     async fn fetch_canonical(&self, uri: &str) -> Result<Option<serde_json::Value>> {
-        Ok(self.data.lock().unwrap().get(uri)
+        Ok(self
+            .data
+            .lock()
+            .unwrap()
+            .get(uri)
             .and_then(|b| serde_json::from_slice(b).ok()))
     }
 
@@ -72,7 +92,10 @@ mod tests {
     async fn basic_store_and_retrieve() {
         let store = InMemorySnapshotStore::new();
         let doc_id = DocumentId::new();
-        let loc = store.store(&doc_id, 1, b"hello", Some(&serde_json::json!({"k":"v"}))).await.unwrap();
+        let loc = store
+            .store(&doc_id, 1, b"hello", Some(&serde_json::json!({"k":"v"})))
+            .await
+            .unwrap();
         assert!(loc.raw_uri.contains("raw.bin"));
         let raw = store.fetch_raw(&loc.raw_uri).await.unwrap();
         assert_eq!(raw, b"hello");
@@ -83,7 +106,10 @@ mod tests {
         let store = InMemorySnapshotStore::new();
         let doc_id = DocumentId::new();
         let loc = store.store(&doc_id, 1, b"raw", None).await.unwrap();
-        assert!(loc.canonical_uri.is_none(), "canonical_uri must be None when no canonical provided");
+        assert!(
+            loc.canonical_uri.is_none(),
+            "canonical_uri must be None when no canonical provided"
+        );
     }
 
     #[tokio::test]
@@ -91,9 +117,15 @@ mod tests {
         let store = InMemorySnapshotStore::new();
         let doc_id = DocumentId::new();
         let canonical = serde_json::json!({"blocks": [{"id": "b1"}]});
-        let loc = store.store(&doc_id, 1, b"raw", Some(&canonical)).await.unwrap();
+        let loc = store
+            .store(&doc_id, 1, b"raw", Some(&canonical))
+            .await
+            .unwrap();
         assert!(loc.canonical_uri.is_some());
-        let fetched = store.fetch_canonical(loc.canonical_uri.as_ref().unwrap()).await.unwrap();
+        let fetched = store
+            .fetch_canonical(loc.canonical_uri.as_ref().unwrap())
+            .await
+            .unwrap();
         assert_eq!(fetched, Some(canonical));
     }
 }

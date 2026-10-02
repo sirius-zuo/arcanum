@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Mutex, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    sync::Mutex,
+    time::{Duration, Instant},
+};
 use tracing::instrument;
 
 struct WindowEntry {
@@ -18,7 +22,11 @@ impl RateLimiter {
     }
 
     pub fn with_window(max_per_window: usize, window_duration: Duration) -> Self {
-        Self { max_per_window, window_duration, entries: Mutex::new(HashMap::new()) }
+        Self {
+            max_per_window,
+            window_duration,
+            entries: Mutex::new(HashMap::new()),
+        }
     }
 
     #[instrument(skip(self), fields(key, allowed))]
@@ -35,7 +43,9 @@ impl RateLimiter {
             entry.window_start = now;
         }
         let allowed = entry.count < self.max_per_window;
-        if allowed { entry.count += 1; }
+        if allowed {
+            entry.count += 1;
+        }
         tracing::Span::current().record("allowed", allowed);
         tracing::debug!(key, allowed, "rate limit check");
         allowed

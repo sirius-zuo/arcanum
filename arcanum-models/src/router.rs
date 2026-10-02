@@ -1,6 +1,9 @@
 use arcanum_core::{traits::*, types::*, Result};
 use async_trait::async_trait;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tracing::instrument;
 
 pub struct EmbeddingParallelismRouter {
@@ -11,7 +14,10 @@ pub struct EmbeddingParallelismRouter {
 impl EmbeddingParallelismRouter {
     pub fn new(providers: Vec<Arc<dyn Embedder>>) -> Self {
         assert!(!providers.is_empty(), "at least one embedder required");
-        Self { providers, counter: AtomicUsize::new(0) }
+        Self {
+            providers,
+            counter: AtomicUsize::new(0),
+        }
     }
 }
 
