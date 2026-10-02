@@ -60,7 +60,7 @@ impl Retriever for GraphRetriever {
             };
             let entities = self.graph_store.query(collection, &gq).await?;
             for entity in entities {
-                chunk_ids.extend(entity.source_chunks);
+                chunk_ids.extend(entity.entity.source_chunks);
             }
         }
         chunk_ids.dedup_by(|a, b| a.0 == b.0);

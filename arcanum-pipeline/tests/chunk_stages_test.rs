@@ -166,7 +166,7 @@ async fn entity_extract_is_noop_when_graph_chunks_empty() {
             &self,
             _: &str,
             _: &arcanum_core::traits::GraphQuery,
-        ) -> arcanum_core::Result<Vec<Entity>> {
+        ) -> arcanum_core::Result<Vec<EntityHit>> {
             Ok(vec![])
         }
         async fn get_relations(&self, _: &EntityId) -> arcanum_core::Result<Vec<Relation>> {

@@ -234,7 +234,7 @@ impl arcanum_core::traits::GraphStore for CapturingGraph {
         &self,
         _: &str,
         _: &arcanum_core::traits::GraphQuery,
-    ) -> arcanum_core::Result<Vec<Entity>> {
+    ) -> arcanum_core::Result<Vec<EntityHit>> {
         Ok(vec![])
     }
     async fn get_relations(&self, _: &EntityId) -> arcanum_core::Result<Vec<Relation>> {

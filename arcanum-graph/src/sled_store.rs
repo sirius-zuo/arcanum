@@ -1,6 +1,8 @@
 use arcanum_core::{
     traits::store::GraphQuery,
-    traits::store::{merge_relation, relation_identity_key, relation_touches_removed_entity},
+    traits::store::{
+        merge_relation, relation_identity_key, relation_touches_removed_entity, walk_hops,
+    },
     traits::GraphStore,
     types::*,
     ArcanumError, Result,
@@ -164,10 +166,11 @@ impl GraphStore for SledGraphStore {
         fields(store = "sled_graph", collection, result_count),
         err
     )]
-    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<Entity>> {
+    async fn query(&self, collection: &str, q: &GraphQuery) -> Result<Vec<EntityHit>> {
         let _guard = self.lock.read().await;
         let prefix = entity_prefix(collection)?;
-        let mut results = vec![];
+        let mut by_id: HashMap<uuid::Uuid, Entity> = HashMap::new();
+        let mut seeds = vec![];
         for item in self.entities.scan_prefix(&prefix) {
             let (_, value) = item.map_err(|e| storage_err!("scan entities", e))?;
             let entity: Entity = serde_json::from_slice(&value)
@@ -183,12 +186,32 @@ impl GraphStore for SledGraphStore {
                 .map(|t| entity.entity_type == t)
                 .unwrap_or(true);
             if name_ok && type_ok {
-                results.push(entity);
+                seeds.push(entity.id.0);
             }
+            by_id.insert(entity.id.0, entity);
         }
         if q.entity_name.is_none() && q.entity_type.is_none() {
-            results.truncate(100);
+            seeds.truncate(100);
         }
+        // One scan of the relations tree collects every edge between in-collection entities.
+        let mut in_scope: Vec<Relation> = vec![];
+        if q.max_hops > 0 {
+            for item in self.relations.iter() {
+                let (_, value) = item.map_err(|e| storage_err!("scan relations", e))?;
+                let relation: Relation = serde_json::from_slice(&value)
+                    .map_err(|e| storage_err!("deserialize relation", e))?;
+                if by_id.contains_key(&relation.source.0) && by_id.contains_key(&relation.target.0)
+                {
+                    in_scope.push(relation);
+                }
+            }
+        }
+        let hops = walk_hops(&seeds, &in_scope, q.max_hops);
+        let mut results: Vec<EntityHit> = hops
+            .into_iter()
+            .filter_map(|(id, hops)| by_id.remove(&id).map(|entity| EntityHit { entity, hops }))
+            .collect();
+        results.sort_by(|a, b| (a.hops, &a.entity.name).cmp(&(b.hops, &b.entity.name)));
         tracing::Span::current().record("result_count", results.len());
         Ok(results)
     }
@@ -458,7 +481,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "ACME Corp");
+        assert_eq!(results[0].entity.name, "ACME Corp");
     }
 
     #[serial]
@@ -524,7 +547,7 @@ mod tests {
         };
         let col_a = store.query("col-a", &gq).await.unwrap();
         assert_eq!(col_a.len(), 1);
-        assert_eq!(col_a[0].name, "Alpha");
+        assert_eq!(col_a[0].entity.name, "Alpha");
     }
 
     #[serial]
@@ -836,7 +859,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].name, "Doc B");
+        assert_eq!(results[0].entity.name, "Doc B");
 
         let relations = store.get_relations(&id1).await.unwrap();
         assert!(
@@ -1054,7 +1077,7 @@ mod tests {
             1,
             "e_b must remain in col-b after deleting e_a from col-a"
         );
-        assert_eq!(col_b_results[0].name, "DocB");
+        assert_eq!(col_b_results[0].entity.name, "DocB");
     }
 
     #[serial]
@@ -1162,6 +1185,127 @@ mod tests {
         assert!(
             !cols.contains(&"ghost-col".to_string()),
             "ghost collection should be removed"
+        );
+    }
+
+    fn hop_entity(name: &str) -> Entity {
+        Entity {
+            id: EntityId::new(),
+            name: name.into(),
+            entity_type: "T".into(),
+            canonical_id: None,
+            source_chunks: vec![],
+            source_uri: "".into(),
+            collection_id: "col".into(),
+        }
+    }
+
+    fn hop_rel(a: &Entity, b: &Entity) -> Relation {
+        Relation {
+            source: a.id.clone(),
+            relation_type: "R".into(),
+            target: b.id.clone(),
+            confidence: 1.0,
+            source_chunks: vec![],
+        }
+    }
+
+    fn seed_query(name: &str, max_hops: u32) -> GraphQuery {
+        GraphQuery {
+            entity_name: Some(name.into()),
+            entity_type: None,
+            max_hops,
+            relation_filter: None,
+        }
+    }
+
+    fn hops_of(hits: &[EntityHit]) -> Vec<(String, u32)> {
+        hits.iter()
+            .map(|h| (h.entity.name.clone(), h.hops))
+            .collect()
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn query_seed_has_zero_hops() {
+        let (store, _tmp) = make_store();
+        store
+            .upsert_entities("col", vec![hop_entity("Seed")])
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("Seed", 0)).await.unwrap();
+        assert_eq!(hops_of(&hits), vec![("Seed".to_string(), 0)]);
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn query_expands_neighbors_up_to_max_hops() {
+        let (store, _tmp) = make_store();
+        let (a, b, c) = (hop_entity("A"), hop_entity("B"), hop_entity("C"));
+        store
+            .upsert_entities("col", vec![a.clone(), b.clone(), c.clone()])
+            .await
+            .unwrap();
+        store
+            .upsert_relations("col", vec![hop_rel(&a, &b), hop_rel(&b, &c)])
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("A", 1)).await.unwrap();
+        assert_eq!(
+            hops_of(&hits),
+            vec![("A".to_string(), 0), ("B".to_string(), 1)]
+        );
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn query_follows_incoming_relations() {
+        let (store, _tmp) = make_store();
+        let (a, b) = (hop_entity("A"), hop_entity("B"));
+        store
+            .upsert_entities("col", vec![a.clone(), b.clone()])
+            .await
+            .unwrap();
+        store
+            .upsert_relations("col", vec![hop_rel(&b, &a)])
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("A", 1)).await.unwrap();
+        assert_eq!(
+            hops_of(&hits),
+            vec![("A".to_string(), 0), ("B".to_string(), 1)]
+        );
+    }
+
+    #[serial]
+    #[tokio::test]
+    async fn query_reports_minimum_hops_and_terminates_on_cycles() {
+        let (store, _tmp) = make_store();
+        let (a, b, c) = (hop_entity("A"), hop_entity("B"), hop_entity("C"));
+        store
+            .upsert_entities("col", vec![a.clone(), b.clone(), c.clone()])
+            .await
+            .unwrap();
+        store
+            .upsert_relations(
+                "col",
+                vec![
+                    hop_rel(&a, &b),
+                    hop_rel(&b, &c),
+                    hop_rel(&a, &c),
+                    hop_rel(&c, &a),
+                ],
+            )
+            .await
+            .unwrap();
+        let hits = store.query("col", &seed_query("A", 5)).await.unwrap();
+        assert_eq!(
+            hops_of(&hits),
+            vec![
+                ("A".to_string(), 0),
+                ("B".to_string(), 1),
+                ("C".to_string(), 1)
+            ]
         );
     }
 }
