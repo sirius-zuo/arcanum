@@ -1,4 +1,4 @@
-use arcanum_core::{traits::SecretStore, Result, ArcanumError};
+use arcanum_core::{traits::SecretStore, ArcanumError, Result};
 use async_trait::async_trait;
 
 pub struct EnvSecretStore;
@@ -6,9 +6,9 @@ pub struct EnvSecretStore;
 #[async_trait]
 impl SecretStore for EnvSecretStore {
     async fn get(&self, key_path: &str) -> Result<String> {
-        std::env::var(key_path).map_err(|_| ArcanumError::Config(
-            format!("secret not found in environment: {}", key_path)
-        ))
+        std::env::var(key_path).map_err(|_| {
+            ArcanumError::Config(format!("secret not found in environment: {}", key_path))
+        })
     }
 
     async fn reload(&self) -> Result<()> {

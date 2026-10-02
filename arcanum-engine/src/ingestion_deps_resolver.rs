@@ -1,20 +1,20 @@
-use arcanum_core::{
-    Result,
-    traits::{IngestionDepsOverrideResolver, Preprocessor},
-    types::{PerBackendChunkConfig, PerBackendChunkers, ShadowContext},
-};
-use arcanum_ingestion::{default_registry, PreprocessorCatalog};
-use async_trait::async_trait;
-use std::sync::Arc;
 use crate::services::{
     collection::CollectionService,
     experiment::{ExperimentService, ExperimentStatus},
 };
+use arcanum_core::{
+    traits::{IngestionDepsOverrideResolver, Preprocessor},
+    types::{PerBackendChunkConfig, PerBackendChunkers, ShadowContext},
+    Result,
+};
+use arcanum_ingestion::{default_registry, PreprocessorCatalog};
+use async_trait::async_trait;
+use std::sync::Arc;
 
 pub struct EngineIngestionDepsResolver {
-    pub collection_service:   Arc<CollectionService>,
-    pub experiment_service:   Arc<ExperimentService>,
-    pub global_chunking:      PerBackendChunkConfig,
+    pub collection_service: Arc<CollectionService>,
+    pub experiment_service: Arc<ExperimentService>,
+    pub global_chunking: PerBackendChunkConfig,
     pub preprocessor_catalog: Arc<PreprocessorCatalog>,
 }
 
@@ -23,7 +23,11 @@ impl IngestionDepsOverrideResolver for EngineIngestionDepsResolver {
     async fn resolve_for_collection(
         &self,
         collection_id: &str,
-    ) -> Result<(PerBackendChunkers, Option<ShadowContext>, Option<Arc<dyn Preprocessor>>)> {
+    ) -> Result<(
+        PerBackendChunkers,
+        Option<ShadowContext>,
+        Option<Arc<dyn Preprocessor>>,
+    )> {
         let col_info = match self.collection_service.get(collection_id).await {
             Ok(info) => info,
             Err(_) => {
@@ -45,13 +49,11 @@ impl IngestionDepsOverrideResolver for EngineIngestionDepsResolver {
             match self.experiment_service.get(collection_id, &exp_id).await {
                 Ok(exp) if exp.status == ExperimentStatus::Active => {
                     let shadow_col_id = exp.shadow_namespace(collection_id);
-                    let shadow_chunkers = resolve_chunkers(
-                        Some(&exp.challenger_config),
-                        &self.global_chunking,
-                    )?;
+                    let shadow_chunkers =
+                        resolve_chunkers(Some(&exp.challenger_config), &self.global_chunking)?;
                     Some(ShadowContext {
-                        experiment_id:       exp.id,
-                        chunkers:            shadow_chunkers,
+                        experiment_id: exp.id,
+                        chunkers: shadow_chunkers,
                         shadow_collection_id: shadow_col_id,
                     })
                 }
@@ -83,7 +85,7 @@ pub(crate) fn resolve_chunkers(
         .unwrap_or(&global_config.vector);
     Ok(PerBackendChunkers {
         vector: registry.build(vector_cfg)?,
-        graph:  registry.build(graph_cfg)?,
-        tree:   registry.build(tree_cfg)?,
+        graph: registry.build(graph_cfg)?,
+        tree: registry.build(tree_cfg)?,
     })
 }

@@ -1,8 +1,8 @@
-use async_trait::async_trait;
-use crate::Result;
 use crate::types::{
     CreateOperationResult, IngestionOperation, IngestionReport, IngestionSubmission, OperationId,
 };
+use crate::Result;
+use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
 /// Durable store for ingestion operation lifecycle state.
@@ -15,7 +15,10 @@ pub trait OperationStore: Send + Sync {
     /// Create a new operation from a submission, or return the existing
     /// operation for the same idempotency key. `CreateOperationResult::is_new`
     /// distinguishes the two so callers can avoid enqueueing duplicate work.
-    async fn create_or_get(&self, submission: &IngestionSubmission) -> Result<CreateOperationResult>;
+    async fn create_or_get(
+        &self,
+        submission: &IngestionSubmission,
+    ) -> Result<CreateOperationResult>;
 
     /// Transition `Accepted -> Running`.
     async fn mark_running(&self, id: &OperationId, started_at: DateTime<Utc>) -> Result<()>;

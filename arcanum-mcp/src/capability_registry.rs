@@ -1,6 +1,6 @@
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::RwLock;
-use serde_json::Value;
 use tracing::instrument;
 
 #[derive(Debug, Clone)]
@@ -11,7 +11,11 @@ pub struct ToolDefinition {
 }
 
 impl ToolDefinition {
-    pub fn new(name: impl Into<String>, description: impl Into<String>, input_schema: Value) -> Self {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
         Self {
             name: name.into(),
             description: description.into(),
@@ -27,7 +31,9 @@ pub struct CapabilityRegistry {
 
 impl CapabilityRegistry {
     pub fn new() -> Self {
-        Self { tools: RwLock::new(HashMap::new()) }
+        Self {
+            tools: RwLock::new(HashMap::new()),
+        }
     }
 
     #[instrument(skip(self, tool), fields(tool_name = %tool.name))]

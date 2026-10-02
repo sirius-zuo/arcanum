@@ -33,7 +33,10 @@ fn terminal_report_round_trips_original_content_uri() {
     let report = succeeded_report();
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["content_uri"], "s3://arcanum/raw/document-a/version-1");
-    assert_eq!(serde_json::from_value::<IngestionReport>(json).unwrap(), report);
+    assert_eq!(
+        serde_json::from_value::<IngestionReport>(json).unwrap(),
+        report
+    );
 }
 
 #[test]
@@ -131,5 +134,8 @@ fn unchanged_content_report_preserves_content_uri() {
     };
     let json = serde_json::to_value(&report).unwrap();
     assert_eq!(json["content_uri"], "s3://arcanum/raw/document-a/version-1");
-    assert_eq!(serde_json::from_value::<IngestionReport>(json).unwrap(), report);
+    assert_eq!(
+        serde_json::from_value::<IngestionReport>(json).unwrap(),
+        report
+    );
 }

@@ -1,7 +1,7 @@
-use arcanum_core::{traits::TextEnricher, types::*, Result, ArcanumError};
+use arcanum_core::{traits::TextEnricher, types::*, ArcanumError, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
 /// spaCy NLP pipeline via a local HTTP server.
 /// Implements TextEnricher for ExtractEntities intent only.
@@ -29,11 +29,16 @@ impl TextEnricher for SpacyProvider {
                 "spaCy provider only supports ExtractEntities".to_string(),
             ))
         } else {
-            let resp: serde_json::Value = self.client
+            let resp: serde_json::Value = self
+                .client
                 .post(format!("{}/process", self.base_url))
                 .json(&serde_json::json!({ "text": request.text, "pipeline": "ner" }))
-                .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-                .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
+                .send()
+                .await
+                .map_err(|e| ArcanumError::Enrichment(e.to_string()))?
+                .json()
+                .await
+                .map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
             let text_str = resp["text"].as_str().unwrap_or("").to_string();
             let entities: Vec<serde_json::Value> = resp["ents"]
                 .as_array()

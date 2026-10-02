@@ -1,14 +1,20 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
-pub struct FixedSizeChunker { chunk_size: usize, overlap: usize }
+pub struct FixedSizeChunker {
+    chunk_size: usize,
+    overlap: usize,
+}
 
 impl FixedSizeChunker {
     pub fn new(chunk_size: usize, overlap: usize) -> Self {
         assert!(overlap < chunk_size);
-        Self { chunk_size, overlap }
+        Self {
+            chunk_size,
+            overlap,
+        }
     }
 }
 
@@ -17,7 +23,9 @@ impl Chunker for FixedSizeChunker {
     #[instrument(skip(self, doc), fields(chunker = "fixed_size", chunk_size = self.chunk_size, overlap = self.overlap, input_len = doc.content.len(), chunk_count), err)]
     async fn chunk(&self, doc: &RawDocument) -> Result<Vec<Chunk>> {
         let text = String::from_utf8_lossy(&doc.content);
-        if text.trim().is_empty() { return Ok(vec![]); }
+        if text.trim().is_empty() {
+            return Ok(vec![]);
+        }
         let chars: Vec<char> = text.chars().collect();
         let step = self.chunk_size - self.overlap;
         let mut chunks = vec![];
@@ -29,7 +37,8 @@ impl Chunker for FixedSizeChunker {
             let trimmed = chunk_text.trim().to_string();
             if !trimmed.is_empty() {
                 chunks.push(Chunk {
-                    id: ChunkId::new(), text: trimmed,
+                    id: ChunkId::new(),
+                    text: trimmed,
                     document_id: doc.id.clone(),
                     collection_id: CollectionId("default".into()),
                     position: ChunkPosition { start, end, index },
@@ -38,11 +47,14 @@ impl Chunker for FixedSizeChunker {
                 });
                 index += 1;
             }
-            if end == chars.len() { break; }
+            if end == chars.len() {
+                break;
+            }
             start += step;
         }
         tracing::Span::current().record("chunk_count", chunks.len());
-        metrics::histogram!("arcanum_chunk_count", "chunker" => "fixed").record(chunks.len() as f64);
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "fixed")
+            .record(chunks.len() as f64);
         Ok(chunks)
     }
 }

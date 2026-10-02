@@ -14,11 +14,13 @@ pub mod strategies {
 pub use cache::QueryCache;
 pub use fusion::{LearnedFusion, RrfFusion, WeightedFusion};
 pub use orchestrator::{classify_query, OrchestratorMode, RetrievalOrchestrator};
+pub use processor::{Citation, CitationGenerator, Deduplicator};
+pub use reranker::{CrossEncoderReranker, LlmReranker, NullReranker, ScoreFusionReranker};
 pub use strategies::bm25::Bm25Retriever;
 pub use strategies::colbert::ColBertRetriever;
 pub use strategies::graph::GraphRetriever;
 pub use strategies::raptor::RaptorRetriever;
 pub use strategies::vector::VectorRetriever;
-pub use processor::{Citation, CitationGenerator, Deduplicator};
-pub use reranker::{CrossEncoderReranker, LlmReranker, NullReranker, ScoreFusionReranker};
-pub use transformer::{HydeTransformer, MultiQueryTransformer, QueryRewriteTransformer, QueryTransformer};
+pub use transformer::{
+    HydeTransformer, MultiQueryTransformer, QueryRewriteTransformer, QueryTransformer,
+};

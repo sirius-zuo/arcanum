@@ -1,11 +1,8 @@
-use async_trait::async_trait;
 use crate::{
-    types::{
-        ChunkId, DocumentId, EntityId, TreeNodeId,
-        ChunkMetadataRecord, ProofChain, GcReport,
-    },
+    types::{ChunkId, ChunkMetadataRecord, DocumentId, EntityId, GcReport, ProofChain, TreeNodeId},
     Result,
 };
+use async_trait::async_trait;
 
 #[async_trait]
 pub trait EvidenceResolver: Send + Sync {
@@ -14,9 +11,9 @@ pub trait EvidenceResolver: Send + Sync {
     async fn resolve_entity(&self, entity_id: &EntityId) -> Result<ProofChain>;
     async fn resolve_relation(
         &self,
-        source_id:     &EntityId,
+        source_id: &EntityId,
         relation_type: &str,
-        target_id:     &EntityId,
+        target_id: &EntityId,
     ) -> Result<ProofChain>;
 }
 
@@ -24,11 +21,7 @@ pub trait EvidenceResolver: Send + Sync {
 pub trait ChunkMetadataStore: Send + Sync {
     async fn put(&self, record: &ChunkMetadataRecord) -> Result<()>;
     async fn get(&self, chunk_id: &ChunkId) -> Result<Option<ChunkMetadataRecord>>;
-    async fn delete_by_source_uri(
-        &self,
-        collection_id: &str,
-        source_uri:    &str,
-    ) -> Result<()>;
+    async fn delete_by_source_uri(&self, collection_id: &str, source_uri: &str) -> Result<()>;
     /// Delete all chunk_metadata rows belonging to a specific document version, returning
     /// the chunk IDs that were removed. Unlike `delete_by_source_uri`, this is scoped to a
     /// single version, so it is safe to call even when other versions of the same document

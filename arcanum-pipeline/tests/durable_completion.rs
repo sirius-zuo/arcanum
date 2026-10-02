@@ -10,8 +10,8 @@
 use arcanum_core::traits::{DocumentVersionStore, OperationStore, ProgressEmitter};
 use arcanum_core::types::{
     CollectionId, DocumentEntry, DocumentId, DocumentVersion, IngestionOutcome,
-    IngestionSubmission, IngestionTask, OperationId, OperationStatus, VersioningPolicy,
-    VersionStatus,
+    IngestionSubmission, IngestionTask, OperationId, OperationStatus, VersionStatus,
+    VersioningPolicy,
 };
 use arcanum_core::ArcanumError;
 use arcanum_ingestion::operations::sqlite::SqliteOperationStore;
@@ -89,7 +89,11 @@ fn stub_deps() -> Arc<PipelineDeps> {
         ) -> arcanum_core::Result<Vec<arcanum_core::traits::ScoredChunk>> {
             Ok(vec![])
         }
-        async fn delete(&self, _: &str, _: &[arcanum_core::types::ChunkId]) -> arcanum_core::Result<()> {
+        async fn delete(
+            &self,
+            _: &str,
+            _: &[arcanum_core::types::ChunkId],
+        ) -> arcanum_core::Result<()> {
             Ok(())
         }
         async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> {
@@ -234,7 +238,11 @@ impl DocumentVersionStore for FixedVersionStore {
     async fn get_versioning_policy(&self, _: &str) -> arcanum_core::Result<VersioningPolicy> {
         Ok(VersioningPolicy::Replace)
     }
-    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> arcanum_core::Result<()> {
+    async fn set_versioning_policy(
+        &self,
+        _: &str,
+        _: VersioningPolicy,
+    ) -> arcanum_core::Result<()> {
         Ok(())
     }
     async fn delete_by_source_uri(&self, _: &str, _: &str) -> arcanum_core::Result<()> {
@@ -243,7 +251,11 @@ impl DocumentVersionStore for FixedVersionStore {
     async fn list_collections(&self) -> arcanum_core::Result<Vec<String>> {
         Ok(vec![])
     }
-    async fn get_version(&self, _: &DocumentId, _: u32) -> arcanum_core::Result<Option<DocumentVersion>> {
+    async fn get_version(
+        &self,
+        _: &DocumentId,
+        _: u32,
+    ) -> arcanum_core::Result<Option<DocumentVersion>> {
         Ok(None)
     }
     async fn list_documents(&self, _: &str) -> arcanum_core::Result<Vec<DocumentEntry>> {
@@ -417,12 +429,18 @@ async fn durable_completion_failed_operation_is_terminal_and_not_re_enqueued() {
     // Terminal Failed is persisted.
     let op = store.get(&op_id).await.expect("get").expect("op exists");
     assert_eq!(op.status, OperationStatus::Failed);
-    assert!(op.terminal_report.is_some(), "terminal report must be persisted");
+    assert!(
+        op.terminal_report.is_some(),
+        "terminal report must be persisted"
+    );
 
     // A retry-shaped re-run (the old worker re-enqueue path) is rejected by
     // the durable guard: a terminal Failed cannot transition back to Running.
     let mark_err = store.mark_running(&op_id, chrono::Utc::now()).await;
-    assert!(mark_err.is_err(), "terminal Failed must not be markable Running");
+    assert!(
+        mark_err.is_err(),
+        "terminal Failed must not be markable Running"
+    );
     let op = store.get(&op_id).await.expect("get").expect("op exists");
     assert_eq!(
         op.status,
@@ -450,22 +468,25 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
     // bare `host:port`, and a filesystem path — the exact shape of
     // sqlx/reqwest failures.
     let mut registry = ArcanumPipelineRegistry::new();
-    registry.register("failing_load", Arc::new(|_state, _deps| {
-        PipelineDAG::new().add_stage(PipelineStage {
-            id: "load",
-            deps: vec![],
-            run: Arc::new(|_ctx| {
-                Box::pin(async move {
-                    Err(ArcanumError::Storage(
-                        "load failed: GET https://data.example.com/private/doc.pdf \
+    registry.register(
+        "failing_load",
+        Arc::new(|_state, _deps| {
+            PipelineDAG::new().add_stage(PipelineStage {
+                id: "load",
+                deps: vec![],
+                run: Arc::new(|_ctx| {
+                    Box::pin(async move {
+                        Err(ArcanumError::Storage(
+                            "load failed: GET https://data.example.com/private/doc.pdf \
                          -> connection refused at db.example.com:5432; \
                          temp file /var/lib/arcanum/cache/x.db"
-                            .to_string(),
-                    ))
-                })
-            }),
-        })
-    }));
+                                .to_string(),
+                        ))
+                    })
+                }),
+            })
+        }),
+    );
     let registry = Arc::new(registry);
 
     let result = run_task(
@@ -521,8 +542,7 @@ async fn durable_completion_failed_message_sanitizes_url_and_path() {
     );
     // The message IS the generic safe phrase — no heuristic can regress.
     assert_eq!(
-        msg,
-        "STORAGE_FAILURE: pipeline stage failed",
+        msg, "STORAGE_FAILURE: pipeline stage failed",
         "persisted message must be the generic safe phrase built only from the code"
     );
 }

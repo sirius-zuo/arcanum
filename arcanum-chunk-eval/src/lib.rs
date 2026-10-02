@@ -1,7 +1,7 @@
-pub mod inspect;
 pub mod benchmark;
+pub mod inspect;
 pub mod metrics;
 
-pub use inspect::{InspectRequest, InspectResult, AnnotatedChunk, inspect};
-pub use benchmark::{BenchmarkJob, BenchmarkMetrics, LabeledQuery, run_benchmark};
+pub use benchmark::{run_benchmark, BenchmarkJob, BenchmarkMetrics, LabeledQuery};
+pub use inspect::{inspect, AnnotatedChunk, InspectRequest, InspectResult};
 pub use metrics::ExperimentMetrics;

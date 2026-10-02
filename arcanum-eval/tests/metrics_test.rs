@@ -1,5 +1,5 @@
-use arcanum_eval::{compute_hit_rate_at_k, compute_mrr};
 use arcanum_core::types::*;
+use arcanum_eval::{compute_hit_rate_at_k, compute_mrr};
 
 #[test]
 fn test_hit_rate_perfect_retrieval() {

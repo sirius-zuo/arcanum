@@ -10,12 +10,15 @@ pub struct EventBus {
 
 impl EventBus {
     pub fn new() -> Self {
-        Self { senders: RwLock::new(HashMap::new()) }
+        Self {
+            senders: RwLock::new(HashMap::new()),
+        }
     }
 
     pub async fn subscribe(&self, topic: &str) -> broadcast::Receiver<Value> {
         let mut map = self.senders.write().await;
-        let sender = map.entry(topic.to_string())
+        let sender = map
+            .entry(topic.to_string())
             .or_insert_with(|| broadcast::channel(128).0);
         sender.subscribe()
     }

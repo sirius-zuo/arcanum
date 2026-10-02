@@ -1,9 +1,14 @@
-use axum::{extract::State, http::{HeaderMap, StatusCode}, response::IntoResponse, Json};
-use serde::Serialize;
-use std::sync::Arc;
+use crate::routes::auth::validate_bearer;
 use arcanum_core::traits::GraphQuery;
 use arcanum_engine::ArcanumEngine;
-use crate::routes::auth::validate_bearer;
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
+};
+use serde::Serialize;
+use std::sync::Arc;
 
 #[derive(serde::Deserialize)]
 pub struct GraphQueryParams {
@@ -49,11 +54,23 @@ pub async fn get_graph(
     };
 
     let Some(store) = eng.graph_store.as_ref() else {
-        return (StatusCode::OK, Json(GraphView { nodes: vec![], edges: vec![] })).into_response();
+        return (
+            StatusCode::OK,
+            Json(GraphView {
+                nodes: vec![],
+                edges: vec![],
+            }),
+        )
+            .into_response();
     };
 
     // All entities: a query with no name/type filter matches everything.
-    let q = GraphQuery { entity_name: None, entity_type: None, max_hops: 1, relation_filter: None };
+    let q = GraphQuery {
+        entity_name: None,
+        entity_type: None,
+        max_hops: 1,
+        relation_filter: None,
+    };
     let entities = store.query(collection, &q).await.unwrap_or_default();
 
     let mut nodes = Vec::new();
@@ -89,9 +106,15 @@ mod tests {
     async fn graph_requires_auth() {
         // No engine (test mode) → fail-closed 401.
         let app = build_app(None);
-        let resp = app.oneshot(
-            Request::builder().uri("/api/v1/graph").body(Body::empty()).unwrap()
-        ).await.unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/graph")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -100,12 +123,21 @@ mod tests {
         // Unauthenticated → 401 fires before collection_id check, which is fine.
         // With auth it would be 400, but we verify the route is no longer silently returning 200.
         let app = build_app(None);
-        let resp = app.oneshot(
-            Request::builder().uri("/api/v1/graph").body(Body::empty()).unwrap()
-        ).await.unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/graph")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         // Unauthenticated → 401 fires before collection_id check, which is fine.
         // With auth it would be 400, but we verify the route is no longer silently returning 200.
-        assert_ne!(resp.status(), StatusCode::OK,
-            "GET /api/v1/graph without collection_id must not return 200");
+        assert_ne!(
+            resp.status(),
+            StatusCode::OK,
+            "GET /api/v1/graph without collection_id must not return 200"
+        );
     }
 }

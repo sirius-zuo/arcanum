@@ -1,4 +1,4 @@
-use arcanum_core::{Result, ArcanumError};
+use arcanum_core::{ArcanumError, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -19,14 +19,19 @@ pub struct IngestionSourceService {
 
 impl IngestionSourceService {
     pub fn new() -> Self {
-        Self { sources: Arc::new(RwLock::new(vec![])) }
+        Self {
+            sources: Arc::new(RwLock::new(vec![])),
+        }
     }
 
     #[instrument(skip(self, source), fields(source_id = %source.id), err)]
     pub async fn create(&self, source: IngestionSource) -> Result<()> {
         let mut sources = self.sources.write().await;
         if sources.iter().any(|s| s.id == source.id) {
-            return Err(ArcanumError::Storage(format!("source '{}' already exists", source.id)));
+            return Err(ArcanumError::Storage(format!(
+                "source '{}' already exists",
+                source.id
+            )));
         }
         sources.push(source);
         Ok(())

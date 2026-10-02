@@ -1,8 +1,8 @@
-use arcanum_core::{traits::*, types::*, Result, ArcanumError};
+use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
+use metrics;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use metrics;
 
 pub struct OpenAiProvider {
     api_key: String,
@@ -73,19 +73,28 @@ impl Embedder for OpenAiProvider {
         let result: Result<Vec<Vector>> = async {
             let mut results = Vec::new();
             for text in &texts {
-                let resp: OaiEmbedResponse = self.client
+                let resp: OaiEmbedResponse = self
+                    .client
                     .post("https://api.openai.com/v1/embeddings")
                     .bearer_auth(&self.api_key)
-                    .json(&OaiEmbedRequest { input: text, model: &self.embed_model })
-                    .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                    .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                    .json(&OaiEmbedRequest {
+                        input: text,
+                        model: &self.embed_model,
+                    })
+                    .send()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?;
                 if let Some(d) = resp.data.into_iter().next() {
                     results.push(Vector(d.embedding));
                 }
             }
             tracing::Span::current().record("dimension", self.dimension());
             Ok(results)
-        }.await;
+        }
+        .await;
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_model_calls_total", "provider" => "openai", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "openai", "operation" => "embed").record(start.elapsed().as_secs_f64());
@@ -107,17 +116,28 @@ impl TextEnricher for OpenAiProvider {
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let start = std::time::Instant::now();
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
-        let result = self.client
+        let result = self
+            .client
             .post("https://api.openai.com/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&OaiChatRequest {
                 model: &self.generate_model,
-                messages: vec![OaiMessage { role: "user", content: &prompt }],
+                messages: vec![OaiMessage {
+                    role: "user",
+                    content: &prompt,
+                }],
             })
-            .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json::<OaiChatResponse>().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+            .send()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()))?
+            .json::<OaiChatResponse>()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()));
         let result = result.map(|resp| {
-            let text = resp.choices.into_iter().next()
+            let text = resp
+                .choices
+                .into_iter()
+                .next()
                 .map(|c| c.message.content)
                 .unwrap_or_default();
             EnrichedText(text)

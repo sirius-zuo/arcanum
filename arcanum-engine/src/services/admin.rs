@@ -1,8 +1,8 @@
-use arcanum_core::{Result, ArcanumError};
+use crate::audit::{AuditEntry, AuditLogger};
+use crate::auth::AdminRole;
+use arcanum_core::{ArcanumError, Result};
 use std::sync::Arc;
 use tracing::instrument;
-use crate::audit::{AuditLogger, AuditEntry};
-use crate::auth::AdminRole;
 
 #[derive(Debug)]
 pub struct AdminService {
@@ -19,27 +19,30 @@ impl AdminService {
     #[instrument(skip(caller_role, required), fields(caller = ?caller_role, required = ?required), err)]
     pub fn require_role(caller_role: &AdminRole, required: &AdminRole) -> Result<()> {
         let rank = |r: &AdminRole| match r {
-            AdminRole::Admin    => 2,
+            AdminRole::Admin => 2,
             AdminRole::Operator => 1,
-            AdminRole::Tester   => 0,
+            AdminRole::Tester => 0,
         };
         if rank(caller_role) >= rank(required) {
             Ok(())
         } else {
             Err(ArcanumError::Auth(format!(
-                "requires {:?} role, caller has {:?}", required, caller_role
+                "requires {:?} role, caller has {:?}",
+                required, caller_role
             )))
         }
     }
 
     #[instrument(skip(self), fields(admin_user_id), err)]
     pub async fn rotate_keys(&self, admin_user_id: &str) -> Result<()> {
-        self.audit.log(AuditEntry {
-            operation: "rotate_keys".into(),
-            user_id: admin_user_id.to_string(),
-            collection_id: String::new(),
-            result: "ok".into(),
-        }).await;
+        self.audit
+            .log(AuditEntry {
+                operation: "rotate_keys".into(),
+                user_id: admin_user_id.to_string(),
+                collection_id: String::new(),
+                result: "ok".into(),
+            })
+            .await;
         Ok(())
     }
 }

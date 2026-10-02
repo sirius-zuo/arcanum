@@ -1,7 +1,7 @@
-use arcanum_core::{traits::TextEnricher, types::*, Result, ArcanumError};
+use arcanum_core::{traits::TextEnricher, types::*, ArcanumError, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
 /// GLiNER: lightweight entity extraction via a local `/ner` HTTP endpoint.
 /// Implements TextEnricher for ExtractEntities intent only.
@@ -29,11 +29,16 @@ impl TextEnricher for GlinerProvider {
                 "GLiNER only supports ExtractEntities".to_string(),
             ))
         } else {
-            let resp: serde_json::Value = self.client
+            let resp: serde_json::Value = self
+                .client
                 .post(format!("{}/ner", self.base_url))
                 .json(&serde_json::json!({ "text": request.text }))
-                .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-                .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
+                .send()
+                .await
+                .map_err(|e| ArcanumError::Enrichment(e.to_string()))?
+                .json()
+                .await
+                .map_err(|e| ArcanumError::Enrichment(e.to_string()))?;
             Ok(EnrichedText(resp.to_string()))
         };
         let status = if result.is_ok() { "ok" } else { "error" };

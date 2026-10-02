@@ -10,7 +10,10 @@ pub struct EnrichmentDispatcher {
 
 impl EnrichmentDispatcher {
     pub fn new(default: Arc<dyn TextEnricher>) -> Self {
-        Self { default, overrides: HashMap::new() }
+        Self {
+            default,
+            overrides: HashMap::new(),
+        }
     }
 
     pub fn with_override(mut self, intent: EnrichIntent, provider: Arc<dyn TextEnricher>) -> Self {
@@ -21,12 +24,12 @@ impl EnrichmentDispatcher {
 
 fn intent_key(intent: &EnrichIntent) -> String {
     match intent {
-        EnrichIntent::ContextPrefix   => "context_prefix".into(),
-        EnrichIntent::Summarize       => "summarize".into(),
+        EnrichIntent::ContextPrefix => "context_prefix".into(),
+        EnrichIntent::Summarize => "summarize".into(),
         EnrichIntent::ExtractEntities => "extract_entities".into(),
-        EnrichIntent::Caption         => "caption".into(),
-        EnrichIntent::Rerank          => "rerank".into(),
-        EnrichIntent::Custom(s)       => format!("custom:{}", s),
+        EnrichIntent::Caption => "caption".into(),
+        EnrichIntent::Rerank => "rerank".into(),
+        EnrichIntent::Custom(s) => format!("custom:{}", s),
     }
 }
 

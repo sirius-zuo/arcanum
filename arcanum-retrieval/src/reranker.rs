@@ -14,7 +14,11 @@ pub struct NullReranker;
 #[async_trait]
 impl Reranker for NullReranker {
     #[instrument(skip(self, chunks), fields(input_count = chunks.len()))]
-    async fn rerank(&self, _query: &Query, chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
+    async fn rerank(
+        &self,
+        _query: &Query,
+        chunks: Vec<RetrievedChunk>,
+    ) -> Result<Vec<RetrievedChunk>> {
         Ok(chunks)
     }
 }
@@ -31,8 +35,16 @@ pub struct ScoreFusionReranker;
 #[async_trait]
 impl Reranker for ScoreFusionReranker {
     #[instrument(skip(self, chunks), fields(input_count = chunks.len()))]
-    async fn rerank(&self, _query: &Query, mut chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
-        chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    async fn rerank(
+        &self,
+        _query: &Query,
+        mut chunks: Vec<RetrievedChunk>,
+    ) -> Result<Vec<RetrievedChunk>> {
+        chunks.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         Ok(chunks)
     }
 }
@@ -58,7 +70,11 @@ impl LlmReranker {
 #[async_trait]
 impl Reranker for LlmReranker {
     #[instrument(skip(self, chunks), fields(input_count = chunks.len(), output_count), err)]
-    async fn rerank(&self, query: &Query, chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
+    async fn rerank(
+        &self,
+        query: &Query,
+        chunks: Vec<RetrievedChunk>,
+    ) -> Result<Vec<RetrievedChunk>> {
         let mut scored = Vec::with_capacity(chunks.len());
         for mut chunk in chunks {
             let prompt = format!(
@@ -77,7 +93,11 @@ impl Reranker for LlmReranker {
             }
             scored.push(chunk);
         }
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         tracing::Span::current().record("output_count", scored.len());
         Ok(scored)
     }
@@ -107,32 +127,45 @@ impl CrossEncoderReranker {
 #[async_trait]
 impl Reranker for CrossEncoderReranker {
     #[instrument(skip(self, chunks), fields(input_count = chunks.len(), output_count), err)]
-    async fn rerank(&self, query: &Query, mut chunks: Vec<RetrievedChunk>) -> Result<Vec<RetrievedChunk>> {
-        if chunks.is_empty() { return Ok(chunks); }
+    async fn rerank(
+        &self,
+        query: &Query,
+        mut chunks: Vec<RetrievedChunk>,
+    ) -> Result<Vec<RetrievedChunk>> {
+        if chunks.is_empty() {
+            return Ok(chunks);
+        }
 
-        let texts: Vec<&str> = chunks.iter()
+        let texts: Vec<&str> = chunks
+            .iter()
             .map(|c| c.indexed_chunk.chunk.text.as_str())
             .collect();
 
         let body = serde_json::json!({ "query": query.text, "texts": texts });
         let url = format!("{}/rerank", self.base_url);
 
-        let resp = self.client
+        let resp = self
+            .client
             .post(&url)
             .json(&body)
             .send()
             .await
-            .map_err(|e| arcanum_core::ArcanumError::Config(format!("CrossEncoder HTTP error: {e}")))?;
+            .map_err(|e| {
+                arcanum_core::ArcanumError::Config(format!("CrossEncoder HTTP error: {e}"))
+            })?;
 
-        let scores: Vec<f32> = resp
-            .json()
-            .await
-            .map_err(|e| arcanum_core::ArcanumError::Config(format!("CrossEncoder parse error: {e}")))?;
+        let scores: Vec<f32> = resp.json().await.map_err(|e| {
+            arcanum_core::ArcanumError::Config(format!("CrossEncoder parse error: {e}"))
+        })?;
 
         for (chunk, score) in chunks.iter_mut().zip(scores.iter()) {
             chunk.score = *score;
         }
-        chunks.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        chunks.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         tracing::Span::current().record("output_count", chunks.len());
         Ok(chunks)
     }
@@ -150,7 +183,11 @@ mod tests {
                     text: text.to_string(),
                     document_id: DocumentId::new(),
                     collection_id: CollectionId("col".into()),
-                    position: ChunkPosition { start: 0, end: text.len(), index: 0 },
+                    position: ChunkPosition {
+                        start: 0,
+                        end: text.len(),
+                        index: 0,
+                    },
                     metadata: ChunkMetadata::default(),
                     provenance: Default::default(),
                 },
@@ -179,7 +216,11 @@ mod tests {
     async fn test_score_fusion_reranker_sorts_descending() {
         let r = ScoreFusionReranker;
         let q = Query::new("test");
-        let chunks = vec![make_chunk(0.3, "low"), make_chunk(0.9, "high"), make_chunk(0.6, "mid")];
+        let chunks = vec![
+            make_chunk(0.3, "low"),
+            make_chunk(0.9, "high"),
+            make_chunk(0.6, "mid"),
+        ];
         let result = r.rerank(&q, chunks).await.unwrap();
         assert_eq!(result.len(), 3);
         assert!(result[0].score >= result[1].score);

@@ -1,6 +1,6 @@
+use super::document::ChunkId;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use super::document::ChunkId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityId(pub Uuid);

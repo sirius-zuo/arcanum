@@ -1,11 +1,15 @@
-use arcanum_core::{traits::{CacheInvalidator, Embedder}, types::*, Result, ArcanumError};
+use arcanum_core::{
+    traits::{CacheInvalidator, Embedder},
+    types::*,
+    ArcanumError, Result,
+};
 use async_trait::async_trait;
+use metrics;
 use redis::AsyncCommands;
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::instrument;
-use metrics;
 
 pub struct EmbeddingCache {
     client: Arc<Mutex<redis::aio::MultiplexedConnection>>,
@@ -17,7 +21,9 @@ impl EmbeddingCache {
     pub async fn new(redis_url: &str, model_id: &str, dimension: usize) -> Result<Self> {
         let client = redis::Client::open(redis_url)
             .map_err(|e| ArcanumError::Config(format!("Redis connect error: {}", e)))?;
-        let conn = client.get_multiplexed_async_connection().await
+        let conn = client
+            .get_multiplexed_async_connection()
+            .await
             .map_err(|e| ArcanumError::Config(format!("Redis connection error: {}", e)))?;
         Ok(Self {
             client: Arc::new(Mutex::new(conn)),
@@ -41,7 +47,9 @@ impl EmbeddingCache {
         let start = std::time::Instant::now();
         let key = Self::cache_key(text, &self.model_id, self.dimension);
         let mut conn = self.client.lock().await;
-        let val: Option<String> = conn.get(&key).await
+        let val: Option<String> = conn
+            .get(&key)
+            .await
             .map_err(|e| ArcanumError::Config(format!("Redis get error: {}", e)))?;
         let result = match val {
             None => Ok(None),
@@ -65,10 +73,13 @@ impl EmbeddingCache {
         let serialized = serde_json::to_string(&vector.0)
             .map_err(|e| ArcanumError::Config(format!("cache serialize error: {}", e)))?;
         let mut conn = self.client.lock().await;
-        let result: std::result::Result<(), _> = conn.set_ex(&key, serialized, 3600).await
+        let result: std::result::Result<(), _> = conn
+            .set_ex(&key, serialized, 3600)
+            .await
             .map_err(|e| ArcanumError::Config(format!("Redis set error: {}", e)));
         let status = if result.is_ok() { "ok" } else { "error" };
-        metrics::counter!("arcanum_cache_ops_total", "op" => "embed_set", "result" => status).increment(1);
+        metrics::counter!("arcanum_cache_ops_total", "op" => "embed_set", "result" => status)
+            .increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "redis", "operation" => "embed_cache_set").record(start.elapsed().as_secs_f64());
         result.map(|_| ())
     }
@@ -77,7 +88,9 @@ impl EmbeddingCache {
         let text_hash = Self::text_hash(text);
         let src_key = format!("embed_src:{}", source_uri);
         let mut conn = self.client.lock().await;
-        let _: () = conn.sadd(&src_key, &text_hash).await
+        let _: () = conn
+            .sadd(&src_key, &text_hash)
+            .await
             .map_err(|e| ArcanumError::Config(format!("Redis sadd error: {}", e)))?;
         Ok(())
     }
@@ -122,7 +135,10 @@ impl Embedder for CachingEmbedder {
         for (i, text) in texts.iter().enumerate() {
             match self.cache.get(text).await {
                 Ok(Some(v)) => out.push(Some(v)),
-                Ok(None) => { out.push(None); miss_idx.push(i); }
+                Ok(None) => {
+                    out.push(None);
+                    miss_idx.push(i);
+                }
                 Err(e) => {
                     tracing::warn!(err = %e, "embedding cache get failed; treating as miss");
                     out.push(None);
@@ -136,7 +152,8 @@ impl Embedder for CachingEmbedder {
             if vectors.len() != miss_idx.len() {
                 return Err(ArcanumError::Embedding(format!(
                     "inner embedder returned {} vectors for {} texts",
-                    vectors.len(), miss_idx.len()
+                    vectors.len(),
+                    miss_idx.len()
                 )));
             }
             for (&i, v) in miss_idx.iter().zip(vectors) {
@@ -148,11 +165,15 @@ impl Embedder for CachingEmbedder {
             }
         }
         out.into_iter()
-            .map(|v| v.ok_or_else(|| ArcanumError::Embedding("embedding output slot unfilled".into())))
+            .map(|v| {
+                v.ok_or_else(|| ArcanumError::Embedding("embedding output slot unfilled".into()))
+            })
             .collect()
     }
 
-    fn dimension(&self) -> usize { self.inner.dimension() }
+    fn dimension(&self) -> usize {
+        self.inner.dimension()
+    }
 }
 
 #[cfg(test)]
@@ -178,7 +199,8 @@ mod tests {
     #[tokio::test]
     #[ignore]
     async fn test_embedding_cache_round_trip() {
-        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
         let cache = EmbeddingCache::new(&url, "test-model", 3).await.unwrap();
         let v = Vector(vec![0.1, 0.2, 0.3]);
         cache.set("hello world", v).await.unwrap();
@@ -197,31 +219,54 @@ mod tests {
         #[async_trait]
         impl Embedder for CountingEmbedder {
             async fn embed(&self, texts: Vec<String>) -> Result<Vec<Vector>> {
-                self.0.fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
+                self.0
+                    .fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
                 // Per-text distinguishable vector so misassigned output slots fail the test.
-                Ok(texts.iter().map(|t| Vector(vec![t.as_bytes()[0] as f32, 0.0, 0.0])).collect())
+                Ok(texts
+                    .iter()
+                    .map(|t| Vector(vec![t.as_bytes()[0] as f32, 0.0, 0.0]))
+                    .collect())
             }
-            fn dimension(&self) -> usize { 3 }
+            fn dimension(&self) -> usize {
+                3
+            }
         }
-        let url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
+        let url =
+            std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://localhost:6379".to_string());
         // Use unique model_id per test run to ensure cache isolation (avoid cross-run pollution)
-        let model_id = format!("caching-embedder-test-{}", std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let model_id = format!(
+            "caching-embedder-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
         let cache = Arc::new(EmbeddingCache::new(&url, &model_id, 3).await.unwrap());
         let inner = Arc::new(CountingEmbedder(std::sync::atomic::AtomicUsize::new(0)));
         let counter = inner.clone();
         let embedder = CachingEmbedder::new(inner, cache);
-        embedder.embed(vec!["alpha".into(), "beta".into()]).await.unwrap();
+        embedder
+            .embed(vec!["alpha".into(), "beta".into()])
+            .await
+            .unwrap();
         // Second call: alpha+beta cached, only gamma reaches the inner embedder.
         let texts = vec!["alpha".to_string(), "gamma".to_string(), "beta".to_string()];
         let out = embedder.embed(texts.clone()).await.unwrap();
         assert_eq!(out.len(), 3);
         // Output order must match input order, mixing cache hits (alpha, beta) and a miss (gamma).
         for (i, text) in texts.iter().enumerate() {
-            assert_eq!(out[i].0[0], text.as_bytes()[0] as f32,
-                "out[{}] should be the vector for {:?}", i, text);
+            assert_eq!(
+                out[i].0[0],
+                text.as_bytes()[0] as f32,
+                "out[{}] should be the vector for {:?}",
+                i,
+                text
+            );
         }
-        assert_eq!(counter.0.load(std::sync::atomic::Ordering::SeqCst), 3,
-            "2 misses on first call + 1 miss on second");
+        assert_eq!(
+            counter.0.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "2 misses on first call + 1 miss on second"
+        );
     }
 }

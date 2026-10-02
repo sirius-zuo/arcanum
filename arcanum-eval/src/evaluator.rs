@@ -1,13 +1,13 @@
+use crate::metrics::{compute_hit_rate_at_k, compute_mrr, compute_ndcg_at_k};
 use arcanum_core::{
-    traits::{Evaluator, TextEnricher, EvalMetrics, GroundTruth},
+    traits::{EvalMetrics, Evaluator, GroundTruth, TextEnricher},
     types::{ChunkId, Query, RetrievedChunk},
     Result,
 };
 use async_trait::async_trait;
-use std::sync::Arc;
-use crate::metrics::{compute_hit_rate_at_k, compute_mrr, compute_ndcg_at_k};
-use tracing::instrument;
 use metrics;
+use std::sync::Arc;
+use tracing::instrument;
 
 pub struct StandardEvaluator {
     pub enricher: Arc<dyn TextEnricher>,
@@ -30,7 +30,8 @@ impl Evaluator for StandardEvaluator {
     ) -> Result<EvalMetrics> {
         let result = do_evaluate(self, results, ground_truths).await;
         let status = if result.is_ok() { "ok" } else { "error" };
-        metrics::counter!("arcanum_eval_runs_total", "metric" => "standard", "status" => status).increment(1);
+        metrics::counter!("arcanum_eval_runs_total", "metric" => "standard", "status" => status)
+            .increment(1);
         result
     }
 }
@@ -40,28 +41,34 @@ async fn do_evaluate(
     results: &[(Query, Vec<RetrievedChunk>)],
     ground_truths: &[GroundTruth],
 ) -> Result<EvalMetrics> {
-        let n = results.len() as f32;
-        if n == 0.0 {
-            return Ok(EvalMetrics { hit_rate_at_k: 0.0, mrr: 0.0, ndcg_at_k: 0.0, k: state.k });
-        }
-        let mut hr = 0f32;
-        let mut mrr = 0f32;
-        let mut ndcg = 0f32;
-        for ((_, chunks), gt) in results.iter().zip(ground_truths.iter()) {
-            let retrieved_ids: Vec<ChunkId> = chunks.iter()
-                .map(|c| c.indexed_chunk.chunk.id.clone())
-                .collect();
-            hr   += compute_hit_rate_at_k(&retrieved_ids, &gt.relevant_chunk_ids, state.k);
-            mrr  += compute_mrr(&retrieved_ids, &gt.relevant_chunk_ids);
-            ndcg += compute_ndcg_at_k(&retrieved_ids, &gt.relevant_chunk_ids, state.k);
-        }
-        Ok(EvalMetrics {
-            hit_rate_at_k: hr / n,
-            mrr: mrr / n,
-            ndcg_at_k: ndcg / n,
+    let n = results.len() as f32;
+    if n == 0.0 {
+        return Ok(EvalMetrics {
+            hit_rate_at_k: 0.0,
+            mrr: 0.0,
+            ndcg_at_k: 0.0,
             k: state.k,
-        })
+        });
     }
+    let mut hr = 0f32;
+    let mut mrr = 0f32;
+    let mut ndcg = 0f32;
+    for ((_, chunks), gt) in results.iter().zip(ground_truths.iter()) {
+        let retrieved_ids: Vec<ChunkId> = chunks
+            .iter()
+            .map(|c| c.indexed_chunk.chunk.id.clone())
+            .collect();
+        hr += compute_hit_rate_at_k(&retrieved_ids, &gt.relevant_chunk_ids, state.k);
+        mrr += compute_mrr(&retrieved_ids, &gt.relevant_chunk_ids);
+        ndcg += compute_ndcg_at_k(&retrieved_ids, &gt.relevant_chunk_ids, state.k);
+    }
+    Ok(EvalMetrics {
+        hit_rate_at_k: hr / n,
+        mrr: mrr / n,
+        ndcg_at_k: ndcg / n,
+        k: state.k,
+    })
+}
 
 #[cfg(test)]
 mod tests {

@@ -1,18 +1,29 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
 pub struct HierarchicalChunker;
 
 impl HierarchicalChunker {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self {
+        Self
+    }
 }
 
-fn build_chunk(text: String, doc: &RawDocument, index: usize, title: String, source_text: &str) -> Chunk {
+fn build_chunk(
+    text: String,
+    doc: &RawDocument,
+    index: usize,
+    title: String,
+    source_text: &str,
+) -> Chunk {
     let mut metadata = std::collections::HashMap::new();
     if !title.is_empty() {
-        metadata.insert("section_title".to_string(), serde_json::Value::String(title));
+        metadata.insert(
+            "section_title".to_string(),
+            serde_json::Value::String(title),
+        );
     }
     let start = source_text.find(&text).unwrap_or(0);
     let end = start + text.len();
@@ -68,7 +79,8 @@ impl Chunker for HierarchicalChunker {
             })
             .collect();
         tracing::Span::current().record("chunk_count", chunks.len());
-        metrics::histogram!("arcanum_chunk_count", "chunker" => "hierarchical").record(chunks.len() as f64);
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "hierarchical")
+            .record(chunks.len() as f64);
         Ok(chunks)
     }
 }
@@ -94,9 +106,10 @@ mod tests {
         let doc = make_doc(md);
         let chunks = chunker.chunk(&doc).await.unwrap();
         assert_eq!(chunks.len(), 2);
-        let titles: Vec<&str> = chunks.iter().filter_map(|c| {
-            c.metadata.0.get("section_title").and_then(|v| v.as_str())
-        }).collect();
+        let titles: Vec<&str> = chunks
+            .iter()
+            .filter_map(|c| c.metadata.0.get("section_title").and_then(|v| v.as_str()))
+            .collect();
         assert!(titles.contains(&"Introduction"));
         assert!(titles.contains(&"Background"));
     }

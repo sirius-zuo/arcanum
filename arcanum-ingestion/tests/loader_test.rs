@@ -1,5 +1,5 @@
-use arcanum_ingestion::{FileLoader, RawLoader, HttpLoader};
 use arcanum_core::traits::{DocumentLoader, Source};
+use arcanum_ingestion::{FileLoader, HttpLoader, RawLoader};
 use std::io::Write;
 
 #[tokio::test]
@@ -57,7 +57,7 @@ async fn test_http_loader_returns_error_on_connection_refused() {
 }
 
 use arcanum_core::traits::{CloudProvider, ConnectorKind};
-use arcanum_ingestion::loaders::{DatabaseLoader, CloudStorageLoader, GitLoader, ConnectorLoader};
+use arcanum_ingestion::loaders::{CloudStorageLoader, ConnectorLoader, DatabaseLoader, GitLoader};
 
 #[test]
 fn test_stub_loaders_support_correct_variants() {

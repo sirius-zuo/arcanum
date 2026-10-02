@@ -1,10 +1,10 @@
-use arcanum_core::{types::*, Result, ArcanumError};
+use crate::audit::{AuditEntry, AuditLogger};
+use crate::auth::{ApiKeyClaims, AuthMiddleware};
+use arcanum_core::{types::*, ArcanumError, Result};
 use arcanum_middleware::CircuitBreaker;
-use arcanum_retrieval::{RetrievalOrchestrator, QueryCache};
+use arcanum_retrieval::{QueryCache, RetrievalOrchestrator};
 use std::sync::Arc;
 use tracing::instrument;
-use crate::audit::{AuditLogger, AuditEntry};
-use crate::auth::{AuthMiddleware, ApiKeyClaims};
 
 pub struct RetrievalService {
     audit: Arc<AuditLogger>,
@@ -27,7 +27,13 @@ impl RetrievalService {
         audit: Arc<AuditLogger>,
         vector_store_cb: Arc<CircuitBreaker>,
     ) -> Self {
-        Self { audit, auth, orchestrator, cache: None, vector_store_cb }
+        Self {
+            audit,
+            auth,
+            orchestrator,
+            cache: None,
+            vector_store_cb,
+        }
     }
 
     pub fn with_cache(mut self, cache: Arc<QueryCache>) -> Self {
@@ -37,30 +43,34 @@ impl RetrievalService {
 
     #[instrument(skip(self, claims), fields(collection_id, top_k = query.top_k), err)]
     pub async fn search(&self, query: Query, claims: &ApiKeyClaims) -> Result<RetrievalResult> {
-        let collection_id = query.collection_id.as_ref()
-            .ok_or_else(|| ArcanumError::Config("search requires an explicit collection_id".into()))?;
+        let collection_id = query.collection_id.as_ref().ok_or_else(|| {
+            ArcanumError::Config("search requires an explicit collection_id".into())
+        })?;
         tracing::Span::current().record("collection_id", &collection_id.0 as &str);
         if !self.auth.can_access_collection(claims, &collection_id.0) {
             return Err(ArcanumError::Auth(format!(
-                "not authorised to search collection '{}'", collection_id.0
+                "not authorised to search collection '{}'",
+                collection_id.0
             )));
         }
 
         if !self.vector_store_cb.allow_request() {
             return Err(ArcanumError::Retrieval(
-                "circuit open: vector store unavailable".into()
+                "circuit open: vector store unavailable".into(),
             ));
         }
 
         let cache_key = QueryCache::cache_key(&query);
         if let Some(cache) = &self.cache {
             if let Some(cached) = cache.get(&cache_key) {
-                self.audit.log(AuditEntry {
-                    operation: "search".into(),
-                    user_id: claims.user_id.clone(),
-                    collection_id: collection_id.0.clone(),
-                    result: "ok".into(),
-                }).await;
+                self.audit
+                    .log(AuditEntry {
+                        operation: "search".into(),
+                        user_id: claims.user_id.clone(),
+                        collection_id: collection_id.0.clone(),
+                        result: "ok".into(),
+                    })
+                    .await;
                 return Ok(cached);
             }
         }
@@ -80,12 +90,14 @@ impl RetrievalService {
             cache.insert(cache_key, result.clone());
         }
 
-        self.audit.log(AuditEntry {
-            operation: "search".into(),
-            user_id: claims.user_id.clone(),
-            collection_id: collection_id.0.clone(),
-            result: "ok".into(),
-        }).await;
+        self.audit
+            .log(AuditEntry {
+                operation: "search".into(),
+                user_id: claims.user_id.clone(),
+                collection_id: collection_id.0.clone(),
+                result: "ok".into(),
+            })
+            .await;
         Ok(result)
     }
 }
@@ -93,17 +105,20 @@ impl RetrievalService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arcanum_core::types::RetrievalStrategy;
     use arcanum_core::traits::Retriever;
+    use arcanum_core::types::RetrievalStrategy;
     use arcanum_middleware::CircuitBreaker;
-    use arcanum_retrieval::{RetrievalOrchestrator, OrchestratorMode};
+    use arcanum_retrieval::{OrchestratorMode, RetrievalOrchestrator};
     use std::time::Duration;
 
     struct AlwaysOneRetriever;
     #[async_trait::async_trait]
     impl Retriever for AlwaysOneRetriever {
         async fn retrieve(&self, q: &Query) -> arcanum_core::Result<Vec<RetrievedChunk>> {
-            let col = q.collection_id.clone().unwrap_or(CollectionId(String::new()));
+            let col = q
+                .collection_id
+                .clone()
+                .unwrap_or(CollectionId(String::new()));
             Ok(vec![RetrievedChunk {
                 indexed_chunk: IndexedChunk {
                     chunk: Chunk {
@@ -111,9 +126,13 @@ mod tests {
                         text: "stub result".into(),
                         document_id: DocumentId::new(),
                         collection_id: col,
-                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        position: ChunkPosition {
+                            start: 0,
+                            end: 11,
+                            index: 0,
+                        },
                         metadata: ChunkMetadata::default(),
-                provenance: Default::default(),
+                        provenance: Default::default(),
                     },
                     vector: Vector(vec![]),
                     token_vectors: None,
@@ -123,13 +142,15 @@ mod tests {
                 strategy: RetrievalStrategy::Vector,
             }])
         }
-        fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::Vector }
+        fn strategy(&self) -> RetrievalStrategy {
+            RetrievalStrategy::Vector
+        }
     }
 
     fn make_service(cb: Arc<CircuitBreaker>) -> (RetrievalService, Arc<AuthMiddleware>) {
         let orchestrator = Arc::new(
             RetrievalOrchestrator::new(OrchestratorMode::ParallelFusion)
-                .add_retriever(Arc::new(AlwaysOneRetriever))
+                .add_retriever(Arc::new(AlwaysOneRetriever)),
         );
         let auth = Arc::new(AuthMiddleware::new("a-32-char-secret-for-testing-ok!"));
         let audit = Arc::new(AuditLogger::new());
@@ -142,7 +163,10 @@ mod tests {
     impl Retriever for CountingRetriever {
         async fn retrieve(&self, q: &Query) -> arcanum_core::Result<Vec<RetrievedChunk>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let col = q.collection_id.clone().unwrap_or(CollectionId(String::new()));
+            let col = q
+                .collection_id
+                .clone()
+                .unwrap_or(CollectionId(String::new()));
             Ok(vec![RetrievedChunk {
                 indexed_chunk: IndexedChunk {
                     chunk: Chunk {
@@ -150,7 +174,11 @@ mod tests {
                         text: "stub result".into(),
                         document_id: DocumentId::new(),
                         collection_id: col,
-                        position: ChunkPosition { start: 0, end: 11, index: 0 },
+                        position: ChunkPosition {
+                            start: 0,
+                            end: 11,
+                            index: 0,
+                        },
                         metadata: ChunkMetadata::default(),
                         provenance: Default::default(),
                     },
@@ -162,18 +190,29 @@ mod tests {
                 strategy: RetrievalStrategy::Vector,
             }])
         }
-        fn strategy(&self) -> RetrievalStrategy { RetrievalStrategy::Vector }
+        fn strategy(&self) -> RetrievalStrategy {
+            RetrievalStrategy::Vector
+        }
     }
 
-    fn make_counting_service() -> (RetrievalService, Arc<AuthMiddleware>, Arc<AuditLogger>, Arc<std::sync::atomic::AtomicUsize>) {
+    fn make_counting_service() -> (
+        RetrievalService,
+        Arc<AuthMiddleware>,
+        Arc<AuditLogger>,
+        Arc<std::sync::atomic::AtomicUsize>,
+    ) {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let orchestrator = Arc::new(
             RetrievalOrchestrator::new(OrchestratorMode::ParallelFusion)
-                .add_retriever(Arc::new(CountingRetriever(calls.clone())))
+                .add_retriever(Arc::new(CountingRetriever(calls.clone()))),
         );
         let auth = Arc::new(AuthMiddleware::new("a-32-char-secret-for-testing-ok!"));
         let audit = Arc::new(AuditLogger::new());
-        let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
+        let cb = Arc::new(CircuitBreaker::new(
+            "vector_store",
+            5,
+            Duration::from_secs(30),
+        ));
         let svc = RetrievalService::new(orchestrator, auth.clone(), audit.clone(), cb);
         (svc, auth, audit, calls)
     }
@@ -184,13 +223,20 @@ mod tests {
         let svc = svc.with_cache(Arc::new(QueryCache::new(10, Duration::from_secs(60))));
         let token = auth.generate_admin_key("test-user");
         let claims = auth.validate_api_key(&token).unwrap();
-        let q = || Query::new("hello").with_collection(CollectionId("col1".into())).with_top_k(5);
+        let q = || {
+            Query::new("hello")
+                .with_collection(CollectionId("col1".into()))
+                .with_top_k(5)
+        };
 
         svc.search(q(), &claims).await.unwrap();
         svc.search(q(), &claims).await.unwrap();
 
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1,
-            "second identical search must be a cache hit");
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "second identical search must be a cache hit"
+        );
     }
 
     #[tokio::test]
@@ -199,20 +245,33 @@ mod tests {
         let svc = svc.with_cache(Arc::new(QueryCache::new(10, Duration::from_secs(60))));
         let token = auth.generate_admin_key("test-user");
         let claims = auth.validate_api_key(&token).unwrap();
-        let q = || Query::new("hello").with_collection(CollectionId("col1".into())).with_top_k(5);
+        let q = || {
+            Query::new("hello")
+                .with_collection(CollectionId("col1".into()))
+                .with_top_k(5)
+        };
 
         svc.search(q(), &claims).await.unwrap(); // miss: populates cache
         svc.search(q(), &claims).await.unwrap(); // hit: should still be audited
 
         let records = audit.query(10).await;
-        assert_eq!(records.len(), 2,
-            "both the cache-miss and the cache-hit search must produce an audit entry");
-        assert!(records.iter().all(|r| r.entry.operation == "search" && r.entry.result == "ok"));
+        assert_eq!(
+            records.len(),
+            2,
+            "both the cache-miss and the cache-hit search must produce an audit entry"
+        );
+        assert!(records
+            .iter()
+            .all(|r| r.entry.operation == "search" && r.entry.result == "ok"));
     }
 
     #[tokio::test]
     async fn test_search_with_wired_retriever_returns_results() {
-        let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
+        let cb = Arc::new(CircuitBreaker::new(
+            "vector_store",
+            5,
+            Duration::from_secs(30),
+        ));
         let (svc, auth) = make_service(cb);
         let token = auth.generate_admin_key("test-user");
         let claims = auth.validate_api_key(&token).unwrap();
@@ -224,8 +283,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_blocked_by_open_circuit_breaker() {
-        let cb = Arc::new(CircuitBreaker::new("vector_store", 5, Duration::from_secs(30)));
-        for _ in 0..5 { cb.record_failure(); }
+        let cb = Arc::new(CircuitBreaker::new(
+            "vector_store",
+            5,
+            Duration::from_secs(30),
+        ));
+        for _ in 0..5 {
+            cb.record_failure();
+        }
 
         let (svc, auth) = make_service(cb);
         let token = auth.generate_admin_key("test-user");

@@ -22,7 +22,8 @@ impl SqliteDocumentVersionStore {
         if path != ":memory:" {
             if let Some(parent) = std::path::Path::new(path).parent() {
                 if !parent.as_os_str().is_empty() {
-                    tokio::fs::create_dir_all(parent).await
+                    tokio::fs::create_dir_all(parent)
+                        .await
                         .map_err(|e| ArcanumError::Storage(format!("create db dir: {}", e)))?;
                 }
             }
@@ -34,15 +35,17 @@ impl SqliteDocumentVersionStore {
         } else {
             format!("sqlite://{}?mode=rwc", path)
         };
-        let pool = SqlitePool::connect(&url).await
-            .map_err(|e| ArcanumError::Storage(format!("SqliteDocumentVersionStore open: {}", e)))?;
+        let pool = SqlitePool::connect(&url).await.map_err(|e| {
+            ArcanumError::Storage(format!("SqliteDocumentVersionStore open: {}", e))
+        })?;
         let store = Self { pool };
         store.ensure_schema().await?;
         Ok(store)
     }
 
     async fn ensure_schema(&self) -> Result<()> {
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS source_documents (
                 document_id   TEXT NOT NULL PRIMARY KEY,
                 source_uri    TEXT NOT NULL,
@@ -50,10 +53,14 @@ impl SqliteDocumentVersionStore {
                 created_at    TEXT NOT NULL DEFAULT (datetime('now')),
                 UNIQUE (source_uri, collection_id)
             )
-        "#).execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("ensure source_documents: {}", e)))?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure source_documents: {}", e)))?;
 
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS document_versions (
                 document_id   TEXT    NOT NULL REFERENCES source_documents(document_id),
                 version_num   INTEGER NOT NULL,
@@ -67,16 +74,22 @@ impl SqliteDocumentVersionStore {
                 extra         TEXT,
                 PRIMARY KEY (document_id, version_num)
             )
-        "#).execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("ensure document_versions: {}", e)))?;
+        "#,
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure document_versions: {}", e)))?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_dv_doc_status ON document_versions (document_id, status)")
             .execute(&self.pool).await
             .map_err(|e| ArcanumError::Storage(format!("ensure dv index: {}", e)))?;
 
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_dv_content_hash ON document_versions (content_hash)")
-            .execute(&self.pool).await
-            .map_err(|e| ArcanumError::Storage(format!("ensure hash index: {}", e)))?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_dv_content_hash ON document_versions (content_hash)",
+        )
+        .execute(&self.pool)
+        .await
+        .map_err(|e| ArcanumError::Storage(format!("ensure hash index: {}", e)))?;
 
         sqlx::query(r#"
             CREATE TABLE IF NOT EXISTS collection_config (
@@ -95,82 +108,97 @@ impl SqliteDocumentVersionStore {
 
 #[derive(sqlx::FromRow)]
 struct SqVersionRow {
-    document_id:   String,
-    version_num:   i64,
-    content_hash:  String,
-    snapshot_uri:  String,
+    document_id: String,
+    version_num: i64,
+    content_hash: String,
+    snapshot_uri: String,
     canonical_uri: Option<String>,
-    mime_type:     String,
-    status:        String,
-    ingested_at:   DateTime<Utc>,
-    extra:         Option<String>,
+    mime_type: String,
+    status: String,
+    ingested_at: DateTime<Utc>,
+    extra: Option<String>,
 }
 
 fn parse_status(s: &str) -> VersionStatus {
     match s {
         "superseded" => VersionStatus::Superseded,
-        "deleted"    => VersionStatus::Deleted,
-        _            => VersionStatus::Active,
+        "deleted" => VersionStatus::Deleted,
+        _ => VersionStatus::Active,
     }
 }
 
 fn status_str(s: &VersionStatus) -> &'static str {
     match s {
-        VersionStatus::Active     => "active",
+        VersionStatus::Active => "active",
         VersionStatus::Superseded => "superseded",
-        VersionStatus::Deleted    => "deleted",
+        VersionStatus::Deleted => "deleted",
     }
 }
 
 fn parse_extra(raw: Option<&str>) -> HashMap<String, serde_json::Value> {
-    raw.and_then(|s| serde_json::from_str(s).ok()).unwrap_or_default()
+    raw.and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or_default()
 }
 
-fn row_to_version(r: SqVersionRow, source_uri: &str, collection_id: &str) -> Result<DocumentVersion> {
+fn row_to_version(
+    r: SqVersionRow,
+    source_uri: &str,
+    collection_id: &str,
+) -> Result<DocumentVersion> {
     let id = uuid::Uuid::parse_str(&r.document_id)
         .map_err(|e| ArcanumError::Storage(format!("invalid document_id uuid: {}", e)))?;
     Ok(DocumentVersion {
-        document_id:   DocumentId(id),
-        version_num:   r.version_num as u32,
-        source_uri:    source_uri.to_string(),
+        document_id: DocumentId(id),
+        version_num: r.version_num as u32,
+        source_uri: source_uri.to_string(),
         collection_id: collection_id.to_string(),
-        content_hash:  r.content_hash,
-        snapshot_uri:  r.snapshot_uri,
+        content_hash: r.content_hash,
+        snapshot_uri: r.snapshot_uri,
         canonical_uri: r.canonical_uri,
-        mime_type:     r.mime_type,
-        status:        parse_status(&r.status),
-        ingested_at:   r.ingested_at,
-        extra:         parse_extra(r.extra.as_deref()),
+        mime_type: r.mime_type,
+        status: parse_status(&r.status),
+        ingested_at: r.ingested_at,
+        extra: parse_extra(r.extra.as_deref()),
     })
 }
 
 #[async_trait]
 impl DocumentVersionStore for SqliteDocumentVersionStore {
     #[instrument(skip(self), fields(store = "sqlite_version"), err)]
-    async fn get_latest(&self, source_uri: &str, collection_id: &str) -> Result<Option<DocumentVersion>> {
+    async fn get_latest(
+        &self,
+        source_uri: &str,
+        collection_id: &str,
+    ) -> Result<Option<DocumentVersion>> {
         let doc_id: Option<(String,)> = sqlx::query_as(
-            "SELECT document_id FROM source_documents WHERE source_uri = $1 AND collection_id = $2"
+            "SELECT document_id FROM source_documents WHERE source_uri = $1 AND collection_id = $2",
         )
-        .bind(source_uri).bind(collection_id)
-        .fetch_optional(&self.pool).await
+        .bind(source_uri)
+        .bind(collection_id)
+        .fetch_optional(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("find source doc: {}", e)))?;
 
-        let doc_id = match doc_id { Some((id,)) => id, None => return Ok(None) };
+        let doc_id = match doc_id {
+            Some((id,)) => id,
+            None => return Ok(None),
+        };
 
         let row = sqlx::query_as::<_, SqVersionRow>(
             r#"SELECT document_id, version_num, content_hash, snapshot_uri, canonical_uri,
                       mime_type, status, ingested_at, extra
                FROM document_versions
                WHERE document_id = $1 AND status = 'active'
-               ORDER BY version_num DESC LIMIT 1"#
+               ORDER BY version_num DESC LIMIT 1"#,
         )
         .bind(&doc_id)
-        .fetch_optional(&self.pool).await
+        .fetch_optional(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("get latest: {}", e)))?;
 
         match row {
             Some(r) => Ok(Some(row_to_version(r, source_uri, collection_id)?)),
-            None    => Ok(None),
+            None => Ok(None),
         }
     }
 
@@ -203,7 +231,7 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
                        mime_type     = excluded.mime_type,
                        status        = excluded.status,
                        ingested_at   = excluded.ingested_at,
-                       extra         = excluded.extra"#
+                       extra         = excluded.extra"#,
         )
         .bind(&doc_id_str)
         .bind(version.version_num as i64)
@@ -214,7 +242,8 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
         .bind(status_str(&version.status))
         .bind(version.ingested_at)
         .bind(&extra_json)
-        .execute(&self.pool).await
+        .execute(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("insert version: {}", e)))?;
 
         Ok(())
@@ -235,16 +264,16 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
     async fn list_versions(&self, document_id: &DocumentId) -> Result<Vec<DocumentVersion>> {
         #[derive(sqlx::FromRow)]
         struct ListRow {
-            document_id:   String,
-            version_num:   i64,
-            content_hash:  String,
-            snapshot_uri:  String,
+            document_id: String,
+            version_num: i64,
+            content_hash: String,
+            snapshot_uri: String,
             canonical_uri: Option<String>,
-            mime_type:     String,
-            status:        String,
-            ingested_at:   DateTime<Utc>,
-            extra:         Option<String>,
-            source_uri:    String,
+            mime_type: String,
+            status: String,
+            ingested_at: DateTime<Utc>,
+            extra: Option<String>,
+            source_uri: String,
             collection_id: String,
         }
 
@@ -255,29 +284,32 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
                FROM document_versions dv
                JOIN source_documents sd ON sd.document_id = dv.document_id
                WHERE dv.document_id = $1
-               ORDER BY dv.version_num ASC"#
+               ORDER BY dv.version_num ASC"#,
         )
         .bind(document_id.0.to_string())
-        .fetch_all(&self.pool).await
+        .fetch_all(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("list versions: {}", e)))?;
 
-        rows.into_iter().map(|r| {
-            let id = uuid::Uuid::parse_str(&r.document_id)
-                .map_err(|e| ArcanumError::Storage(format!("invalid uuid: {}", e)))?;
-            Ok(DocumentVersion {
-                document_id:   DocumentId(id),
-                version_num:   r.version_num as u32,
-                source_uri:    r.source_uri,
-                collection_id: r.collection_id,
-                content_hash:  r.content_hash,
-                snapshot_uri:  r.snapshot_uri,
-                canonical_uri: r.canonical_uri,
-                mime_type:     r.mime_type,
-                status:        parse_status(&r.status),
-                ingested_at:   r.ingested_at,
-                extra:         parse_extra(r.extra.as_deref()),
+        rows.into_iter()
+            .map(|r| {
+                let id = uuid::Uuid::parse_str(&r.document_id)
+                    .map_err(|e| ArcanumError::Storage(format!("invalid uuid: {}", e)))?;
+                Ok(DocumentVersion {
+                    document_id: DocumentId(id),
+                    version_num: r.version_num as u32,
+                    source_uri: r.source_uri,
+                    collection_id: r.collection_id,
+                    content_hash: r.content_hash,
+                    snapshot_uri: r.snapshot_uri,
+                    canonical_uri: r.canonical_uri,
+                    mime_type: r.mime_type,
+                    status: parse_status(&r.status),
+                    ingested_at: r.ingested_at,
+                    extra: parse_extra(r.extra.as_deref()),
+                })
             })
-        }).collect()
+            .collect()
     }
 
     #[instrument(skip(self), fields(store = "sqlite_version"), err)]
@@ -290,15 +322,13 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
         .map_err(|e| ArcanumError::Storage(format!("get policy: {}", e)))?;
 
         match row {
-            Some((policy_str, retention_days)) => {
-                Ok(match policy_str.as_str() {
-                    "append_only"     => VersioningPolicy::AppendOnly,
-                    "retention_based" => VersioningPolicy::RetentionBased {
-                        days: retention_days.unwrap_or(30) as u32,
-                    },
-                    _ => VersioningPolicy::Replace,
-                })
-            }
+            Some((policy_str, retention_days)) => Ok(match policy_str.as_str() {
+                "append_only" => VersioningPolicy::AppendOnly,
+                "retention_based" => VersioningPolicy::RetentionBased {
+                    days: retention_days.unwrap_or(30) as u32,
+                },
+                _ => VersioningPolicy::Replace,
+            }),
             None => {
                 sqlx::query(
                     "INSERT OR IGNORE INTO collection_config (collection_id, versioning_policy) VALUES ($1, 'replace')"
@@ -311,7 +341,11 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
     }
 
     #[instrument(skip(self), fields(store = "sqlite_version", collection), err)]
-    async fn set_versioning_policy(&self, collection_id: &str, policy: VersioningPolicy) -> Result<()> {
+    async fn set_versioning_policy(
+        &self,
+        collection_id: &str,
+        policy: VersioningPolicy,
+    ) -> Result<()> {
         match &policy {
             VersioningPolicy::RetentionBased { days } => {
                 sqlx::query(
@@ -326,7 +360,7 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
             }
             other => {
                 let policy_str = match other {
-                    VersioningPolicy::Replace    => "replace",
+                    VersioningPolicy::Replace => "replace",
                     VersioningPolicy::AppendOnly => "append_only",
                     VersioningPolicy::RetentionBased { .. } => unreachable!(),
                 };
@@ -350,10 +384,12 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
                WHERE document_id IN (
                    SELECT document_id FROM source_documents
                    WHERE source_uri = $1 AND collection_id = $2
-               )"#
+               )"#,
         )
-        .bind(source_uri).bind(collection_id)
-        .execute(&self.pool).await
+        .bind(source_uri)
+        .bind(collection_id)
+        .execute(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("delete by source_uri: {}", e)))?;
         Ok(())
     }
@@ -361,7 +397,7 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
     #[instrument(skip(self), fields(store = "sqlite_version"), err)]
     async fn list_collections(&self) -> Result<Vec<String>> {
         let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT DISTINCT collection_id FROM source_documents ORDER BY collection_id"
+            "SELECT DISTINCT collection_id FROM source_documents ORDER BY collection_id",
         )
         .fetch_all(&self.pool)
         .await
@@ -388,11 +424,12 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
 
         let Some(r) = row else { return Ok(None) };
 
-        let sd: Option<(String, String,)> = sqlx::query_as(
-            "SELECT source_uri, collection_id FROM source_documents WHERE document_id = $1"
+        let sd: Option<(String, String)> = sqlx::query_as(
+            "SELECT source_uri, collection_id FROM source_documents WHERE document_id = $1",
         )
         .bind(&doc_id_str)
-        .fetch_optional(&self.pool).await
+        .fetch_optional(&self.pool)
+        .await
         .map_err(|e| ArcanumError::Storage(format!("get_version source_doc: {}", e)))?;
 
         let (source_uri, collection_id) = sd.unwrap_or_default();
@@ -400,13 +437,10 @@ impl DocumentVersionStore for SqliteDocumentVersionStore {
     }
 
     #[instrument(skip(self), fields(store = "sqlite_version", collection = collection_id), err)]
-    async fn list_documents(
-        &self,
-        collection_id: &str,
-    ) -> Result<Vec<DocumentEntry>> {
+    async fn list_documents(&self, collection_id: &str) -> Result<Vec<DocumentEntry>> {
         #[derive(sqlx::FromRow)]
         struct ListRow {
-            source_uri:  String,
+            source_uri: String,
             ingested_at: DateTime<Utc>,
         }
 
@@ -454,21 +488,25 @@ mod tests {
         let store = make_store().await;
         let doc_id = DocumentId::new();
         let version = DocumentVersion {
-            document_id:   doc_id.clone(),
-            version_num:   1,
-            source_uri:    "file://test.md".into(),
+            document_id: doc_id.clone(),
+            version_num: 1,
+            source_uri: "file://test.md".into(),
             collection_id: "col-a".into(),
-            content_hash:  "sha256-abc".into(),
-            snapshot_uri:  "file:///snap/1.raw".into(),
+            content_hash: "sha256-abc".into(),
+            snapshot_uri: "file:///snap/1.raw".into(),
             canonical_uri: None,
-            mime_type:     "text/markdown".into(),
-            status:        VersionStatus::Active,
-            ingested_at:   chrono::Utc::now(),
-            extra:         HashMap::new(),
+            mime_type: "text/markdown".into(),
+            status: VersionStatus::Active,
+            ingested_at: chrono::Utc::now(),
+            extra: HashMap::new(),
         };
         store.add_version(version).await.unwrap();
 
-        let latest = store.get_latest("file://test.md", "col-a").await.unwrap().unwrap();
+        let latest = store
+            .get_latest("file://test.md", "col-a")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.version_num, 1);
         assert_eq!(latest.content_hash, "sha256-abc");
         assert_eq!(latest.source_uri, "file://test.md");
@@ -480,29 +518,37 @@ mod tests {
         let store = make_store().await;
         let doc_id = DocumentId::new();
         let base = DocumentVersion {
-            document_id:   doc_id.clone(),
-            version_num:   1,
-            source_uri:    "file://re-ingest.md".into(),
+            document_id: doc_id.clone(),
+            version_num: 1,
+            source_uri: "file://re-ingest.md".into(),
             collection_id: "col-b".into(),
-            content_hash:  "hash-v1".into(),
-            snapshot_uri:  "file:///snap/v1.raw".into(),
+            content_hash: "hash-v1".into(),
+            snapshot_uri: "file:///snap/v1.raw".into(),
             canonical_uri: None,
-            mime_type:     "text/plain".into(),
-            status:        VersionStatus::Active,
-            ingested_at:   chrono::Utc::now(),
-            extra:         HashMap::new(),
+            mime_type: "text/plain".into(),
+            status: VersionStatus::Active,
+            ingested_at: chrono::Utc::now(),
+            extra: HashMap::new(),
         };
         store.add_version(base).await.unwrap();
 
         let v2 = DocumentVersion {
-            version_num:  2,
+            version_num: 2,
             content_hash: "hash-v2".into(),
             snapshot_uri: "file:///snap/v2.raw".into(),
-            ..store.get_latest("file://re-ingest.md", "col-b").await.unwrap().unwrap()
+            ..store
+                .get_latest("file://re-ingest.md", "col-b")
+                .await
+                .unwrap()
+                .unwrap()
         };
         store.add_version(v2).await.unwrap();
 
-        let latest = store.get_latest("file://re-ingest.md", "col-b").await.unwrap().unwrap();
+        let latest = store
+            .get_latest("file://re-ingest.md", "col-b")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(latest.version_num, 2);
     }
 
@@ -511,46 +557,60 @@ mod tests {
         let store = make_store().await;
         let doc_id = DocumentId::new();
         for v in 1u32..=2 {
-            store.add_version(DocumentVersion {
-                document_id:   doc_id.clone(),
-                version_num:   v,
-                source_uri:    "file://supersede.md".into(),
-                collection_id: "col-c".into(),
-                content_hash:  format!("hash-v{}", v),
-                snapshot_uri:  format!("file:///snap/v{}.raw", v),
-                canonical_uri: None,
-                mime_type:     "text/plain".into(),
-                status:        VersionStatus::Active,
-                ingested_at:   chrono::Utc::now(),
-                extra:         HashMap::new(),
-            }).await.unwrap();
+            store
+                .add_version(DocumentVersion {
+                    document_id: doc_id.clone(),
+                    version_num: v,
+                    source_uri: "file://supersede.md".into(),
+                    collection_id: "col-c".into(),
+                    content_hash: format!("hash-v{}", v),
+                    snapshot_uri: format!("file:///snap/v{}.raw", v),
+                    canonical_uri: None,
+                    mime_type: "text/plain".into(),
+                    status: VersionStatus::Active,
+                    ingested_at: chrono::Utc::now(),
+                    extra: HashMap::new(),
+                })
+                .await
+                .unwrap();
         }
 
         store.supersede_active(&doc_id).await.unwrap();
         let versions = store.list_versions(&doc_id).await.unwrap();
         assert_eq!(versions.len(), 2);
-        assert!(versions.iter().all(|v| v.status == VersionStatus::Superseded));
+        assert!(versions
+            .iter()
+            .all(|v| v.status == VersionStatus::Superseded));
     }
 
     #[tokio::test]
     async fn test_delete_by_source_uri() {
         let store = make_store().await;
-        store.add_version(DocumentVersion {
-            document_id:   DocumentId::new(),
-            version_num:   1,
-            source_uri:    "file://delete-me.md".into(),
-            collection_id: "col-d".into(),
-            content_hash:  "hash".into(),
-            snapshot_uri:  "file:///snap.raw".into(),
-            canonical_uri: None,
-            mime_type:     "text/plain".into(),
-            status:        VersionStatus::Active,
-            ingested_at:   chrono::Utc::now(),
-            extra:         HashMap::new(),
-        }).await.unwrap();
+        store
+            .add_version(DocumentVersion {
+                document_id: DocumentId::new(),
+                version_num: 1,
+                source_uri: "file://delete-me.md".into(),
+                collection_id: "col-d".into(),
+                content_hash: "hash".into(),
+                snapshot_uri: "file:///snap.raw".into(),
+                canonical_uri: None,
+                mime_type: "text/plain".into(),
+                status: VersionStatus::Active,
+                ingested_at: chrono::Utc::now(),
+                extra: HashMap::new(),
+            })
+            .await
+            .unwrap();
 
-        store.delete_by_source_uri("col-d", "file://delete-me.md").await.unwrap();
-        let result = store.get_latest("file://delete-me.md", "col-d").await.unwrap();
+        store
+            .delete_by_source_uri("col-d", "file://delete-me.md")
+            .await
+            .unwrap();
+        let result = store
+            .get_latest("file://delete-me.md", "col-d")
+            .await
+            .unwrap();
         assert!(result.is_none());
     }
 
@@ -559,17 +619,17 @@ mod tests {
         let store = make_store().await;
         let doc_id = DocumentId::new();
         let version = DocumentVersion {
-            document_id:   doc_id.clone(),
-            version_num:   1,
-            source_uri:    "file://doc.pdf".into(),
+            document_id: doc_id.clone(),
+            version_num: 1,
+            source_uri: "file://doc.pdf".into(),
             collection_id: "col".into(),
-            content_hash:  "abc123".into(),
-            snapshot_uri:  "file:///snapshots/doc/1.raw".into(),
+            content_hash: "abc123".into(),
+            snapshot_uri: "file:///snapshots/doc/1.raw".into(),
             canonical_uri: None,
-            mime_type:     "application/pdf".into(),
-            status:        VersionStatus::Active,
-            ingested_at:   chrono::Utc::now(),
-            extra:         Default::default(),
+            mime_type: "application/pdf".into(),
+            status: VersionStatus::Active,
+            ingested_at: chrono::Utc::now(),
+            extra: Default::default(),
         };
         store.add_version(version).await.unwrap();
         let found = store.get_version(&doc_id, 1).await.unwrap();
@@ -589,20 +649,26 @@ mod tests {
         let store = make_store().await;
 
         // Add 3 documents
-        for (i, uri) in ["file://a.md", "file://b.md", "file://c.md"].iter().enumerate() {
-            store.add_version(DocumentVersion {
-                document_id:   DocumentId::new(),
-                version_num:   1,
-                source_uri:    uri.clone().into(),
-                collection_id: "test-list".into(),
-                content_hash:  format!("hash-{}", i),
-                snapshot_uri:  format!("file:///snap/{}.raw", i),
-                canonical_uri: None,
-                mime_type:     "text/markdown".into(),
-                status:        VersionStatus::Active,
-                ingested_at:   chrono::Utc::now(),
-                extra:         HashMap::new(),
-            }).await.unwrap();
+        for (i, uri) in ["file://a.md", "file://b.md", "file://c.md"]
+            .iter()
+            .enumerate()
+        {
+            store
+                .add_version(DocumentVersion {
+                    document_id: DocumentId::new(),
+                    version_num: 1,
+                    source_uri: uri.clone().into(),
+                    collection_id: "test-list".into(),
+                    content_hash: format!("hash-{}", i),
+                    snapshot_uri: format!("file:///snap/{}.raw", i),
+                    canonical_uri: None,
+                    mime_type: "text/markdown".into(),
+                    status: VersionStatus::Active,
+                    ingested_at: chrono::Utc::now(),
+                    extra: HashMap::new(),
+                })
+                .await
+                .unwrap();
         }
 
         let docs = store.list_documents("test-list").await.unwrap();
@@ -614,12 +680,18 @@ mod tests {
 
         // Supersede one document — it should no longer appear in list
         let doc_id: Option<(String,)> = sqlx::query_as(
-            "SELECT document_id FROM source_documents WHERE source_uri = $1 AND collection_id = $2"
+            "SELECT document_id FROM source_documents WHERE source_uri = $1 AND collection_id = $2",
         )
-        .bind("file://a.md").bind("test-list")
-        .fetch_optional(&store.pool).await.unwrap();
+        .bind("file://a.md")
+        .bind("test-list")
+        .fetch_optional(&store.pool)
+        .await
+        .unwrap();
         if let Some((id,)) = doc_id {
-            store.supersede_active(&DocumentId(uuid::Uuid::parse_str(&id).unwrap())).await.unwrap();
+            store
+                .supersede_active(&DocumentId(uuid::Uuid::parse_str(&id).unwrap()))
+                .await
+                .unwrap();
         }
 
         let docs = store.list_documents("test-list").await.unwrap();

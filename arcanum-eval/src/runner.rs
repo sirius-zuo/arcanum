@@ -1,5 +1,5 @@
-use arcanum_core::types::*;
 use crate::metrics::*;
+use arcanum_core::types::*;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
 
@@ -24,23 +24,30 @@ pub struct EvalReport {
     pub answer_relevance: Option<f32>,
 }
 
-pub struct EvalRunner { pub k: usize }
+pub struct EvalRunner {
+    pub k: usize,
+}
 
 impl EvalRunner {
-    pub fn new(k: usize) -> Self { Self { k } }
+    pub fn new(k: usize) -> Self {
+        Self { k }
+    }
 
     #[instrument(skip(self, results, ground_truths), fields(k = self.k, num_results = results.len()))]
     pub fn evaluate(&self, results: &[Vec<ChunkId>], ground_truths: &[GoldenSample]) -> EvalReport {
         assert_eq!(results.len(), ground_truths.len());
         let n = results.len() as f32;
-        let mut hr = 0f32; let mut mrr = 0f32; let mut ndcg = 0f32;
-        let mut precision = 0f32; let mut recall = 0f32;
+        let mut hr = 0f32;
+        let mut mrr = 0f32;
+        let mut ndcg = 0f32;
+        let mut precision = 0f32;
+        let mut recall = 0f32;
         for (retrieved, gt) in results.iter().zip(ground_truths.iter()) {
-            hr        += compute_hit_rate_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
-            mrr       += compute_mrr(retrieved, &gt.relevant_chunk_ids);
-            ndcg      += compute_ndcg_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
+            hr += compute_hit_rate_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
+            mrr += compute_mrr(retrieved, &gt.relevant_chunk_ids);
+            ndcg += compute_ndcg_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
             precision += compute_precision_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
-            recall    += compute_recall_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
+            recall += compute_recall_at_k(retrieved, &gt.relevant_chunk_ids, self.k);
         }
         EvalReport {
             hit_rate_at_k: hr / n,

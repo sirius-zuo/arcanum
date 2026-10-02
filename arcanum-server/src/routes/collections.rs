@@ -1,20 +1,23 @@
+use crate::routes::auth::validate_bearer;
+use arcanum_core::ArcanumError;
+use arcanum_engine::ArcanumEngine;
 use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
-use arcanum_core::ArcanumError;
-use arcanum_engine::ArcanumEngine;
 use std::sync::Arc;
-use crate::routes::auth::validate_bearer;
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 fn already_exists_response(name: &str) -> (StatusCode, Json<serde_json::Value>) {
-    (StatusCode::CONFLICT, Json(serde_json::json!({
-        "error": format!("collection '{}' already exists", name)
-    })))
+    (
+        StatusCode::CONFLICT,
+        Json(serde_json::json!({
+            "error": format!("collection '{}' already exists", name)
+        })),
+    )
 }
 
 // ── vector collections ────────────────────────────────────────────────────────
@@ -30,11 +33,23 @@ pub async fn vector_list(
     let _ = claims;
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.vector_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "collections": [] }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({ "collections": [] })),
+        )
+            .into_response();
     };
     match store.list_collections().await {
-        Ok(cols) => (StatusCode::OK, Json(serde_json::json!({ "collections": cols }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(cols) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "collections": cols })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -49,14 +64,22 @@ pub async fn vector_create(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.vector_store.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
-            "error": "vector store is not configured"
-        }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "vector store is not configured"
+            })),
+        )
+            .into_response();
     };
     match store.create_collection(&name).await {
         Ok(()) => StatusCode::CREATED.into_response(),
         Err(ArcanumError::AlreadyExists(_)) => already_exists_response(&name).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -75,7 +98,11 @@ pub async fn vector_delete(
     };
     match store.delete_collection(&name).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -93,7 +120,13 @@ pub async fn vector_stats_all(
     let version_store = &*eng.version_store;
     let cols = match version_store.list_collections().await {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
     };
     let mut by_collection = serde_json::Map::new();
     let mut total = 0u64;
@@ -103,7 +136,11 @@ pub async fn vector_stats_all(
         by_collection.insert(col.clone(), serde_json::json!(count));
         total += count;
     }
-    (StatusCode::OK, Json(serde_json::json!({ "total": total, "by_collection": by_collection }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "total": total, "by_collection": by_collection })),
+    )
+        .into_response()
 }
 
 pub async fn vector_stats_one(
@@ -120,8 +157,16 @@ pub async fn vector_stats_one(
     // be missing documents that had zero chunks.
     let version_store = &*eng.version_store;
     match version_store.list_documents(&name).await {
-        Ok(entries) => (StatusCode::OK, Json(serde_json::json!({ "count": entries.len() }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(entries) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "count": entries.len() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -137,11 +182,23 @@ pub async fn graph_list(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.graph_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "collections": [] }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({ "collections": [] })),
+        )
+            .into_response();
     };
     match store.list_collections().await {
-        Ok(cols) => (StatusCode::OK, Json(serde_json::json!({ "collections": cols }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(cols) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "collections": cols })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -156,14 +213,22 @@ pub async fn graph_create(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.graph_store.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
-            "error": "graph store is not configured"
-        }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "graph store is not configured"
+            })),
+        )
+            .into_response();
     };
     match store.create_collection(&name).await {
         Ok(()) => StatusCode::CREATED.into_response(),
         Err(ArcanumError::AlreadyExists(_)) => already_exists_response(&name).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -182,7 +247,11 @@ pub async fn graph_delete(
     };
     match store.delete_collection(&name).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -196,11 +265,21 @@ pub async fn graph_stats_all(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.graph_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "total": 0, "by_collection": {} }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({ "total": 0, "by_collection": {} })),
+        )
+            .into_response();
     };
     let counts = match store.count_documents_all().await {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
     };
     let mut by_collection = serde_json::Map::new();
     let mut total = 0u64;
@@ -208,7 +287,11 @@ pub async fn graph_stats_all(
         by_collection.insert(col.clone(), serde_json::json!(count));
         total += count;
     }
-    (StatusCode::OK, Json(serde_json::json!({ "total": total, "by_collection": by_collection }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "total": total, "by_collection": by_collection })),
+    )
+        .into_response()
 }
 
 pub async fn graph_stats_one(
@@ -226,7 +309,11 @@ pub async fn graph_stats_one(
     };
     match store.count_documents(Some(&name)).await {
         Ok(count) => (StatusCode::OK, Json(serde_json::json!({ "count": count }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -242,11 +329,23 @@ pub async fn tree_list(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.tree_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "collections": [] }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({ "collections": [] })),
+        )
+            .into_response();
     };
     match store.list_collections().await {
-        Ok(cols) => (StatusCode::OK, Json(serde_json::json!({ "collections": cols }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(cols) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "collections": cols })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -261,14 +360,22 @@ pub async fn tree_create(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.tree_store.as_ref() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({
-            "error": "tree store is not configured"
-        }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "tree store is not configured"
+            })),
+        )
+            .into_response();
     };
     match store.create_collection(&name).await {
         Ok(()) => StatusCode::CREATED.into_response(),
         Err(ArcanumError::AlreadyExists(_)) => already_exists_response(&name).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -287,7 +394,11 @@ pub async fn tree_delete(
     };
     match store.delete_collection(&name).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -301,11 +412,21 @@ pub async fn tree_stats_all(
     };
     let eng = engine.as_ref().unwrap();
     let Some(store) = eng.tree_store.as_ref() else {
-        return (StatusCode::OK, Json(serde_json::json!({ "total": 0, "by_collection": {} }))).into_response();
+        return (
+            StatusCode::OK,
+            Json(serde_json::json!({ "total": 0, "by_collection": {} })),
+        )
+            .into_response();
     };
     let cols = match store.list_collections().await {
         Ok(c) => c,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response()
+        }
     };
     let mut by_collection = serde_json::Map::new();
     let mut total = 0u64;
@@ -314,7 +435,11 @@ pub async fn tree_stats_all(
         by_collection.insert(col.clone(), serde_json::json!(count));
         total += count;
     }
-    (StatusCode::OK, Json(serde_json::json!({ "total": total, "by_collection": by_collection }))).into_response()
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "total": total, "by_collection": by_collection })),
+    )
+        .into_response()
 }
 
 pub async fn tree_stats_one(
@@ -332,7 +457,11 @@ pub async fn tree_stats_one(
     };
     match store.count_documents(Some(&name)).await {
         Ok(count) => (StatusCode::OK, Json(serde_json::json!({ "count": count }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -350,9 +479,16 @@ pub async fn vector_list_documents(
     };
     let eng = engine.as_ref().unwrap();
     match eng.version_store.list_documents(&name).await {
-        Ok(docs) => (StatusCode::OK, Json(serde_json::json!({ "documents": docs }))).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Ok(docs) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "documents": docs })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
 
@@ -376,14 +512,24 @@ pub async fn vector_delete_document(
     // Remove from vector store (no-op if already gone — idempotent).
     if let Some(store) = eng.vector_store.as_ref() {
         if let Err(e) = store.delete_by_source_uri(&name, &params.source_uri).await {
-            return (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
     }
     // Remove from version store (replaces document_registry.deregister).
-    if let Err(e) = eng.version_store.delete_by_source_uri(&name, &params.source_uri).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    if let Err(e) = eng
+        .version_store
+        .delete_by_source_uri(&name, &params.source_uri)
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response();
     }
     StatusCode::NO_CONTENT.into_response()
 }
@@ -406,11 +552,17 @@ mod tests {
             "/api/v1/graph/collections",
             "/api/v1/tree/collections",
         ] {
-            let resp = app.clone().oneshot(
-                Request::builder().uri(*path).body(Body::empty()).unwrap()
-            ).await.unwrap();
-            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
-                "GET {} should require auth", path);
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri(*path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "GET {} should require auth",
+                path
+            );
         }
     }
 
@@ -420,15 +572,21 @@ mod tests {
         // With an engine that has no graph_store: 200 with empty list.
         // This test verifies the route is no longer a 501 stub.
         let app = build_app(None);
-        let resp = app.oneshot(
-            Request::builder()
-                .uri("/api/v1/graph/collections")
-                .body(Body::empty())
-                .unwrap()
-        ).await.unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/graph/collections")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         // 401 means auth check ran (not 501 from stub).
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
-            "graph list should return 401 (auth), not 501 (stub)");
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "graph list should return 401 (auth), not 501 (stub)"
+        );
     }
 
     #[tokio::test]
@@ -438,39 +596,53 @@ mod tests {
         // compile time (eng.vector_store field access). Here we verify the route
         // accepts a DELETE request and returns 401 without auth (proving it's wired up).
         let app = build_app(None);
-        let resp = app.clone().oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/v1/vector/collections/test-col")
-                .body(Body::empty())
-                .unwrap()
-        ).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED,
-            "vector_delete should require auth");
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/v1/vector/collections/test-col")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "vector_delete should require auth"
+        );
     }
 
     #[tokio::test]
     async fn vector_list_documents_requires_auth() {
         let app = build_app(None);
-        let resp = app.oneshot(
-            Request::builder()
-                .uri("/api/v1/vector/collections/devforge/documents")
-                .body(Body::empty())
-                .unwrap()
-        ).await.unwrap();
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/vector/collections/devforge/documents")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
     async fn vector_delete_document_requires_auth() {
         let app = build_app(None);
-        let resp = app.clone().oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri("/api/v1/vector/collections/devforge/documents?source_uri=test.md")
-                .body(Body::empty())
-                .unwrap()
-        ).await.unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/v1/vector/collections/devforge/documents?source_uri=test.md")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
     }
 
@@ -485,15 +657,24 @@ mod tests {
             ("POST", "/api/v1/graph/collections/test"),
             ("POST", "/api/v1/tree/collections/test"),
         ] {
-            let resp = app.clone().oneshot(
-                Request::builder()
-                    .method(*method)
-                    .uri(*path)
-                    .body(Body::empty())
-                    .unwrap()
-            ).await.unwrap();
-            assert_ne!(resp.status(), StatusCode::NOT_FOUND,
-                "{} {} must not return 404 (no engine → 401, no store → 503)", method, path);
+            let resp = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(*method)
+                        .uri(*path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_ne!(
+                resp.status(),
+                StatusCode::NOT_FOUND,
+                "{} {} must not return 404 (no engine → 401, no store → 503)",
+                method,
+                path
+            );
         }
     }
 }

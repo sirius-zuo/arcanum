@@ -1,6 +1,7 @@
-use arcanum_core::traits::{TextEnricher, Embedder, VectorStore, GraphStore, TreeStore,
-                            CacheInvalidationBroadcaster, DocumentVersionStore, SnapshotStore,
-                            ChunkMetadataStore, Preprocessor};
+use arcanum_core::traits::{
+    CacheInvalidationBroadcaster, ChunkMetadataStore, DocumentVersionStore, Embedder, GraphStore,
+    Preprocessor, SnapshotStore, TextEnricher, TreeStore, VectorStore,
+};
 use arcanum_core::types::{PerBackendChunkers, ShadowContext};
 use arcanum_ingestion::LoaderRegistry;
 use arcanum_middleware::CircuitBreaker;
@@ -8,21 +9,21 @@ use arcanum_vector::Bm25Index;
 use std::sync::Arc;
 
 pub struct PipelineDeps {
-    pub loaders:           Arc<LoaderRegistry>,
-    pub preprocessors:     Option<Arc<dyn Preprocessor>>,
-    pub chunkers:          PerBackendChunkers,
-    pub shadow:            Option<ShadowContext>,
-    pub context_enricher:  Option<Arc<dyn TextEnricher>>,
-    pub entity_extractor:  Option<Arc<dyn TextEnricher>>,
-    pub embedder:          Arc<dyn Embedder>,
-    pub vector_store:      Arc<dyn VectorStore>,
-    pub graph_store:       Option<Arc<dyn GraphStore>>,
-    pub tree_store:        Option<Arc<dyn TreeStore>>,
-    pub version_store:     Arc<dyn DocumentVersionStore>,
-    pub snapshot_store:    Arc<dyn SnapshotStore>,
-    pub chunk_metadata:    Option<Arc<dyn ChunkMetadataStore>>,
-    pub bm25_index:        Option<Arc<Bm25Index>>,
+    pub loaders: Arc<LoaderRegistry>,
+    pub preprocessors: Option<Arc<dyn Preprocessor>>,
+    pub chunkers: PerBackendChunkers,
+    pub shadow: Option<ShadowContext>,
+    pub context_enricher: Option<Arc<dyn TextEnricher>>,
+    pub entity_extractor: Option<Arc<dyn TextEnricher>>,
+    pub embedder: Arc<dyn Embedder>,
+    pub vector_store: Arc<dyn VectorStore>,
+    pub graph_store: Option<Arc<dyn GraphStore>>,
+    pub tree_store: Option<Arc<dyn TreeStore>>,
+    pub version_store: Arc<dyn DocumentVersionStore>,
+    pub snapshot_store: Arc<dyn SnapshotStore>,
+    pub chunk_metadata: Option<Arc<dyn ChunkMetadataStore>>,
+    pub bm25_index: Option<Arc<Bm25Index>>,
     pub cache_invalidator: Arc<CacheInvalidationBroadcaster>,
-    pub embedding_cb:      Arc<CircuitBreaker>,
-    pub vector_store_cb:   Arc<CircuitBreaker>,
+    pub embedding_cb: Arc<CircuitBreaker>,
+    pub vector_store_cb: Arc<CircuitBreaker>,
 }

@@ -5,9 +5,7 @@
 
 use opentelemetry::KeyValue;
 use opentelemetry_sdk::{
-    export::trace::SpanData,
-    resource::Resource,
-    testing::trace::InMemorySpanExporter,
+    export::trace::SpanData, resource::Resource, testing::trace::InMemorySpanExporter,
     trace::TracerProvider as SdkTracerProvider,
 };
 
@@ -34,7 +32,9 @@ impl TestTelemetry {
     /// `#[tokio::test]` use a `current_thread` runtime by default, so all
     /// futures run on the calling OS thread and see this subscriber.
     pub fn install() -> Self {
-        use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
+        use tracing_subscriber::{
+            filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
+        };
 
         let exporter = InMemorySpanExporter::default();
         let resource = Resource::new(vec![KeyValue::new("service.name", "arcanum-test")]);
@@ -78,7 +78,10 @@ impl TestTelemetry {
 
     /// Return all span names collected so far (useful in assert error messages).
     pub fn span_names(&self) -> Vec<String> {
-        self.get_spans().iter().map(|s| s.name.to_string()).collect()
+        self.get_spans()
+            .iter()
+            .map(|s| s.name.to_string())
+            .collect()
     }
 }
 
@@ -99,8 +102,8 @@ mod tests {
         let spans = telem.get_spans();
         assert!(
             spans.iter().any(|s| s.name == "test.span"),
-            "expected test.span in {:?}", telem.span_names()
+            "expected test.span in {:?}",
+            telem.span_names()
         );
     }
-
 }

@@ -1,8 +1,8 @@
-use arcanum_core::{traits::*, types::*, Result, ArcanumError};
+use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
+use metrics;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use metrics;
 
 pub struct MistralProvider {
     api_key: String,
@@ -72,15 +72,24 @@ impl Embedder for MistralProvider {
         let start = std::time::Instant::now();
         let inputs: Vec<&str> = texts.iter().map(|s| s.as_str()).collect();
         let result: Result<Vec<Vector>> = async {
-            let resp: MistralEmbedResponse = self.client
+            let resp: MistralEmbedResponse = self
+                .client
                 .post("https://api.mistral.ai/v1/embeddings")
                 .bearer_auth(&self.api_key)
-                .json(&MistralEmbedRequest { input: inputs, model: &self.embed_model })
-                .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                .json(&MistralEmbedRequest {
+                    input: inputs,
+                    model: &self.embed_model,
+                })
+                .send()
+                .await
+                .map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                .json()
+                .await
+                .map_err(|e| ArcanumError::Embedding(e.to_string()))?;
             tracing::Span::current().record("dimension", self.dimension());
             Ok(resp.data.into_iter().map(|d| Vector(d.embedding)).collect())
-        }.await;
+        }
+        .await;
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_model_calls_total", "provider" => "mistral", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "mistral", "operation" => "embed").record(start.elapsed().as_secs_f64());
@@ -101,20 +110,30 @@ impl TextEnricher for MistralProvider {
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let start = std::time::Instant::now();
         let prompt = crate::ollama::build_prompt_for_enricher(&request);
-        let result = self.client
+        let result = self
+            .client
             .post("https://api.mistral.ai/v1/chat/completions")
             .bearer_auth(&self.api_key)
             .json(&MistralChatRequest {
                 model: &self.generate_model,
-                messages: vec![MistralMsg { role: "user", content: &prompt }],
+                messages: vec![MistralMsg {
+                    role: "user",
+                    content: &prompt,
+                }],
             })
-            .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json::<MistralChatResponse>().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+            .send()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()))?
+            .json::<MistralChatResponse>()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()));
         let result = result.map(|resp| {
             EnrichedText(
-                resp.choices.into_iter().next()
+                resp.choices
+                    .into_iter()
+                    .next()
                     .map(|c| c.message.content)
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
             )
         });
         let status = if result.is_ok() { "ok" } else { "error" };

@@ -1,11 +1,14 @@
-use crate::{dag::{PipelineStage, StageContext, CTX_FORCE, CTX_SKIP, CTX_REPLACE}, IngestionState};
-use arcanum_core::{traits::{DocumentVersionStore, SnapshotStore, ChunkMetadataStore, *}, types::*,
-    types::{ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
-    ArcanumError};
-use arcanum_ingestion::{
-    LoaderRegistry, MimeDetector,
-    ContextEnricher, EntityExtractor,
+use crate::{
+    dag::{PipelineStage, StageContext, CTX_FORCE, CTX_REPLACE, CTX_SKIP},
+    IngestionState,
 };
+use arcanum_core::{
+    traits::{ChunkMetadataStore, DocumentVersionStore, SnapshotStore, *},
+    types::*,
+    types::{ChunkMetadataRecord, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy},
+    ArcanumError,
+};
+use arcanum_ingestion::{ContextEnricher, EntityExtractor, LoaderRegistry, MimeDetector};
 use arcanum_middleware::CircuitBreaker;
 use arcanum_tree::RaptorBuilder;
 use arcanum_vector::Bm25Index;
@@ -15,21 +18,21 @@ use tokio::sync::Mutex;
 /// Context passed to `make_vector_chunk_stage` for best-effort shadow writes.
 /// All writes go to `shadow_collection_id`; failure does not fail primary ingestion.
 pub struct ShadowWriteContext {
-    pub chunker:              Arc<dyn Chunker>,
+    pub chunker: Arc<dyn Chunker>,
     pub shadow_collection_id: String,
-    pub embedder:             Arc<dyn Embedder>,
-    pub vector_store:         Arc<dyn VectorStore>,
-    pub vector_store_cb:      Arc<CircuitBreaker>,
+    pub embedder: Arc<dyn Embedder>,
+    pub vector_store: Arc<dyn VectorStore>,
+    pub vector_store_cb: Arc<CircuitBreaker>,
 }
 
 impl Clone for ShadowWriteContext {
     fn clone(&self) -> Self {
         Self {
-            chunker:              self.chunker.clone(),
+            chunker: self.chunker.clone(),
             shadow_collection_id: self.shadow_collection_id.clone(),
-            embedder:             self.embedder.clone(),
-            vector_store:         self.vector_store.clone(),
-            vector_store_cb:      self.vector_store_cb.clone(),
+            embedder: self.embedder.clone(),
+            vector_store: self.vector_store.clone(),
+            vector_store_cb: self.vector_store_cb.clone(),
         }
     }
 }
@@ -61,18 +64,21 @@ pub fn make_load_stage(
 }
 
 pub fn make_dedup_stage(
-    state:         Arc<Mutex<IngestionState>>,
+    state: Arc<Mutex<IngestionState>>,
     version_store: Arc<dyn DocumentVersionStore>,
 ) -> PipelineStage {
     PipelineStage {
         id: "dedup",
         deps: vec!["load"],
         run: Arc::new(move |mut ctx| {
-            let state         = state.clone();
+            let state = state.clone();
             let version_store = version_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "dedup", "executing dedup stage");
-                let force = ctx.get(CTX_FORCE).and_then(|v| v.as_bool()).unwrap_or(false);
+                let force = ctx
+                    .get(CTX_FORCE)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if force {
                     ctx.insert(CTX_REPLACE.to_string(), serde_json::json!(true));
                     return Ok(ctx);
@@ -83,9 +89,15 @@ pub fn make_dedup_stage(
                         stage: "dedup".into(),
                         message: "no doc after load".into(),
                     })?;
-                    (doc.source_uri.clone(), g.collection_id.0.clone(), doc.content_hash())
+                    (
+                        doc.source_uri.clone(),
+                        g.collection_id.0.clone(),
+                        doc.content_hash(),
+                    )
                 };
-                let latest = version_store.get_latest(&source_uri, &collection_id).await?;
+                let latest = version_store
+                    .get_latest(&source_uri, &collection_id)
+                    .await?;
                 match latest {
                     None => { /* new document — proceed */ }
                     Some(v) if v.content_hash == content_hash => {
@@ -102,28 +114,31 @@ pub fn make_dedup_stage(
 }
 
 pub fn make_cleanup_stage(
-    state:          Arc<Mutex<IngestionState>>,
+    state: Arc<Mutex<IngestionState>>,
     // Kept for call-site/signature stability across all 5 templates even
     // though unused: the version-supersede that used to happen here was
     // dead code (state.snapshot_document_id is only ever set by
     // make_snapshot_stage, which runs after cleanup in every template's
     // DAG) — real supersede fires from make_snapshot_stage instead.
     _version_store: Arc<dyn DocumentVersionStore>,
-    vector_store:   Arc<dyn VectorStore>,
-    graph_store:    Option<Arc<dyn GraphStore>>,
-    tree_store:     Option<Arc<dyn TreeStore>>,
+    vector_store: Arc<dyn VectorStore>,
+    graph_store: Option<Arc<dyn GraphStore>>,
+    tree_store: Option<Arc<dyn TreeStore>>,
 ) -> PipelineStage {
     PipelineStage {
         id: "cleanup",
         deps: vec!["dedup"],
         run: Arc::new(move |ctx| {
             let state = state.clone();
-            let vs    = vector_store.clone();
-            let gs    = graph_store.clone();
-            let ts    = tree_store.clone();
+            let vs = vector_store.clone();
+            let gs = graph_store.clone();
+            let ts = tree_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "cleanup", "executing cleanup stage");
-                let replace = ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()).unwrap_or(false);
+                let replace = ctx
+                    .get(CTX_REPLACE)
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
                 if !replace {
                     return Ok(ctx);
                 }
@@ -138,7 +153,9 @@ pub fn make_cleanup_stage(
                 if source_uri.is_empty() {
                     return Err(ArcanumError::Pipeline {
                         stage: "cleanup".into(),
-                        message: "document source_uri is empty — cannot safely delete stale store data".into(),
+                        message:
+                            "document source_uri is empty — cannot safely delete stale store data"
+                                .into(),
                     });
                 }
                 vs.delete_by_source_uri(&collection_id, &source_uri).await?;
@@ -155,7 +172,7 @@ pub fn make_cleanup_stage(
 }
 
 pub fn make_snapshot_stage(
-    state:         Arc<Mutex<IngestionState>>,
+    state: Arc<Mutex<IngestionState>>,
     version_store: Arc<dyn DocumentVersionStore>,
     snapshot_store: Arc<dyn SnapshotStore>,
 ) -> PipelineStage {
@@ -163,14 +180,23 @@ pub fn make_snapshot_stage(
         id: "snapshot",
         deps: vec!["preprocess"],
         run: Arc::new(move |ctx| {
-            let state          = state.clone();
-            let version_store  = version_store.clone();
+            let state = state.clone();
+            let version_store = version_store.clone();
             let snapshot_store = snapshot_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "snapshot", "executing snapshot stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
 
-                let (source_uri, collection_id, content_hash, mime_type, raw_content, canonical_json) = {
+                let (
+                    source_uri,
+                    collection_id,
+                    content_hash,
+                    mime_type,
+                    raw_content,
+                    canonical_json,
+                ) = {
                     let g = state.lock().await;
                     let doc = g.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
                         stage: "snapshot".into(),
@@ -187,10 +213,12 @@ pub fn make_snapshot_stage(
                 };
 
                 // Determine stable document_id and next version_num.
-                let latest = version_store.get_latest(&source_uri, &collection_id).await?;
+                let latest = version_store
+                    .get_latest(&source_uri, &collection_id)
+                    .await?;
                 let doc_id = match &latest {
                     Some(v) => v.document_id.clone(),
-                    None    => DocumentId::new(),
+                    None => DocumentId::new(),
                 };
                 let version_num = latest.as_ref().map(|v| v.version_num + 1).unwrap_or(1);
 
@@ -203,37 +231,34 @@ pub fn make_snapshot_stage(
                 }
 
                 // Persist raw bytes + canonical sidecar.
-                let location = snapshot_store.store(
-                    &doc_id,
-                    version_num,
-                    &raw_content,
-                    canonical_json.as_ref(),
-                ).await?;
+                let location = snapshot_store
+                    .store(&doc_id, version_num, &raw_content, canonical_json.as_ref())
+                    .await?;
 
                 // Build the version record but do NOT register it yet.
                 // make_register_version_stage runs after vector_write and calls add_version().
                 // This ensures the version is only visible if all stores are written.
                 let pending = DocumentVersion {
-                    document_id:   doc_id.clone(),
+                    document_id: doc_id.clone(),
                     version_num,
-                    source_uri:    source_uri.clone(),
+                    source_uri: source_uri.clone(),
                     collection_id: collection_id.clone(),
                     content_hash,
-                    snapshot_uri:  location.raw_uri.clone(),
+                    snapshot_uri: location.raw_uri.clone(),
                     canonical_uri: location.canonical_uri.clone(),
                     mime_type,
-                    status:        VersionStatus::Active,
-                    ingested_at:   chrono::Utc::now(),
-                    extra:         std::collections::HashMap::new(),
+                    status: VersionStatus::Active,
+                    ingested_at: chrono::Utc::now(),
+                    extra: std::collections::HashMap::new(),
                 };
 
                 // Write results back to state for chunk stage.
                 let mut g = state.lock().await;
                 g.snapshot_document_id = Some(doc_id);
                 g.snapshot_version_num = Some(version_num);
-                g.snapshot_uri         = Some(location.raw_uri);
-                g.canonical_uri        = location.canonical_uri;
-                g.pending_version      = Some(pending);
+                g.snapshot_uri = Some(location.raw_uri);
+                g.canonical_uri = location.canonical_uri;
+                g.pending_version = Some(pending);
 
                 Ok(ctx)
             })
@@ -253,10 +278,18 @@ pub fn make_preprocess_stage(
             let pp = preprocessor.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "preprocess", "executing preprocess stage");
-                if skip(&ctx) { return Ok(ctx); }
-                let doc = state.lock().await.doc.clone().ok_or_else(|| {
-                    ArcanumError::Pipeline { stage: "preprocess".into(), message: "no doc".into() }
-                })?;
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
+                let doc = state
+                    .lock()
+                    .await
+                    .doc
+                    .clone()
+                    .ok_or_else(|| ArcanumError::Pipeline {
+                        stage: "preprocess".into(),
+                        message: "no doc".into(),
+                    })?;
                 let Some(pp) = pp else {
                     return Err(ArcanumError::Ingestion(
                         "no preprocessor configured for this collection".into(),
@@ -289,7 +322,9 @@ pub fn make_vector_chunk_stage(
             let shadow = shadow.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_chunk", "executing vector chunk stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let (doc, collection_id) = {
                     let g = state.lock().await;
                     (
@@ -316,12 +351,12 @@ pub fn make_vector_chunk_stage(
                     // Attach ChunkProvenance with document/version/source tracking.
                     c.provenance = arcanum_core::types::ChunkProvenance {
                         document_version: snapshot_version_num.unwrap_or(0),
-                        source_uri:       source_uri.clone(),
-                        snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
-                        canonical_uri:    canonical_uri.clone(),
-                        page:             None,
-                        section:          None,
-                        block_ids:        vec![],
+                        source_uri: source_uri.clone(),
+                        snapshot_uri: snapshot_uri.clone().unwrap_or_default(),
+                        canonical_uri: canonical_uri.clone(),
+                        page: None,
+                        section: None,
+                        block_ids: vec![],
                     };
                 }
                 state.lock().await.chunks = chunks;
@@ -355,10 +390,11 @@ pub fn make_vector_chunk_stage(
                                                 chunk,
                                                 vector,
                                                 token_vectors: None,
-                                                store_id:      String::new(),
+                                                store_id: String::new(),
                                             })
                                             .collect();
-                                        if let Err(e) = sw.vector_store
+                                        if let Err(e) = sw
+                                            .vector_store
                                             .upsert(&sw.shadow_collection_id, indexed)
                                             .await
                                         {
@@ -397,7 +433,9 @@ pub fn make_graph_chunk_stage(
             let chunker = chunker.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "graph_chunk", "executing graph chunk stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let (doc, collection_id) = {
                     let g = state.lock().await;
                     (
@@ -422,12 +460,12 @@ pub fn make_graph_chunk_stage(
                     c.collection_id = collection_id.clone();
                     c.provenance = arcanum_core::types::ChunkProvenance {
                         document_version: snapshot_version_num.unwrap_or(0),
-                        source_uri:       source_uri.clone(),
-                        snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
-                        canonical_uri:    canonical_uri.clone(),
-                        page:             None,
-                        section:          None,
-                        block_ids:        vec![],
+                        source_uri: source_uri.clone(),
+                        snapshot_uri: snapshot_uri.clone().unwrap_or_default(),
+                        canonical_uri: canonical_uri.clone(),
+                        page: None,
+                        section: None,
+                        block_ids: vec![],
                     };
                 }
                 state.lock().await.graph_chunks = chunks;
@@ -449,7 +487,9 @@ pub fn make_tree_chunk_stage(
             let chunker = chunker.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "tree_chunk", "executing tree chunk stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let (doc, collection_id) = {
                     let g = state.lock().await;
                     (
@@ -474,12 +514,12 @@ pub fn make_tree_chunk_stage(
                     c.collection_id = collection_id.clone();
                     c.provenance = arcanum_core::types::ChunkProvenance {
                         document_version: snapshot_version_num.unwrap_or(0),
-                        source_uri:       source_uri.clone(),
-                        snapshot_uri:     snapshot_uri.clone().unwrap_or_default(),
-                        canonical_uri:    canonical_uri.clone(),
-                        page:             None,
-                        section:          None,
-                        block_ids:        vec![],
+                        source_uri: source_uri.clone(),
+                        snapshot_uri: snapshot_uri.clone().unwrap_or_default(),
+                        canonical_uri: canonical_uri.clone(),
+                        page: None,
+                        section: None,
+                        block_ids: vec![],
                     };
                 }
                 state.lock().await.tree_chunks = chunks;
@@ -501,7 +541,9 @@ pub fn make_context_enrich_stage(
             let enricher = enricher.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "context_enrich", "executing context_enrich stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let ce = ContextEnricher::new(enricher);
                 let (chunks, doc_context) = {
                     let g = state.lock().await;
@@ -537,7 +579,9 @@ pub fn make_entity_extract_stage(
             let gs = graph_store.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "entity_extract", "executing entity_extract stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let extractor = EntityExtractor::new(enricher);
                 let (chunks, collection_id) = {
                     let g = state.lock().await;
@@ -581,14 +625,21 @@ pub fn make_embed_stage(
             let cb = embedding_cb.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "embed", "executing embed stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 if !cb.allow_request() {
                     return Err(arcanum_core::ArcanumError::Embedding(
-                        "circuit open: embedding provider unavailable".into()
+                        "circuit open: embedding provider unavailable".into(),
                     ));
                 }
-                let texts: Vec<String> =
-                    state.lock().await.chunks.iter().map(|c| c.text.clone()).collect();
+                let texts: Vec<String> = state
+                    .lock()
+                    .await
+                    .chunks
+                    .iter()
+                    .map(|c| c.text.clone())
+                    .collect();
                 match embedder.embed(texts).await {
                     Ok(vectors) => {
                         cb.record_success();
@@ -630,15 +681,22 @@ pub fn make_tree_embed_stage(
             let cb = embedding_cb.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "tree_embed", "executing tree_embed stage");
-                if skip(&ctx) { return Ok(ctx); }
-                let texts: Vec<String> = state.lock().await.tree_chunks.iter()
-                    .map(|c| c.text.clone()).collect();
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
+                let texts: Vec<String> = state
+                    .lock()
+                    .await
+                    .tree_chunks
+                    .iter()
+                    .map(|c| c.text.clone())
+                    .collect();
                 if texts.is_empty() {
                     return Ok(ctx); // no tree chunks — leave tree_vectors empty
                 }
                 if !cb.allow_request() {
                     return Err(arcanum_core::ArcanumError::Embedding(
-                        "circuit open: tree embedding unavailable".into()
+                        "circuit open: tree embedding unavailable".into(),
                     ));
                 }
                 match embedder.embed(texts).await {
@@ -680,10 +738,12 @@ pub fn make_vector_write_stage(
             let bm25 = bm25_index.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "vector_write", "executing vector_write stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 if !cb.allow_request() {
                     return Err(arcanum_core::ArcanumError::Storage(
-                        "circuit open: vector store unavailable".into()
+                        "circuit open: vector store unavailable".into(),
                     ));
                 }
                 let (chunks, vectors, collection_id, doc_id, version_num) = {
@@ -714,21 +774,24 @@ pub fn make_vector_write_stage(
                 let metadata_records: Option<Vec<ChunkMetadataRecord>> = if cms.is_some() {
                     match (&doc_id, version_num) {
                         (Some(doc_id), Some(version_num)) => Some(
-                            indexed.iter().map(|chunk| ChunkMetadataRecord {
-                                chunk_id:      chunk.chunk.id.clone(),
-                                document_id:   doc_id.clone(),
-                                collection_id: collection_id.0.clone(),
-                                version_num,
-                                source_uri:    chunk.chunk.provenance.source_uri.clone(),
-                                snapshot_uri:  chunk.chunk.provenance.snapshot_uri.clone(),
-                                canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),
-                                page:          chunk.chunk.provenance.page,
-                                section:       chunk.chunk.provenance.section.clone(),
-                                block_ids:     chunk.chunk.provenance.block_ids.clone(),
-                                offset_start:  chunk.chunk.position.start,
-                                offset_end:    chunk.chunk.position.end,
-                                ingested_at:   chrono::Utc::now(),
-                            }).collect()
+                            indexed
+                                .iter()
+                                .map(|chunk| ChunkMetadataRecord {
+                                    chunk_id: chunk.chunk.id.clone(),
+                                    document_id: doc_id.clone(),
+                                    collection_id: collection_id.0.clone(),
+                                    version_num,
+                                    source_uri: chunk.chunk.provenance.source_uri.clone(),
+                                    snapshot_uri: chunk.chunk.provenance.snapshot_uri.clone(),
+                                    canonical_uri: chunk.chunk.provenance.canonical_uri.clone(),
+                                    page: chunk.chunk.provenance.page,
+                                    section: chunk.chunk.provenance.section.clone(),
+                                    block_ids: chunk.chunk.provenance.block_ids.clone(),
+                                    offset_start: chunk.chunk.position.start,
+                                    offset_end: chunk.chunk.position.end,
+                                    ingested_at: chrono::Utc::now(),
+                                })
+                                .collect(),
                         ),
                         _ => {
                             tracing::warn!(
@@ -744,7 +807,8 @@ pub fn make_vector_write_stage(
                 // BM25 wants (chunk_id, text) pairs — capture before `indexed` moves into
                 // vs.upsert below.
                 let bm25_docs: Option<Vec<(String, String)>> = bm25.as_ref().map(|_| {
-                    indexed.iter()
+                    indexed
+                        .iter()
                         .map(|c| (c.chunk.id.0.to_string(), c.chunk.text.clone()))
                         .collect()
                 });
@@ -783,18 +847,23 @@ pub fn make_vector_write_stage(
 /// Runs AFTER vector_write so the version is only registered when all store writes succeed.
 /// If this stage is skipped (dedup saw no change), no registration happens.
 pub fn make_register_version_stage(
-    state:         Arc<Mutex<IngestionState>>,
+    state: Arc<Mutex<IngestionState>>,
     version_store: Arc<dyn DocumentVersionStore>,
 ) -> PipelineStage {
     PipelineStage {
         id: "register_version",
         deps: vec!["vector_write"],
         run: Arc::new(move |ctx| {
-            let state         = state.clone();
+            let state = state.clone();
             let version_store = version_store.clone();
             Box::pin(async move {
-                tracing::debug!(stage = "register_version", "executing register_version stage");
-                if skip(&ctx) { return Ok(ctx); }
+                tracing::debug!(
+                    stage = "register_version",
+                    "executing register_version stage"
+                );
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let pending = state.lock().await.pending_version.take();
                 if let Some(version) = pending {
                     version_store.add_version(version).await?;
@@ -809,8 +878,8 @@ pub fn make_register_version_stage(
 #[cfg(test)]
 mod test_chunk_source_uri {
     use super::*;
-    use arcanum_ingestion::FixedSizeChunker;
     use arcanum_core::traits::NoOpDocumentVersionStore;
+    use arcanum_ingestion::FixedSizeChunker;
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -837,7 +906,7 @@ mod test_chunk_source_uri {
             tree_chunks: vec![],
             vectors: vec![],
             tree_vectors: vec![],
-            raw_content:   Some(doc.content.clone()),
+            raw_content: Some(doc.content.clone()),
             canonical_json: None,
             snapshot_document_id: None,
             snapshot_version_num: None,
@@ -851,8 +920,11 @@ mod test_chunk_source_uri {
         let chunks = state.lock().await.chunks.clone();
         assert!(!chunks.is_empty(), "expected at least one chunk");
         for chunk in &chunks {
-            assert_eq!(chunk.provenance.source_uri.as_str(), "samples/api-authentication.md",
-                "chunk provenance must contain source_uri");
+            assert_eq!(
+                chunk.provenance.source_uri.as_str(),
+                "samples/api-authentication.md",
+                "chunk provenance must contain source_uri"
+            );
         }
     }
 
@@ -867,11 +939,18 @@ mod test_chunk_source_uri {
             },
             collection_id: CollectionId("c".into()),
             doc: None,
-            chunks: vec![], graph_chunks: vec![], tree_chunks: vec![],
-            vectors: vec![], tree_vectors: vec![],
-            raw_content: None, canonical_json: None,
-            snapshot_document_id: None, snapshot_version_num: None,
-            snapshot_uri: None, canonical_uri: None, pending_version: None,
+            chunks: vec![],
+            graph_chunks: vec![],
+            tree_chunks: vec![],
+            vectors: vec![],
+            tree_vectors: vec![],
+            raw_content: None,
+            canonical_json: None,
+            snapshot_document_id: None,
+            snapshot_version_num: None,
+            snapshot_uri: None,
+            canonical_uri: None,
+            pending_version: None,
         }));
 
         // Insert a skip flag.
@@ -880,7 +959,10 @@ mod test_chunk_source_uri {
 
         let stage = make_register_version_stage(state.clone(), vs);
         let result_ctx = (stage.run)(ctx).await.unwrap();
-        assert!(result_ctx.get(CTX_SKIP).and_then(|v| v.as_bool()).unwrap_or(false));
+        assert!(result_ctx
+            .get(CTX_SKIP)
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false));
         // No panic means add_version was not called.
     }
 }
@@ -900,24 +982,28 @@ pub fn make_raptor_build_stage(
             let enricher = enricher.clone();
             Box::pin(async move {
                 tracing::debug!(stage = "raptor_build", "executing raptor_build stage");
-                if skip(&ctx) { return Ok(ctx); }
+                if skip(&ctx) {
+                    return Ok(ctx);
+                }
                 let (leaves, collection_id, source_uri) = {
                     let g = state.lock().await;
                     // Use tree-specific chunks and embeddings when available (per-backend chunkers).
                     // Fall back to primary vector chunks only when tree backend uses the same
                     // chunker and tree_chunks was not separately populated (backward-compatible).
-                    let (chunks, vectors) = if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
-                        (g.tree_chunks.clone(), g.tree_vectors.clone())
-                    } else {
-                        (g.chunks.clone(), g.vectors.clone())
-                    };
+                    let (chunks, vectors) =
+                        if !g.tree_chunks.is_empty() && !g.tree_vectors.is_empty() {
+                            (g.tree_chunks.clone(), g.tree_vectors.clone())
+                        } else {
+                            (g.chunks.clone(), g.vectors.clone())
+                        };
                     if chunks.len() != vectors.len() {
                         return Err(arcanum_core::ArcanumError::Pipeline {
                             stage: "raptor_build".into(),
                             message: format!(
                                 "chunk/vector count mismatch: {} chunks vs {} vectors — \
                                  ensure make_tree_embed_stage runs before make_raptor_build_stage",
-                                chunks.len(), vectors.len()
+                                chunks.len(),
+                                vectors.len()
                             ),
                         });
                     }

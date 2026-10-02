@@ -1,13 +1,16 @@
-use arcanum_engine::services::collection::CollectionService;
-use arcanum_core::{config::ArcanumConfig, types::CollectionId};
 use arcanum_core::traits::Preprocessor;
+use arcanum_core::{config::ArcanumConfig, types::CollectionId};
+use arcanum_engine::services::collection::CollectionService;
 use arcanum_ingestion::PreprocessorCatalog;
 use std::sync::Arc;
 
 struct StubPreprocessor;
 #[async_trait::async_trait]
 impl Preprocessor for StubPreprocessor {
-    async fn process(&self, doc: arcanum_core::types::RawDocument) -> arcanum_core::Result<arcanum_core::types::RawDocument> {
+    async fn process(
+        &self,
+        doc: arcanum_core::types::RawDocument,
+    ) -> arcanum_core::Result<arcanum_core::types::RawDocument> {
         Ok(doc)
     }
 }
@@ -38,8 +41,12 @@ async fn set_preprocessor_with_registered_name_succeeds() {
     catalog.register("acme-edi", Arc::new(StubPreprocessor));
     let svc = mock_collection_service(catalog);
 
-    svc.create(CollectionId("col1".into()), "desc".into(), &admin_claims()).await.unwrap();
-    svc.set_preprocessor("col1", Some("acme-edi".into())).await.unwrap();
+    svc.create(CollectionId("col1".into()), "desc".into(), &admin_claims())
+        .await
+        .unwrap();
+    svc.set_preprocessor("col1", Some("acme-edi".into()))
+        .await
+        .unwrap();
 
     let info = svc.get("col1").await.unwrap();
     assert_eq!(info.preprocessor, Some("acme-edi".to_string()));
@@ -48,9 +55,13 @@ async fn set_preprocessor_with_registered_name_succeeds() {
 #[tokio::test]
 async fn set_preprocessor_with_unregistered_name_returns_config_error() {
     let svc = mock_collection_service(PreprocessorCatalog::new());
-    svc.create(CollectionId("col1".into()), "desc".into(), &admin_claims()).await.unwrap();
+    svc.create(CollectionId("col1".into()), "desc".into(), &admin_claims())
+        .await
+        .unwrap();
 
-    let result = svc.set_preprocessor("col1", Some("nonexistent".into())).await;
+    let result = svc
+        .set_preprocessor("col1", Some("nonexistent".into()))
+        .await;
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("nonexistent"));
 
@@ -65,8 +76,12 @@ async fn set_preprocessor_none_clears_override() {
     catalog.register("acme-edi", Arc::new(StubPreprocessor));
     let svc = mock_collection_service(catalog);
 
-    svc.create(CollectionId("col1".into()), "desc".into(), &admin_claims()).await.unwrap();
-    svc.set_preprocessor("col1", Some("acme-edi".into())).await.unwrap();
+    svc.create(CollectionId("col1".into()), "desc".into(), &admin_claims())
+        .await
+        .unwrap();
+    svc.set_preprocessor("col1", Some("acme-edi".into()))
+        .await
+        .unwrap();
     svc.set_preprocessor("col1", None).await.unwrap();
 
     let info = svc.get("col1").await.unwrap();

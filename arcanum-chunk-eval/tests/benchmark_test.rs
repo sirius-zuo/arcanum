@@ -1,4 +1,4 @@
-use arcanum_chunk_eval::benchmark::{BenchmarkJob, LabeledQuery, run_benchmark};
+use arcanum_chunk_eval::benchmark::{run_benchmark, BenchmarkJob, LabeledQuery};
 use arcanum_core::types::{ChunkStrategyConfig, DocumentId, RawDocument};
 
 fn make_doc(text: &str) -> RawDocument {
@@ -33,7 +33,11 @@ async fn benchmark_returns_one_metric_per_strategy() {
         ],
     };
     let results = run_benchmark(job).await.unwrap();
-    assert_eq!(results.len(), 2, "should return one BenchmarkMetrics per strategy");
+    assert_eq!(
+        results.len(),
+        2,
+        "should return one BenchmarkMetrics per strategy"
+    );
 }
 
 #[tokio::test]

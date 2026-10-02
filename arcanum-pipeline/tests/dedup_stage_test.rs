@@ -1,16 +1,19 @@
+use arcanum_core::{
+    traits::{DocumentVersionStore, NoOpDocumentVersionStore, Source},
+    types::{
+        CollectionId, DocumentEntry, DocumentId, DocumentVersion, RawDocument, VersionStatus,
+        VersioningPolicy,
+    },
+    Result,
+};
+use arcanum_ingestion::{LoaderRegistry, RawLoader};
 use arcanum_pipeline::{
     dag::{StageContext, CTX_FORCE, CTX_REPLACE, CTX_SKIP},
     executor::DagExecutor,
     ingestion_state::IngestionState,
-    stages::{make_load_stage, make_dedup_stage},
+    stages::{make_dedup_stage, make_load_stage},
     PipelineDAG,
 };
-use arcanum_core::{
-    traits::{DocumentVersionStore, NoOpDocumentVersionStore, Source},
-    types::{CollectionId, DocumentEntry, DocumentId, DocumentVersion, VersionStatus, VersioningPolicy, RawDocument},
-    Result,
-};
-use arcanum_ingestion::{LoaderRegistry, RawLoader};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -30,7 +33,9 @@ fn make_loaders() -> Arc<LoaderRegistry> {
     Arc::new(LoaderRegistry::new().register(Arc::new(RawLoader::new())))
 }
 
-struct MatchingHashStore { hash: String }
+struct MatchingHashStore {
+    hash: String,
+}
 
 #[async_trait]
 impl DocumentVersionStore for MatchingHashStore {
@@ -52,14 +57,30 @@ impl DocumentVersionStore for MatchingHashStore {
     async fn get_versioning_policy(&self, _: &str) -> Result<VersioningPolicy> {
         Ok(VersioningPolicy::AppendOnly)
     }
-    async fn add_version(&self, _: DocumentVersion) -> Result<()> { Ok(()) }
-    async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
-    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
-    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
-    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
-    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
-    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
+    async fn add_version(&self, _: DocumentVersion) -> Result<()> {
+        Ok(())
+    }
+    async fn supersede_active(&self, _: &DocumentId) -> Result<()> {
+        Ok(())
+    }
+    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> {
+        Ok(vec![])
+    }
+    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> {
+        Ok(())
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
+        Ok(None)
+    }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
+    }
 }
 
 struct DifferentHashStore;
@@ -84,14 +105,30 @@ impl DocumentVersionStore for DifferentHashStore {
     async fn get_versioning_policy(&self, _: &str) -> Result<VersioningPolicy> {
         Ok(VersioningPolicy::AppendOnly)
     }
-    async fn add_version(&self, _: DocumentVersion) -> Result<()> { Ok(()) }
-    async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
-    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
-    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
-    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
-    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
-    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
+    async fn add_version(&self, _: DocumentVersion) -> Result<()> {
+        Ok(())
+    }
+    async fn supersede_active(&self, _: &DocumentId) -> Result<()> {
+        Ok(())
+    }
+    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> {
+        Ok(vec![])
+    }
+    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> {
+        Ok(())
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
+        Ok(None)
+    }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
+    }
 }
 
 struct NoVersionStore;
@@ -104,14 +141,30 @@ impl DocumentVersionStore for NoVersionStore {
     async fn get_versioning_policy(&self, _: &str) -> Result<VersioningPolicy> {
         Ok(VersioningPolicy::Replace)
     }
-    async fn add_version(&self, _: DocumentVersion) -> Result<()> { Ok(()) }
-    async fn supersede_active(&self, _: &DocumentId) -> Result<()> { Ok(()) }
-    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> { Ok(vec![]) }
-    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> { Ok(()) }
-    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> { Ok(()) }
-    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> { Ok(None) }
-    async fn list_collections(&self) -> Result<Vec<String>> { Ok(vec![]) }
-    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> { Ok(vec![]) }
+    async fn add_version(&self, _: DocumentVersion) -> Result<()> {
+        Ok(())
+    }
+    async fn supersede_active(&self, _: &DocumentId) -> Result<()> {
+        Ok(())
+    }
+    async fn list_versions(&self, _: &DocumentId) -> Result<Vec<DocumentVersion>> {
+        Ok(vec![])
+    }
+    async fn set_versioning_policy(&self, _: &str, _: VersioningPolicy) -> Result<()> {
+        Ok(())
+    }
+    async fn delete_by_source_uri(&self, _: &str, _: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn get_version(&self, _: &DocumentId, _: u32) -> Result<Option<DocumentVersion>> {
+        Ok(None)
+    }
+    async fn list_collections(&self) -> Result<Vec<String>> {
+        Ok(vec![])
+    }
+    async fn list_documents(&self, _: &str) -> Result<Vec<DocumentEntry>> {
+        Ok(vec![])
+    }
 }
 
 #[tokio::test]
@@ -132,7 +185,9 @@ async fn dedup_stage_skips_on_identical_content() {
         .add_stage(make_load_stage(state.clone(), make_loaders()))
         .add_stage(make_dedup_stage(state.clone(), store));
 
-    let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
+    let ctx = DagExecutor::execute(&dag, StageContext::default())
+        .await
+        .unwrap();
     assert_eq!(
         ctx.get(CTX_SKIP).and_then(|v| v.as_bool()),
         Some(true),
@@ -145,9 +200,14 @@ async fn dedup_stage_sets_replace_on_changed_content() {
     let state = make_state(b"new content".to_vec(), "file://test.txt");
     let dag = PipelineDAG::new()
         .add_stage(make_load_stage(state.clone(), make_loaders()))
-        .add_stage(make_dedup_stage(state.clone(), Arc::new(DifferentHashStore)));
+        .add_stage(make_dedup_stage(
+            state.clone(),
+            Arc::new(DifferentHashStore),
+        ));
 
-    let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
+    let ctx = DagExecutor::execute(&dag, StageContext::default())
+        .await
+        .unwrap();
     assert_eq!(
         ctx.get(CTX_REPLACE).and_then(|v| v.as_bool()),
         Some(true),
@@ -162,9 +222,17 @@ async fn dedup_stage_new_document_proceeds_normally() {
         .add_stage(make_load_stage(state.clone(), make_loaders()))
         .add_stage(make_dedup_stage(state.clone(), Arc::new(NoVersionStore)));
 
-    let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
-    assert!(ctx.get(CTX_SKIP).is_none(), "new document should not be skipped");
-    assert!(ctx.get(CTX_REPLACE).is_none(), "new document should not trigger replace");
+    let ctx = DagExecutor::execute(&dag, StageContext::default())
+        .await
+        .unwrap();
+    assert!(
+        ctx.get(CTX_SKIP).is_none(),
+        "new document should not be skipped"
+    );
+    assert!(
+        ctx.get(CTX_REPLACE).is_none(),
+        "new document should not trigger replace"
+    );
 }
 
 #[tokio::test]
@@ -190,9 +258,20 @@ async fn dedup_stage_new_version_store_is_treated_as_new() {
     let state = make_state(b"any content".to_vec(), "file://noop.txt");
     let dag = PipelineDAG::new()
         .add_stage(make_load_stage(state.clone(), make_loaders()))
-        .add_stage(make_dedup_stage(state.clone(), Arc::new(NoOpDocumentVersionStore)));
+        .add_stage(make_dedup_stage(
+            state.clone(),
+            Arc::new(NoOpDocumentVersionStore),
+        ));
 
-    let ctx = DagExecutor::execute(&dag, StageContext::default()).await.unwrap();
-    assert!(ctx.get(CTX_SKIP).is_none(), "NoOp store should treat as new document");
-    assert!(ctx.get(CTX_REPLACE).is_none(), "NoOp store should not trigger replace");
+    let ctx = DagExecutor::execute(&dag, StageContext::default())
+        .await
+        .unwrap();
+    assert!(
+        ctx.get(CTX_SKIP).is_none(),
+        "NoOp store should treat as new document"
+    );
+    assert!(
+        ctx.get(CTX_REPLACE).is_none(),
+        "NoOp store should not trigger replace"
+    );
 }

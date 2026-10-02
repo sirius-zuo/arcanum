@@ -1,23 +1,26 @@
-use std::sync::Arc;
 use arcanum_core::Result;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 pub type StageId = &'static str;
 pub type StageContext = HashMap<String, serde_json::Value>;
 pub type StageFn = Arc<
-    dyn Fn(StageContext) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StageContext>> + Send>>
-    + Send + Sync
+    dyn Fn(
+            StageContext,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<StageContext>> + Send>>
+        + Send
+        + Sync,
 >;
 
 /// Context flag set by the worker to force cleanup+re-ingest regardless of hash.
-pub const CTX_FORCE:   &str = "__force";
+pub const CTX_FORCE: &str = "__force";
 /// Context flag set by the dedup stage when content is unchanged — pipeline stages skip.
-pub const CTX_SKIP:    &str = "__skip";
+pub const CTX_SKIP: &str = "__skip";
 /// Context flag set by the dedup stage when content changed or recovery is needed.
 pub const CTX_REPLACE: &str = "__replace";
 /// Set by the executor: JSON array of non-core stage failures/skips for this run.
 pub const CTX_STAGE_FAILURES: &str = "__stage_failures";
-
 
 pub struct PipelineStage {
     pub id: StageId,
@@ -30,7 +33,9 @@ pub struct PipelineDAG {
 }
 
 impl PipelineDAG {
-    pub fn new() -> Self { Self { stages: vec![] } }
+    pub fn new() -> Self {
+        Self { stages: vec![] }
+    }
 
     pub fn add_stage(mut self, stage: PipelineStage) -> Self {
         self.stages.push(stage);

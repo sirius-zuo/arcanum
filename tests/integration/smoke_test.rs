@@ -2,8 +2,8 @@ use arcanum_core::config::ArcanumConfig;
 use arcanum_core::traits::NoOpDocumentVersionStore;
 use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_server::build_app;
-use axum::http::{Request, StatusCode};
 use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -14,18 +14,33 @@ async fn test_full_stack_health_check() {
     let engine = ArcanumEngineBuilder::new(ArcanumConfig::default())
         .with_auth_secret(TEST_SECRET)
         .version_store(Arc::new(NoOpDocumentVersionStore))
-        .build().await.unwrap();
+        .build()
+        .await
+        .unwrap();
 
     let app = build_app(Some(engine));
 
-    let resp = app.clone().oneshot(
-        Request::builder().uri("/health").body(Body::empty()).unwrap()
-    ).await.unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    let resp = app.oneshot(
-        Request::builder().uri("/ready").body(Body::empty()).unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/ready")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
@@ -34,16 +49,21 @@ async fn test_unauthorized_search_rejected() {
     let engine = ArcanumEngineBuilder::new(ArcanumConfig::default())
         .with_auth_secret(TEST_SECRET)
         .version_store(Arc::new(NoOpDocumentVersionStore))
-        .build().await.unwrap();
+        .build()
+        .await
+        .unwrap();
 
     let app = build_app(Some(engine));
-    let resp = app.oneshot(
-        Request::builder()
-            .method("POST")
-            .uri("/api/v1/search")
-            .header("content-type", "application/json")
-            .body(Body::from(r#"{"query":"test","collection_id":"docs"}"#))
-            .unwrap()
-    ).await.unwrap();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/search")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"query":"test","collection_id":"docs"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }

@@ -1,14 +1,16 @@
 use arcanum_core::{traits::Chunker, types::*, Result};
 use async_trait::async_trait;
-use tracing::instrument;
 use metrics;
+use tracing::instrument;
 
 pub struct StructureAwareChunker {
     max_chunk_chars: usize,
 }
 
 impl StructureAwareChunker {
-    pub fn new(max_chunk_chars: usize) -> Self { Self { max_chunk_chars } }
+    pub fn new(max_chunk_chars: usize) -> Self {
+        Self { max_chunk_chars }
+    }
 }
 
 fn build_chunk(text: String, doc: &RawDocument, index: usize, source_text: &str) -> Chunk {
@@ -49,7 +51,9 @@ fn split_into_blocks(text: &str) -> Vec<String> {
             current.push(line.to_string());
         }
     }
-    if !current.is_empty() { blocks.push(current.join("\n")); }
+    if !current.is_empty() {
+        blocks.push(current.join("\n"));
+    }
     blocks
 }
 
@@ -77,12 +81,15 @@ impl Chunker for StructureAwareChunker {
             } else {
                 // Split prose block into lines and accumulate up to max_chunk_chars
                 for line in block.lines() {
-                    if !current.is_empty() && current.len() + line.len() + 1 > self.max_chunk_chars {
+                    if !current.is_empty() && current.len() + line.len() + 1 > self.max_chunk_chars
+                    {
                         chunks.push(build_chunk(current.trim().to_string(), doc, idx, &text));
                         idx += 1;
                         current = String::new();
                     }
-                    if !current.is_empty() { current.push('\n'); }
+                    if !current.is_empty() {
+                        current.push('\n');
+                    }
                     current.push_str(line);
                 }
             }
@@ -94,7 +101,8 @@ impl Chunker for StructureAwareChunker {
             chunks.push(build_chunk(text.trim().to_string(), doc, 0, &text));
         }
         tracing::Span::current().record("chunk_count", chunks.len());
-        metrics::histogram!("arcanum_chunk_count", "chunker" => "structure").record(chunks.len() as f64);
+        metrics::histogram!("arcanum_chunk_count", "chunker" => "structure")
+            .record(chunks.len() as f64);
         Ok(chunks)
     }
 }
@@ -135,7 +143,10 @@ mod tests {
         let text = "First paragraph of text.\nSecond paragraph of text.";
         let doc = make_doc(text);
         let chunks = chunker.chunk(&doc).await.unwrap();
-        assert!(chunks.len() > 1, "should split long prose into multiple chunks");
+        assert!(
+            chunks.len() > 1,
+            "should split long prose into multiple chunks"
+        );
     }
 
     #[tokio::test]

@@ -1,9 +1,13 @@
-use std::sync::Arc;
-use arcanum_core::{traits::{TreeStore, TextEnricher}, types::*, Result};
-use linfa::DatasetBase;
+use arcanum_core::{
+    traits::{TextEnricher, TreeStore},
+    types::*,
+    Result,
+};
 use linfa::traits::{Fit, Predict};
+use linfa::DatasetBase;
 use linfa_clustering::KMeans;
 use ndarray::Array2;
+use std::sync::Arc;
 use tracing::instrument;
 
 pub struct RaptorBuilder<S: TreeStore + ?Sized> {
@@ -14,7 +18,11 @@ pub struct RaptorBuilder<S: TreeStore + ?Sized> {
 
 impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     pub fn new(store: Arc<S>, max_depth: u32) -> Self {
-        Self { store, max_depth, enricher: None }
+        Self {
+            store,
+            max_depth,
+            enricher: None,
+        }
     }
 
     /// Enables real LLM-based cluster summarization via EnrichIntent::Summarize.
@@ -27,9 +35,19 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
 
     async fn summarize(&self, group: &[&(String, Vector, Vec<ChunkId>)], level: u32) -> String {
         let placeholder = format!("{} chunks clustered at level {}", group.len(), level);
-        let Some(enricher) = &self.enricher else { return placeholder; };
-        let text = group.iter().map(|(t, _, _)| t.as_str()).collect::<Vec<_>>().join("\n\n");
-        let request = EnrichRequest { text, intent: EnrichIntent::Summarize, context: None };
+        let Some(enricher) = &self.enricher else {
+            return placeholder;
+        };
+        let text = group
+            .iter()
+            .map(|(t, _, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        let request = EnrichRequest {
+            text,
+            intent: EnrichIntent::Summarize,
+            context: None,
+        };
         match enricher.enrich(request).await {
             Ok(EnrichedText(summary)) => summary,
             Err(e) => {
@@ -40,13 +58,21 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     }
 
     #[instrument(skip(self, leaf_chunks), fields(collection, input_chunk_count = leaf_chunks.len(), max_depth = self.max_depth), err)]
-    pub async fn build(&self, collection: &str, source_uri: &str, leaf_chunks: Vec<(ChunkId, String, Vector)>) -> Result<()> {
+    pub async fn build(
+        &self,
+        collection: &str,
+        source_uri: &str,
+        leaf_chunks: Vec<(ChunkId, String, Vector)>,
+    ) -> Result<()> {
         // Store level-0 leaf nodes with their chunk IDs.
         for (chunk_id, text, vector) in &leaf_chunks {
             let node = TreeNode {
-                id: TreeNodeId::new(), level: 0,
-                text: text.clone(), vector: vector.clone(),
-                parent: None, children: vec![],
+                id: TreeNodeId::new(),
+                level: 0,
+                text: text.clone(),
+                vector: vector.clone(),
+                parent: None,
+                children: vec![],
                 cluster_centroid: None,
                 source_uri: source_uri.to_string(),
                 leaf_chunk_ids: vec![chunk_id.clone()],
@@ -61,7 +87,9 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
             .collect();
 
         for level in 1..=self.max_depth {
-            if current_level.len() <= 1 { break; }
+            if current_level.len() <= 1 {
+                break;
+            }
             let vectors: Vec<Vector> = current_level.iter().map(|(_, v, _)| v.clone()).collect();
             let k = ((current_level.len() as f64).sqrt().ceil() as usize).max(2);
             let clusters_indices = kmeans_cluster(&vectors, k);
@@ -69,14 +97,23 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
             for group_indices in &clusters_indices {
                 let group: Vec<_> = group_indices.iter().map(|&i| &current_level[i]).collect();
                 let summary = self.summarize(&group, level).await;
-                let centroid = self.centroid(&group.iter().map(|(t, v, _)| (t.clone(), v.clone())).collect::<Vec<_>>());
-                let leaf_chunk_ids: Vec<ChunkId> = group.iter()
+                let centroid = self.centroid(
+                    &group
+                        .iter()
+                        .map(|(t, v, _)| (t.clone(), v.clone()))
+                        .collect::<Vec<_>>(),
+                );
+                let leaf_chunk_ids: Vec<ChunkId> = group
+                    .iter()
                     .flat_map(|(_, _, ids)| ids.iter().cloned())
                     .collect();
                 let node = TreeNode {
-                    id: TreeNodeId::new(), level,
-                    text: summary.clone(), vector: centroid.clone(),
-                    parent: None, children: vec![],
+                    id: TreeNodeId::new(),
+                    level,
+                    text: summary.clone(),
+                    vector: centroid.clone(),
+                    parent: None,
+                    children: vec![],
                     cluster_centroid: Some(centroid.clone()),
                     source_uri: source_uri.to_string(),
                     leaf_chunk_ids: leaf_chunk_ids.clone(),
@@ -90,10 +127,16 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
     }
 
     fn centroid(&self, items: &[(String, Vector)]) -> Vector {
-        if items.is_empty() { return Vector(vec![]); }
-        let dim = items[0].1.0.len();
+        if items.is_empty() {
+            return Vector(vec![]);
+        }
+        let dim = items[0].1 .0.len();
         let mut sum = vec![0f32; dim];
-        for (_, v) in items { for (i, x) in v.0.iter().enumerate() { sum[i] += x; } }
+        for (_, v) in items {
+            for (i, x) in v.0.iter().enumerate() {
+                sum[i] += x;
+            }
+        }
         let n = items.len() as f32;
         Vector(sum.iter().map(|x| x / n).collect())
     }
@@ -101,7 +144,9 @@ impl<S: TreeStore + Send + Sync + ?Sized + 'static> RaptorBuilder<S> {
 
 /// K-means clustering of vectors. Returns groups of indices.
 pub fn kmeans_cluster(vectors: &[Vector], k: usize) -> Vec<Vec<usize>> {
-    if vectors.is_empty() { return vec![]; }
+    if vectors.is_empty() {
+        return vec![];
+    }
     let k_actual = k.min(vectors.len());
     if k_actual <= 1 {
         return vec![(0..vectors.len()).collect()];
@@ -112,7 +157,8 @@ pub fn kmeans_cluster(vectors: &[Vector], k: usize) -> Vec<Vec<usize>> {
         return vec![(0..vectors.len()).collect()];
     }
 
-    let data: Vec<f64> = vectors.iter()
+    let data: Vec<f64> = vectors
+        .iter()
         .flat_map(|v| v.0.iter().map(|&f| f as f64))
         .collect();
 
@@ -125,7 +171,8 @@ pub fn kmeans_cluster(vectors: &[Vector], k: usize) -> Vec<Vec<usize>> {
     let model = match KMeans::<f64, _>::params(k_actual)
         .max_n_iterations(100)
         .tolerance(1e-4)
-        .fit(&dataset) {
+        .fit(&dataset)
+    {
         Ok(m) => m,
         Err(_) => return vec![(0..vectors.len()).collect()],
     };
@@ -163,8 +210,14 @@ mod tests {
     struct FakeEnricher;
     #[async_trait::async_trait]
     impl arcanum_core::traits::TextEnricher for FakeEnricher {
-        async fn enrich(&self, req: arcanum_core::types::EnrichRequest) -> Result<arcanum_core::types::EnrichedText> {
-            Ok(arcanum_core::types::EnrichedText(format!("REAL SUMMARY OF: {}", req.text)))
+        async fn enrich(
+            &self,
+            req: arcanum_core::types::EnrichRequest,
+        ) -> Result<arcanum_core::types::EnrichedText> {
+            Ok(arcanum_core::types::EnrichedText(format!(
+                "REAL SUMMARY OF: {}",
+                req.text
+            )))
         }
     }
 
@@ -175,17 +228,26 @@ mod tests {
         let enricher: Arc<dyn arcanum_core::traits::TextEnricher> = Arc::new(FakeEnricher);
         let builder = RaptorBuilder::new(store.clone(), 2).with_enricher(enricher);
 
-        let leaves: Vec<(ChunkId, String, Vector)> = (0..4).map(|i| (
-            ChunkId::new(),
-            format!("leaf text {i}"),
-            Vector(vec![i as f32, 0.0, 0.0]),
-        )).collect();
-        builder.build("col", "file://doc.txt", leaves).await.unwrap();
+        let leaves: Vec<(ChunkId, String, Vector)> = (0..4)
+            .map(|i| {
+                (
+                    ChunkId::new(),
+                    format!("leaf text {i}"),
+                    Vector(vec![i as f32, 0.0, 0.0]),
+                )
+            })
+            .collect();
+        builder
+            .build("col", "file://doc.txt", leaves)
+            .await
+            .unwrap();
 
         let level1 = store.get_level("col", 1).await.unwrap();
         assert!(!level1.is_empty(), "expected at least one level-1 node");
         assert!(
-            level1.iter().any(|n| n.text.starts_with("REAL SUMMARY OF:")),
+            level1
+                .iter()
+                .any(|n| n.text.starts_with("REAL SUMMARY OF:")),
             "level-1 node text should come from the enricher, not the placeholder: {:?}",
             level1.iter().map(|n| &n.text).collect::<Vec<_>>()
         );
@@ -197,17 +259,26 @@ mod tests {
         let store = Arc::new(InMemoryTreeStore::new());
         let builder = RaptorBuilder::new(store.clone(), 2);
 
-        let leaves: Vec<(ChunkId, String, Vector)> = (0..4).map(|i| (
-            ChunkId::new(),
-            format!("leaf text {i}"),
-            Vector(vec![i as f32, 0.0, 0.0]),
-        )).collect();
-        builder.build("col", "file://doc.txt", leaves).await.unwrap();
+        let leaves: Vec<(ChunkId, String, Vector)> = (0..4)
+            .map(|i| {
+                (
+                    ChunkId::new(),
+                    format!("leaf text {i}"),
+                    Vector(vec![i as f32, 0.0, 0.0]),
+                )
+            })
+            .collect();
+        builder
+            .build("col", "file://doc.txt", leaves)
+            .await
+            .unwrap();
 
         let level1 = store.get_level("col", 1).await.unwrap();
         assert!(!level1.is_empty());
         assert!(
-            level1.iter().any(|n| n.text.contains("chunks clustered at level")),
+            level1
+                .iter()
+                .any(|n| n.text.contains("chunks clustered at level")),
             "without an enricher, should fall back to the placeholder text"
         );
     }

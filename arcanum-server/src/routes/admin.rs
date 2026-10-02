@@ -1,22 +1,34 @@
-use axum::{extract::State, http::{StatusCode, HeaderMap}, response::IntoResponse, Json};
-use std::sync::Arc;
-use arcanum_engine::ArcanumEngine;
 use arcanum_engine::auth::{AdminClaims, AdminRole};
 use arcanum_engine::services::admin::AdminService;
+use arcanum_engine::ArcanumEngine;
+use axum::{
+    extract::State,
+    http::{HeaderMap, StatusCode},
+    response::IntoResponse,
+    Json,
+};
 use metrics::counter;
+use std::sync::Arc;
 
 /// Validate RS256 admin JWT and return AdminClaims.
-fn validate_admin_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>>)
-    -> Result<AdminClaims, (StatusCode, Json<serde_json::Value>)>
-{
+fn validate_admin_bearer(
+    headers: &HeaderMap,
+    engine: &Option<Arc<ArcanumEngine>>,
+) -> Result<AdminClaims, (StatusCode, Json<serde_json::Value>)> {
     let Some(engine) = engine else {
-        return Err((StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "engine not initialised" }))));
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "engine not initialised" })),
+        ));
     };
-    let header_val = headers.get("Authorization")
-        .ok_or_else(|| (StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "missing Authorization header" }))))?;
-    let token = header_val.to_str()
+    let header_val = headers.get("Authorization").ok_or_else(|| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "missing Authorization header" })),
+        )
+    })?;
+    let token = header_val
+        .to_str()
         .unwrap_or("")
         .strip_prefix("Bearer ")
         .unwrap_or(header_val.to_str().unwrap_or(""));
@@ -25,12 +37,17 @@ fn validate_admin_bearer(headers: &HeaderMap, engine: &Option<Arc<ArcanumEngine>
         return Ok(claims);
     }
     // Fall back to HMAC API key with is_admin=true.
-    let api_claims = engine.auth.validate_api_key(token)
-        .map_err(|_| (StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({ "error": "invalid or expired token" }))))?;
+    let api_claims = engine.auth.validate_api_key(token).map_err(|_| {
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({ "error": "invalid or expired token" })),
+        )
+    })?;
     if !api_claims.is_admin {
-        return Err((StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": "admin access required" }))));
+        return Err((
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": "admin access required" })),
+        ));
     }
     Ok(AdminClaims {
         sub: api_claims.user_id,
@@ -49,14 +66,25 @@ pub async fn list_ingestion_sources(
             Err(e) => return e.into_response(),
         };
         if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
-            return (StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
         let eng = engine.as_ref().unwrap();
         let sources = eng.source.list().await;
-        (StatusCode::OK, Json(serde_json::json!({ "sources": sources }))).into_response()
+        (
+            StatusCode::OK,
+            Json(serde_json::json!({ "sources": sources })),
+        )
+            .into_response()
     };
-    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
+    let status = if response.status() == StatusCode::OK {
+        "ok"
+    } else {
+        "error"
+    };
     counter!("arcanum_requests_total", "endpoint" => "admin/list_ingestion_sources", "status" => status).increment(1);
     response
 }
@@ -71,15 +99,23 @@ pub async fn get_audit_logs(
             Err(e) => return e.into_response(),
         };
         if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Operator) {
-            return (StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
         let eng = engine.as_ref().unwrap();
         let logs = eng.audit.query(100).await;
         (StatusCode::OK, Json(serde_json::json!({ "logs": logs }))).into_response()
     };
-    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    counter!("arcanum_requests_total", "endpoint" => "admin/get_audit_logs", "status" => status).increment(1);
+    let status = if response.status() == StatusCode::OK {
+        "ok"
+    } else {
+        "error"
+    };
+    counter!("arcanum_requests_total", "endpoint" => "admin/get_audit_logs", "status" => status)
+        .increment(1);
     response
 }
 
@@ -93,8 +129,11 @@ pub async fn rotate_keys(
             Err(e) => return e.into_response(),
         };
         if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Admin) {
-            return (StatusCode::FORBIDDEN,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response();
         }
         let eng = engine.as_ref().unwrap();
         match eng.admin.rotate_keys(&claims.sub).await {
@@ -104,19 +143,31 @@ pub async fn rotate_keys(
                         tracing::warn!("SecretStore reload after rotate_keys failed: {}", e);
                     }
                 }
-                (StatusCode::OK, Json(serde_json::json!({ "status": "rotated" }))).into_response()
+                (
+                    StatusCode::OK,
+                    Json(serde_json::json!({ "status": "rotated" })),
+                )
+                    .into_response()
             }
-            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response(),
         }
     };
-    let status = if response.status() == StatusCode::OK { "ok" } else { "error" };
-    counter!("arcanum_requests_total", "endpoint" => "admin/rotate_keys", "status" => status).increment(1);
+    let status = if response.status() == StatusCode::OK {
+        "ok"
+    } else {
+        "error"
+    };
+    counter!("arcanum_requests_total", "endpoint" => "admin/rotate_keys", "status" => status)
+        .increment(1);
     response
 }
 
 pub async fn run_gc(
-    headers:       HeaderMap,
+    headers: HeaderMap,
     State(engine): State<Option<Arc<ArcanumEngine>>>,
 ) -> impl IntoResponse {
     let claims = match validate_admin_bearer(&headers, &engine) {
@@ -124,18 +175,26 @@ pub async fn run_gc(
         Err(e) => return e.into_response(),
     };
     if let Err(e) = AdminService::require_role(&claims.role, &AdminRole::Admin) {
-        return (StatusCode::FORBIDDEN,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response();
     }
     let eng = engine.as_ref().unwrap();
     let Some(gc) = &eng.gc_worker else {
-        return (StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({ "error": "GC worker not configured" }))).into_response();
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "GC worker not configured" })),
+        )
+            .into_response();
     };
     match gc.run_once().await {
         Ok(report) => (StatusCode::OK, Json(report)).into_response(),
-        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({ "error": e.to_string() }))).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": e.to_string() })),
+        )
+            .into_response(),
     }
 }
-

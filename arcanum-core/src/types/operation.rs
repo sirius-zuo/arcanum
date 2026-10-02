@@ -1,9 +1,9 @@
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use chrono::{DateTime, Utc};
-use std::collections::HashMap;
 use super::document::CollectionId;
 use crate::ArcanumError;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 /// Stable identifier for a durable ingestion operation. This is what Core
 /// receives on submission and later queries by.
@@ -19,20 +19,20 @@ impl OperationId {
 
 #[derive(Debug, Clone)]
 pub struct IngestionTask {
-    pub operation_id:      OperationId,
-    pub source_uri:        String,
-    pub collection_id:     CollectionId,
+    pub operation_id: OperationId,
+    pub source_uri: String,
+    pub collection_id: CollectionId,
     pub pipeline_template: String,
-    pub force:             bool,
+    pub force: bool,
     /// Inline content for direct uploads. When present, the worker builds
     /// `Source::Raw` from these bytes instead of resolving `source_uri`.
-    pub content:           Option<Vec<u8>>,
+    pub content: Option<Vec<u8>>,
     /// MIME hint for inline content (derived from the upload filename).
-    pub mime_hint:         Option<String>,
+    pub mime_hint: Option<String>,
     /// Durable locator for a payload staged in the `OperationPayloadStore`.
     /// Set when `content` is `None` and the submission was staged before
     /// `create_or_get`; the worker resolves `Source::Raw` from these bytes.
-    pub payload_locator:   Option<String>,
+    pub payload_locator: Option<String>,
 }
 
 /// Lifecycle of a durable ingestion operation.
@@ -75,8 +75,8 @@ pub enum PartialOutputDisposition {
 /// retry could succeed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SafeOperationError {
-    pub code:      String,
-    pub message:   String,
+    pub code: String,
+    pub message: String,
     pub retryable: bool,
 }
 
@@ -86,13 +86,13 @@ pub struct SafeOperationError {
 /// the applicable version-specific original-content URI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IngestionReport {
-    pub operation_id:                OperationId,
-    pub status:                      OperationStatus,
-    pub outcome:                     Option<IngestionOutcome>,
-    pub content_uri:                 Option<String>,
-    pub error:                       Option<SafeOperationError>,
+    pub operation_id: OperationId,
+    pub status: OperationStatus,
+    pub outcome: Option<IngestionOutcome>,
+    pub content_uri: Option<String>,
+    pub error: Option<SafeOperationError>,
     /// How partial outputs were handled when `status` is `Failed`.
-    pub partial_output_disposition:  Option<PartialOutputDisposition>,
+    pub partial_output_disposition: Option<PartialOutputDisposition>,
 }
 
 impl IngestionReport {

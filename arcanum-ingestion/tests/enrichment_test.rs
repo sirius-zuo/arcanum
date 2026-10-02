@@ -1,6 +1,6 @@
-use arcanum_ingestion::ContextEnricher;
-use arcanum_core::types::*;
 use arcanum_core::traits::*;
+use arcanum_core::types::*;
+use arcanum_ingestion::ContextEnricher;
 use std::sync::Arc;
 
 struct EchoEnricher;
@@ -16,12 +16,20 @@ async fn test_context_enricher_prepends_context() {
     let enricher = ContextEnricher::new(Arc::new(EchoEnricher));
     let chunk = Chunk {
         provenance: arcanum_core::types::ChunkProvenance::default(),
-        id: ChunkId::new(), text: "ownership rules".into(),
+        id: ChunkId::new(),
+        text: "ownership rules".into(),
         document_id: DocumentId::new(),
         collection_id: CollectionId("test".into()),
-        position: ChunkPosition { start: 0, end: 14, index: 0 },
+        position: ChunkPosition {
+            start: 0,
+            end: 14,
+            index: 0,
+        },
         metadata: ChunkMetadata::default(),
     };
-    let enriched = enricher.enrich_chunk(chunk, "Rust Book, Chapter 4").await.unwrap();
+    let enriched = enricher
+        .enrich_chunk(chunk, "Rust Book, Chapter 4")
+        .await
+        .unwrap();
     assert!(enriched.text.contains("[ctx]"));
 }

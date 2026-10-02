@@ -1,5 +1,5 @@
 use arcanum_core::Result;
-use arcanum_eval::{EvalReport, BenchmarkDataset};
+use arcanum_eval::{BenchmarkDataset, EvalReport};
 use tracing::instrument;
 
 #[derive(Debug)]

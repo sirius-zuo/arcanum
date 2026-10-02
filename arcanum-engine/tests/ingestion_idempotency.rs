@@ -7,11 +7,11 @@
 //! `Succeeded` with the original-content URI even though no event subscriber
 //! was ever connected.
 
-use arcanum_engine::audit::AuditLogger;
-use arcanum_engine::event_bus::EventBus;
-use arcanum_engine::services::ingestion::{IngestionService, IngestRequest};
 use arcanum_core::traits::{OperationPayloadStore, OperationStore, ProgressEmitter};
 use arcanum_core::types::{CollectionId, IngestionOutcome, OperationStatus};
+use arcanum_engine::audit::AuditLogger;
+use arcanum_engine::event_bus::EventBus;
+use arcanum_engine::services::ingestion::{IngestRequest, IngestionService};
 use arcanum_ingestion::operations::sqlite::SqliteOperationStore;
 use arcanum_ingestion::LocalOperationPayloadStore;
 use arcanum_middleware::BoundedQueue;
@@ -85,7 +85,11 @@ fn stub_deps() -> Arc<PipelineDeps> {
         ) -> arcanum_core::Result<Vec<arcanum_core::traits::ScoredChunk>> {
             Ok(vec![])
         }
-        async fn delete(&self, _: &str, _: &[arcanum_core::types::ChunkId]) -> arcanum_core::Result<()> {
+        async fn delete(
+            &self,
+            _: &str,
+            _: &[arcanum_core::types::ChunkId],
+        ) -> arcanum_core::Result<()> {
             Ok(())
         }
         async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> {
@@ -167,7 +171,10 @@ async fn ingestion_idempotency_lost_event_recovery_returns_terminal_report() {
         mime_hint: Some("text/plain".to_string()),
     };
 
-    let op_id = service.ingest(req.clone(), "user-1").await.expect("first ingest");
+    let op_id = service
+        .ingest(req.clone(), "user-1")
+        .await
+        .expect("first ingest");
 
     // Accepted is persisted before the task is enqueued.
     let accepted = store
@@ -180,7 +187,10 @@ async fn ingestion_idempotency_lost_event_recovery_returns_terminal_report() {
     // Idempotent replay: the identical submission returns the ORIGINAL id and
     // must NOT enqueue a second task.
     let replay_id = service.ingest(req.clone(), "user-1").await.expect("replay");
-    assert_eq!(replay_id, op_id, "replay must return the original operation id");
+    assert_eq!(
+        replay_id, op_id,
+        "replay must return the original operation id"
+    );
 
     // Process the single queued task with a worker over the same store + queue.
     let worker = IngestionWorker::new(
@@ -195,20 +205,17 @@ async fn ingestion_idempotency_lost_event_recovery_returns_terminal_report() {
     processed.expect("task processed cleanly");
 
     // A NEW service over the SAME store observes the terminal report.
-    let _service2 = IngestionService::new_from_parts(
-        queue,
-        events,
-        audit,
-        store.clone(),
-        payload_store,
-    );
+    let _service2 =
+        IngestionService::new_from_parts(queue, events, audit, store.clone(), payload_store);
     let operation = store
         .get(&op_id)
         .await
         .expect("get terminal")
         .expect("operation exists");
     assert_eq!(operation.status, OperationStatus::Succeeded);
-    let report = operation.terminal_report.expect("terminal report persisted");
+    let report = operation
+        .terminal_report
+        .expect("terminal report persisted");
     assert_eq!(report.outcome, Some(IngestionOutcome::Ingested));
     let content_uri = report
         .content_uri

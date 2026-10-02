@@ -3,7 +3,11 @@ use std::io::Write as IoWrite;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use arcanum_core::{traits::Preprocessor, types::{DocumentId, RawDocument}, ArcanumError, Result};
+use arcanum_core::{
+    traits::Preprocessor,
+    types::{DocumentId, RawDocument},
+    ArcanumError, Result,
+};
 use async_trait::async_trait;
 
 /// Shared response shape for both HTTP and async Docling backends.
@@ -17,7 +21,7 @@ struct ConvertedDoc {
     #[serde(default)]
     md_content: Option<String>,
     #[serde(default)]
-    metadata:   Option<serde_json::Value>,
+    metadata: Option<serde_json::Value>,
 }
 
 pub enum DoclingBackend {
@@ -34,8 +38,8 @@ pub enum DoclingBackend {
 }
 
 pub struct DoclingPreprocessor {
-    backend:    DoclingBackend,
-    client:     reqwest::Client,
+    backend: DoclingBackend,
+    client: reqwest::Client,
     canonicals: RwLock<HashMap<DocumentId, serde_json::Value>>,
 }
 
@@ -51,14 +55,23 @@ impl DoclingPreprocessor {
     /// Extract Docling canonical JSON from the response body string.
     fn extract_canonical_from_str(&self, body: &str) -> Option<serde_json::Value> {
         let resp: ConvertResponse = serde_json::from_str(body)
-            .map_err(|e| tracing::debug!("docling response does not match expected shape; canonical will be None: {e}"))
+            .map_err(|e| {
+                tracing::debug!(
+                    "docling response does not match expected shape; canonical will be None: {e}"
+                )
+            })
             .ok()?;
 
         // Build a minimal canonical from the metadata if available.
         resp.document.metadata.map(|m| {
             let mut canonical = serde_json::Map::new();
             if let Some(md) = m.as_object() {
-                canonical.insert("blocks".to_string(), md.get("blocks").cloned().unwrap_or_else(|| serde_json::Value::Array(vec![])));
+                canonical.insert(
+                    "blocks".to_string(),
+                    md.get("blocks")
+                        .cloned()
+                        .unwrap_or_else(|| serde_json::Value::Array(vec![])),
+                );
             }
             serde_json::Value::Object(canonical)
         })
@@ -69,9 +82,10 @@ impl DoclingPreprocessor {
         let resp: ConvertResponse = serde_json::from_str(body)
             .map_err(|e| ArcanumError::Ingestion(format!("docling response parse error: {e}")))?;
 
-        let md = resp.document.md_content.ok_or_else(|| {
-            ArcanumError::Ingestion("docling response missing md_content".into())
-        })?;
+        let md = resp
+            .document
+            .md_content
+            .ok_or_else(|| ArcanumError::Ingestion("docling response missing md_content".into()))?;
 
         if md.is_empty() {
             return Err(ArcanumError::Ingestion(
@@ -175,11 +189,7 @@ impl DoclingPreprocessor {
         };
 
         let budget = deadline.saturating_duration_since(Instant::now());
-        let mut req = self
-            .client
-            .post(&endpoint)
-            .timeout(budget)
-            .multipart(form);
+        let mut req = self.client.post(&endpoint).timeout(budget).multipart(form);
 
         if let Some(key) = api_key {
             req = req.header("X-Api-Key", key.as_str());
@@ -203,10 +213,9 @@ impl DoclingPreprocessor {
                 .await
         } else {
             // Read the response body once, then parse both canonical and markdown.
-            let body = resp
-                .text()
-                .await
-                .map_err(|e| ArcanumError::Ingestion(format!("docling response body error: {e}")))?;
+            let body = resp.text().await.map_err(|e| {
+                ArcanumError::Ingestion(format!("docling response body error: {e}"))
+            })?;
             let md = Self::extract_md_from_str(&body)?;
             let canonical = self.extract_canonical_from_str(&body);
             if let Some(ref canon) = canonical {
@@ -242,10 +251,9 @@ impl DoclingPreprocessor {
             error_message: Option<String>,
         }
 
-        let submit: SubmitResponse = submit_resp
-            .json()
-            .await
-            .map_err(|e| ArcanumError::Ingestion(format!("docling async submit parse error: {e}")))?;
+        let submit: SubmitResponse = submit_resp.json().await.map_err(|e| {
+            ArcanumError::Ingestion(format!("docling async submit parse error: {e}"))
+        })?;
 
         let task_id = submit.task_id;
 
@@ -269,10 +277,9 @@ impl DoclingPreprocessor {
             if let Some(key) = api_key {
                 poll_req = poll_req.header("X-Api-Key", key.as_str());
             }
-            let poll_resp = poll_req
-                .send()
-                .await
-                .map_err(|e| ArcanumError::Ingestion(format!("docling poll request failed: {e}")))?;
+            let poll_resp = poll_req.send().await.map_err(|e| {
+                ArcanumError::Ingestion(format!("docling poll request failed: {e}"))
+            })?;
 
             if !poll_resp.status().is_success() {
                 let status = poll_resp.status().as_u16();
@@ -290,9 +297,7 @@ impl DoclingPreprocessor {
             match poll.task_status.as_str() {
                 "success" => break,
                 "failure" => {
-                    let msg = poll
-                        .error_message
-                        .unwrap_or_else(|| "unknown error".into());
+                    let msg = poll.error_message.unwrap_or_else(|| "unknown error".into());
                     return Err(ArcanumError::Ingestion(format!(
                         "docling async conversion failed: {msg}"
                     )));
@@ -372,10 +377,9 @@ impl DoclingPreprocessor {
         let input_path_str = input_path
             .to_str()
             .ok_or_else(|| ArcanumError::Ingestion("temp input path is not valid UTF-8".into()))?;
-        let output_dir_str = output_dir
-            .path()
-            .to_str()
-            .ok_or_else(|| ArcanumError::Ingestion("temp output dir path is not valid UTF-8".into()))?;
+        let output_dir_str = output_dir.path().to_str().ok_or_else(|| {
+            ArcanumError::Ingestion("temp output dir path is not valid UTF-8".into())
+        })?;
 
         let output = tokio::process::Command::new(command)
             .args([
@@ -501,8 +505,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_backend_converts_pdf_to_markdown() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -529,8 +533,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_backend_sends_api_key_header() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
-        use wiremock::matchers::{method, path, header};
+        use wiremock::matchers::{header, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -557,8 +561,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_backend_error_on_non_2xx() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -577,13 +581,16 @@ mod tests {
         let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
         let err = p.process(doc).await.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("500"), "error should mention status code: {msg}");
+        assert!(
+            msg.contains("500"),
+            "error should mention status code: {msg}"
+        );
     }
 
     #[tokio::test]
     async fn test_http_backend_error_on_empty_md_content() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -608,8 +615,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_async_backend_polls_until_success() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
 
@@ -669,8 +676,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_async_backend_error_on_failure_status() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
 
@@ -701,7 +708,10 @@ mod tests {
         });
         let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
         let err = p.process(doc).await.unwrap_err();
-        assert!(err.to_string().contains("unsupported encoding"), "got: {err}");
+        assert!(
+            err.to_string().contains("unsupported encoding"),
+            "got: {err}"
+        );
     }
 
     #[tokio::test]
@@ -724,7 +734,10 @@ mod tests {
         let out = p.process(doc).await.unwrap();
         assert_eq!(out.mime_type, "text/markdown");
         let text = String::from_utf8(out.content).unwrap();
-        assert!(text.contains("# Stub Heading"), "expected heading: got {text:?}");
+        assert!(
+            text.contains("# Stub Heading"),
+            "expected heading: got {text:?}"
+        );
         assert!(text.contains("Stub body."), "expected body: got {text:?}");
     }
 
@@ -745,8 +758,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_http_async_poll_non_2xx_returns_error_with_status() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -773,13 +786,16 @@ mod tests {
         let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
         let err = p.process(doc).await.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("503"), "error should contain HTTP status: {msg}");
+        assert!(
+            msg.contains("503"),
+            "error should contain HTTP status: {msg}"
+        );
     }
 
     #[tokio::test]
     async fn test_http_async_result_fetch_non_2xx_returns_error_with_status() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -813,13 +829,16 @@ mod tests {
         let doc = raw_doc(b"%PDF-1.4".to_vec(), "application/pdf");
         let err = p.process(doc).await.unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("404"), "error should contain HTTP status: {msg}");
+        assert!(
+            msg.contains("404"),
+            "error should contain HTTP status: {msg}"
+        );
     }
 
     #[tokio::test]
     async fn test_http_async_unknown_task_status_returns_error_immediately() {
-        use wiremock::{MockServer, Mock, ResponseTemplate};
         use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -880,12 +899,20 @@ mod tests {
     fn canonical_evicts_after_read() {
         use serde_json::json;
 
-        let pp = DoclingPreprocessor::new(crate::DoclingBackend::Cli { command: "echo".into() });
+        let pp = DoclingPreprocessor::new(crate::DoclingBackend::Cli {
+            command: "echo".into(),
+        });
         let doc_id = DocumentId::new();
         let value = json!({"blocks": []});
 
         pp.set_canonical(&doc_id, value.clone());
-        assert!(pp.canonical(&doc_id).is_some(), "first read should return value");
-        assert!(pp.canonical(&doc_id).is_none(), "second read should return None — entry was evicted");
+        assert!(
+            pp.canonical(&doc_id).is_some(),
+            "first read should return value"
+        );
+        assert!(
+            pp.canonical(&doc_id).is_none(),
+            "second read should return None — entry was evicted"
+        );
     }
 }

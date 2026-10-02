@@ -13,7 +13,9 @@ pub struct PreprocessorCatalog {
 
 impl PreprocessorCatalog {
     pub fn new() -> Self {
-        Self { entries: HashMap::new() }
+        Self {
+            entries: HashMap::new(),
+        }
     }
 
     pub fn register(&mut self, name: impl Into<String>, p: Arc<dyn Preprocessor>) {

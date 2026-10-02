@@ -5,8 +5,8 @@ pub mod routes {
     pub mod api;
     pub mod auth;
     pub mod collections;
-    pub mod experiments;
     pub mod evidence;
+    pub mod experiments;
     pub mod graph;
     pub mod health;
     pub mod metrics;

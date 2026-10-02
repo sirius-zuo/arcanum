@@ -1,7 +1,7 @@
-use axum::http::{Request, StatusCode};
-use axum::body::Body;
-use tower::ServiceExt;
 use arcanum_server::build_app;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
+use tower::ServiceExt;
 
 async fn get(uri: &str) -> StatusCode {
     let app = build_app(None);
@@ -32,9 +32,11 @@ async fn test_ready_endpoint_returns_200() {
 
 #[tokio::test]
 async fn test_search_requires_auth() {
-    let status = post_json("/api/v1/search",
-        serde_json::json!({ "query": "test", "collection_id": "docs" })
-    ).await;
+    let status = post_json(
+        "/api/v1/search",
+        serde_json::json!({ "query": "test", "collection_id": "docs" }),
+    )
+    .await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 }
 

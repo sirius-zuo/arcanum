@@ -54,11 +54,13 @@ impl PgVectorStore {
         .await
         .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
-        sqlx::query(r#"
+        sqlx::query(
+            r#"
             CREATE TABLE IF NOT EXISTS arcanum_vector_collections (
                 name TEXT PRIMARY KEY
             )
-        "#)
+        "#,
+        )
         .execute(&self.pool)
         .await
         .map_err(|e| ArcanumError::Storage(format!("ensure_schema collections: {}", e)))?;
@@ -84,16 +86,15 @@ impl PgVectorStore {
 
     /// Encodes a `Vector` as a PostgreSQL literal, e.g. `[1,2,3]`.
     pub fn vector_to_pg_literal(v: &Vector) -> String {
-        let inner = v
-            .0
-            .iter()
-            .map(|f| {
-                // Strip trailing zeros for a compact representation.
-                let s = format!("{}", f);
-                s
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        let inner =
+            v.0.iter()
+                .map(|f| {
+                    // Strip trailing zeros for a compact representation.
+                    let s = format!("{}", f);
+                    s
+                })
+                .collect::<Vec<_>>()
+                .join(",");
         format!("[{}]", inner)
     }
 }
@@ -104,8 +105,8 @@ impl VectorStore for PgVectorStore {
     async fn upsert(&self, collection: &str, chunks: Vec<IndexedChunk>) -> Result<()> {
         for chunk in &chunks {
             let id = chunk.chunk.id.0.to_string();
-            let json = serde_json::to_string(chunk)
-                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            let json =
+                serde_json::to_string(chunk).map_err(|e| ArcanumError::Storage(e.to_string()))?;
             let vec_literal = Self::vector_to_pg_literal(&chunk.vector);
             let source_uri = chunk.chunk.provenance.source_uri.clone();
 
@@ -159,7 +160,8 @@ impl VectorStore for PgVectorStore {
                         "unsupported filter op for chunk_id (only In is supported) — ignoring"
                     );
                 } else if let Some(arr) = f.value.as_array() {
-                    let ids: Vec<String> = arr.iter()
+                    let ids: Vec<String> = arr
+                        .iter()
                         .filter_map(|v| v.as_str().map(String::from))
                         .collect();
                     if !ids.is_empty() {
@@ -194,7 +196,9 @@ impl VectorStore for PgVectorStore {
             sql.push_str(&format!(" AND id = ANY(${next_bind})"));
             next_bind += 1;
         }
-        sql.push_str(&format!(" ORDER BY embedding <=> $1::vector LIMIT ${next_bind}"));
+        sql.push_str(&format!(
+            " ORDER BY embedding <=> $1::vector LIMIT ${next_bind}"
+        ));
 
         let mut q = sqlx::query(&sql).bind(&vec_literal).bind(collection);
         if let Some(ref uri) = source_uri_filter {
@@ -218,8 +222,8 @@ impl VectorStore for PgVectorStore {
             let score: f64 = row
                 .try_get("score")
                 .map_err(|e| ArcanumError::Storage(e.to_string()))?;
-            let chunk: IndexedChunk = serde_json::from_str(&json)
-                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            let chunk: IndexedChunk =
+                serde_json::from_str(&json).map_err(|e| ArcanumError::Storage(e.to_string()))?;
             results.push(ScoredChunk {
                 chunk,
                 score: score as f32,
@@ -231,14 +235,12 @@ impl VectorStore for PgVectorStore {
     #[instrument(skip(self, ids), fields(store = "pgvector", collection_id = collection), err)]
     async fn delete(&self, collection: &str, ids: &[ChunkId]) -> Result<()> {
         for id in ids {
-            sqlx::query(
-                "DELETE FROM arcanum_chunks WHERE collection = $1 AND id = $2",
-            )
-            .bind(collection)
-            .bind(id.0.to_string())
-            .execute(&self.pool)
-            .await
-            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+            sqlx::query("DELETE FROM arcanum_chunks WHERE collection = $1 AND id = $2")
+                .bind(collection)
+                .bind(id.0.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
         }
         Ok(())
     }
@@ -246,7 +248,10 @@ impl VectorStore for PgVectorStore {
     #[instrument(skip(self), fields(store = "pgvector", collection_id = collection), err)]
     async fn delete_by_source_uri(&self, collection: &str, source_uri: &str) -> Result<()> {
         if source_uri.is_empty() {
-            tracing::warn!(store = "pgvector", "delete_by_source_uri called with empty source_uri — skipping");
+            tracing::warn!(
+                store = "pgvector",
+                "delete_by_source_uri called with empty source_uri — skipping"
+            );
             return Ok(());
         }
         sqlx::query(
@@ -264,13 +269,12 @@ impl VectorStore for PgVectorStore {
     #[instrument(skip(self), fields(store = "pgvector", collection_id = collection), err)]
     async fn collection_exists(&self, collection: &str) -> Result<bool> {
         use sqlx::Row;
-        let row = sqlx::query(
-            "SELECT COUNT(*) AS cnt FROM arcanum_chunks WHERE collection = $1 LIMIT 1",
-        )
-        .bind(collection)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+        let row =
+            sqlx::query("SELECT COUNT(*) AS cnt FROM arcanum_chunks WHERE collection = $1 LIMIT 1")
+                .bind(collection)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| ArcanumError::Storage(e.to_string()))?;
 
         let cnt: i64 = row
             .try_get("cnt")
@@ -280,12 +284,11 @@ impl VectorStore for PgVectorStore {
 
     #[instrument(skip(self), fields(store = "pgvector"), err)]
     async fn list_collections(&self) -> Result<Vec<String>> {
-        let rows: Vec<(String,)> = sqlx::query_as(
-            "SELECT name FROM arcanum_vector_collections ORDER BY name",
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
+        let rows: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM arcanum_vector_collections ORDER BY name")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| ArcanumError::Storage(format!("list_collections: {}", e)))?;
         Ok(rows.into_iter().map(|(name,)| name).collect())
     }
 
@@ -300,9 +303,10 @@ impl VectorStore for PgVectorStore {
         .map_err(|e| ArcanumError::Storage(format!("create_collection: {}", e)))?;
 
         if result.rows_affected() == 0 {
-            return Err(ArcanumError::AlreadyExists(
-                format!("collection '{}' already exists", collection),
-            ));
+            return Err(ArcanumError::AlreadyExists(format!(
+                "collection '{}' already exists",
+                collection
+            )));
         }
         Ok(())
     }
@@ -370,7 +374,11 @@ mod tests {
                 text: "hello pgvector".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("test".into()),
-                position: ChunkPosition { start: 0, end: 14, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 14,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -408,7 +416,11 @@ mod tests {
                 text: "to be deleted".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("del_test".into()),
-                position: ChunkPosition { start: 0, end: 13, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 13,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -446,7 +458,11 @@ mod tests {
                 text: "content a".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("src_uri_col_test".into()),
-                position: ChunkPosition { start: 0, end: 9, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 9,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///doc-a.pdf".into(),
@@ -459,7 +475,10 @@ mod tests {
         };
 
         store.upsert("src_uri_col_test", vec![chunk]).await.unwrap();
-        let count = store.count_documents(Some("src_uri_col_test")).await.unwrap();
+        let count = store
+            .count_documents(Some("src_uri_col_test"))
+            .await
+            .unwrap();
         assert_eq!(count, 1, "expected 1 distinct source_uri");
 
         // Cleanup
@@ -478,7 +497,11 @@ mod tests {
                 text: "doc a".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("del_uri_test".into()),
-                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///doc-a.pdf".into(),
@@ -496,7 +519,11 @@ mod tests {
                 text: "doc b".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("del_uri_test".into()),
-                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///doc-b.pdf".into(),
@@ -508,12 +535,24 @@ mod tests {
             store_id: String::new(),
         };
 
-        store.upsert("del_uri_test", vec![chunk_a, chunk_b]).await.unwrap();
-        assert_eq!(store.count_documents(Some("del_uri_test")).await.unwrap(), 2);
+        store
+            .upsert("del_uri_test", vec![chunk_a, chunk_b])
+            .await
+            .unwrap();
+        assert_eq!(
+            store.count_documents(Some("del_uri_test")).await.unwrap(),
+            2
+        );
 
-        store.delete_by_source_uri("del_uri_test", "file:///doc-a.pdf").await.unwrap();
-        assert_eq!(store.count_documents(Some("del_uri_test")).await.unwrap(), 1,
-            "only doc-b should remain");
+        store
+            .delete_by_source_uri("del_uri_test", "file:///doc-a.pdf")
+            .await
+            .unwrap();
+        assert_eq!(
+            store.count_documents(Some("del_uri_test")).await.unwrap(),
+            1,
+            "only doc-b should remain"
+        );
 
         // Cleanup
         store.delete_collection("del_uri_test").await.unwrap();
@@ -531,7 +570,11 @@ mod tests {
                 text: "doc a".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("filter_test".into()),
-                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///filter-a.pdf".into(),
@@ -549,7 +592,11 @@ mod tests {
                 text: "doc b".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("filter_test".into()),
-                position: ChunkPosition { start: 0, end: 5, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 5,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance {
                     source_uri: "file:///filter-b.pdf".into(),
@@ -561,20 +608,32 @@ mod tests {
             store_id: String::new(),
         };
 
-        store.upsert("filter_test", vec![chunk_a, chunk_b]).await.unwrap();
+        store
+            .upsert("filter_test", vec![chunk_a, chunk_b])
+            .await
+            .unwrap();
 
-        let results = store.search("filter_test", &VectorQuery {
-            vector: Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![MetadataFilter {
-                field: "source_uri".into(),
-                op: FilterOp::Eq,
-                value: serde_json::json!("file:///filter-a.pdf"),
-            }],
-        }).await.unwrap();
+        let results = store
+            .search(
+                "filter_test",
+                &VectorQuery {
+                    vector: Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![MetadataFilter {
+                        field: "source_uri".into(),
+                        op: FilterOp::Eq,
+                        value: serde_json::json!("file:///filter-a.pdf"),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
 
         assert_eq!(results.len(), 1, "filter should return only doc-a");
-        assert_eq!(results[0].chunk.chunk.provenance.source_uri, "file:///filter-a.pdf");
+        assert_eq!(
+            results[0].chunk.chunk.provenance.source_uri,
+            "file:///filter-a.pdf"
+        );
 
         // Cleanup
         store.delete_collection("filter_test").await.unwrap();
@@ -594,7 +653,11 @@ mod tests {
                 text: "keep".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("pg_chunk_id_test".into()),
-                position: ChunkPosition { start: 0, end: 4, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 4,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -608,7 +671,11 @@ mod tests {
                 text: "drop".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("pg_chunk_id_test".into()),
-                position: ChunkPosition { start: 0, end: 4, index: 0 },
+                position: ChunkPosition {
+                    start: 0,
+                    end: 4,
+                    index: 0,
+                },
                 metadata: ChunkMetadata::default(),
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
@@ -616,19 +683,32 @@ mod tests {
             token_vectors: None,
             store_id: String::new(),
         };
-        store.upsert("pg_chunk_id_test", vec![keep, drop]).await.unwrap();
+        store
+            .upsert("pg_chunk_id_test", vec![keep, drop])
+            .await
+            .unwrap();
 
-        let results = store.search("pg_chunk_id_test", &VectorQuery {
-            vector: Vector(vec![1.0, 0.0, 0.0]),
-            top_k: 10,
-            filters: vec![MetadataFilter {
-                field: "chunk_id".into(),
-                op: FilterOp::In,
-                value: serde_json::json!([keep_id.0.to_string()]),
-            }],
-        }).await.unwrap();
+        let results = store
+            .search(
+                "pg_chunk_id_test",
+                &VectorQuery {
+                    vector: Vector(vec![1.0, 0.0, 0.0]),
+                    top_k: 10,
+                    filters: vec![MetadataFilter {
+                        field: "chunk_id".into(),
+                        op: FilterOp::In,
+                        value: serde_json::json!([keep_id.0.to_string()]),
+                    }],
+                },
+            )
+            .await
+            .unwrap();
 
-        assert_eq!(results.len(), 1, "only the chunk_id-filtered-in chunk should return");
+        assert_eq!(
+            results.len(),
+            1,
+            "only the chunk_id-filtered-in chunk should return"
+        );
         assert_eq!(results[0].chunk.chunk.text, "keep");
 
         // Cleanup
@@ -648,8 +728,12 @@ mod tests {
                 text: "no-uri chunk".into(),
                 document_id: DocumentId::new(),
                 collection_id: CollectionId("count_empty_test".into()),
-                position: ChunkPosition { start: 0, end: 12, index: 0 },
-                metadata: ChunkMetadata::default(),  // no source_uri key
+                position: ChunkPosition {
+                    start: 0,
+                    end: 12,
+                    index: 0,
+                },
+                metadata: ChunkMetadata::default(), // no source_uri key
                 provenance: arcanum_core::types::ChunkProvenance::default(),
             },
             vector: Vector(vec![0.1, 0.2, 0.3]),
@@ -658,10 +742,15 @@ mod tests {
         };
 
         store.upsert("count_empty_test", vec![chunk]).await.unwrap();
-        let count = store.count_documents(Some("count_empty_test")).await.unwrap();
-        assert_eq!(count, 0, "chunks with empty source_uri must not be counted as a document");
+        let count = store
+            .count_documents(Some("count_empty_test"))
+            .await
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "chunks with empty source_uri must not be counted as a document"
+        );
 
         store.delete_collection("count_empty_test").await.unwrap();
     }
-
 }

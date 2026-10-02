@@ -1,9 +1,16 @@
 use arcanum_core::{traits::CacheInvalidator, types::*};
 use async_trait::async_trait;
-use std::{collections::HashMap, sync::RwLock, time::{Duration, Instant}};
+use std::{
+    collections::HashMap,
+    sync::RwLock,
+    time::{Duration, Instant},
+};
 use tracing::instrument;
 
-struct CacheEntry { result: RetrievalResult, inserted: Instant }
+struct CacheEntry {
+    result: RetrievalResult,
+    inserted: Instant,
+}
 
 pub struct QueryCache {
     store: RwLock<HashMap<String, CacheEntry>>,
@@ -13,7 +20,11 @@ pub struct QueryCache {
 
 impl QueryCache {
     pub fn new(max_size: usize, ttl: Duration) -> Self {
-        Self { store: RwLock::new(HashMap::new()), ttl, max_size }
+        Self {
+            store: RwLock::new(HashMap::new()),
+            ttl,
+            max_size,
+        }
     }
 
     #[instrument(skip(self), fields(cache_hit))]
@@ -36,24 +47,40 @@ impl QueryCache {
         {
             let mut store = self.store.write().unwrap();
             if store.len() >= self.max_size {
-                if let Some(oldest) = store.iter()
+                if let Some(oldest) = store
+                    .iter()
                     .min_by_key(|(_, v)| v.inserted)
                     .map(|(k, _)| k.clone())
                 {
                     store.remove(&oldest);
                 }
             }
-            store.insert(key.clone(), CacheEntry { result, inserted: Instant::now() });
+            store.insert(
+                key.clone(),
+                CacheEntry {
+                    result,
+                    inserted: Instant::now(),
+                },
+            );
         }
-        metrics::counter!("arcanum_cache_ops_total", "op" => "insert", "result" => "ok").increment(1);
+        metrics::counter!("arcanum_cache_ops_total", "op" => "insert", "result" => "ok")
+            .increment(1);
         tracing::debug!(key, "query cache insert");
     }
 
     pub fn cache_key(query: &Query) -> String {
         let filters = serde_json::to_string(&query.filters).unwrap_or_default();
-        format!("{}:{}:{}:{}", query.text,
-            query.collection_id.as_ref().map(|c| c.0.as_str()).unwrap_or(""),
-            query.top_k, filters)
+        format!(
+            "{}:{}:{}:{}",
+            query.text,
+            query
+                .collection_id
+                .as_ref()
+                .map(|c| c.0.as_str())
+                .unwrap_or(""),
+            query.top_k,
+            filters
+        )
     }
 }
 
@@ -92,7 +119,9 @@ mod tests {
 
     #[test]
     fn test_cache_key_differs_by_filters() {
-        let base = Query::new("hello").with_collection(CollectionId("col1".into())).with_top_k(5);
+        let base = Query::new("hello")
+            .with_collection(CollectionId("col1".into()))
+            .with_top_k(5);
         let mut with_filter = base.clone();
         with_filter.filters = vec![MetadataFilter {
             field: "lang".into(),
@@ -126,15 +155,25 @@ mod tests {
         cache.insert(QueryCache::cache_key(&q_a), dummy_result());
         cache.insert(QueryCache::cache_key(&q_b), dummy_result());
 
-        assert!(cache.get(&QueryCache::cache_key(&q_a)).is_some(), "col-alpha entry should exist before invalidation");
-        assert!(cache.get(&QueryCache::cache_key(&q_b)).is_some(), "col-beta entry should exist before invalidation");
+        assert!(
+            cache.get(&QueryCache::cache_key(&q_a)).is_some(),
+            "col-alpha entry should exist before invalidation"
+        );
+        assert!(
+            cache.get(&QueryCache::cache_key(&q_b)).is_some(),
+            "col-beta entry should exist before invalidation"
+        );
 
         // Invalidate only col-alpha.
         cache.invalidate_document("file://doc.pdf", &col_a).await;
 
-        assert!(cache.get(&QueryCache::cache_key(&q_a)).is_none(),
-            "col-alpha entry should be gone after invalidation");
-        assert!(cache.get(&QueryCache::cache_key(&q_b)).is_some(),
-            "col-beta entry should remain after col-alpha invalidation");
+        assert!(
+            cache.get(&QueryCache::cache_key(&q_a)).is_none(),
+            "col-alpha entry should be gone after invalidation"
+        );
+        assert!(
+            cache.get(&QueryCache::cache_key(&q_b)).is_some(),
+            "col-beta entry should remain after col-alpha invalidation"
+        );
     }
 }

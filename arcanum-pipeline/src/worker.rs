@@ -1,6 +1,6 @@
 use crate::{
-    deps::PipelineDeps,
     dag::{CTX_FORCE, CTX_SKIP},
+    deps::PipelineDeps,
     executor::DagExecutor,
     ingestion_state::IngestionState,
     registry::ArcanumPipelineRegistry,
@@ -19,9 +19,9 @@ use tracing::instrument;
 
 pub struct IngestionWorker {
     registry: Arc<ArcanumPipelineRegistry>,
-    deps:     Arc<PipelineDeps>,
-    emitter:  Arc<dyn ProgressEmitter>,
-    queue:    Arc<BoundedQueue<IngestionTask>>,
+    deps: Arc<PipelineDeps>,
+    emitter: Arc<dyn ProgressEmitter>,
+    queue: Arc<BoundedQueue<IngestionTask>>,
     operations: Arc<dyn OperationStore>,
     payload_store: Option<Arc<dyn OperationPayloadStore>>,
     resolver: Option<Arc<dyn arcanum_core::traits::IngestionDepsOverrideResolver>>,
@@ -30,13 +30,21 @@ pub struct IngestionWorker {
 impl IngestionWorker {
     pub fn new(
         registry: Arc<ArcanumPipelineRegistry>,
-        deps:     Arc<PipelineDeps>,
-        emitter:  Arc<dyn ProgressEmitter>,
-        queue:    Arc<BoundedQueue<IngestionTask>>,
+        deps: Arc<PipelineDeps>,
+        emitter: Arc<dyn ProgressEmitter>,
+        queue: Arc<BoundedQueue<IngestionTask>>,
         operations: Arc<dyn OperationStore>,
         payload_store: Option<Arc<dyn OperationPayloadStore>>,
     ) -> Self {
-        Self { registry, deps, emitter, queue, operations, payload_store, resolver: None }
+        Self {
+            registry,
+            deps,
+            emitter,
+            queue,
+            operations,
+            payload_store,
+            resolver: None,
+        }
     }
 
     /// Attach a per-job resolver. Workers without a resolver use the shared base deps.
@@ -67,7 +75,9 @@ impl IngestionWorker {
     }
 
     async fn resolve_task_deps(&self, collection_id: &str) -> Arc<PipelineDeps> {
-        let Some(resolver) = &self.resolver else { return self.deps.clone(); };
+        let Some(resolver) = &self.resolver else {
+            return self.deps.clone();
+        };
         match resolver.resolve_for_collection(collection_id).await {
             Ok((chunkers, shadow, preprocessors)) => {
                 Arc::new(PipelineDeps {
@@ -75,20 +85,20 @@ impl IngestionWorker {
                     shadow,
                     preprocessors,
                     // All other fields are cheap Arc clones from the shared base deps.
-                    loaders:           self.deps.loaders.clone(),
-                    context_enricher:  self.deps.context_enricher.clone(),
-                    entity_extractor:  self.deps.entity_extractor.clone(),
-                    embedder:          self.deps.embedder.clone(),
-                    vector_store:      self.deps.vector_store.clone(),
-                    graph_store:       self.deps.graph_store.clone(),
-                    tree_store:        self.deps.tree_store.clone(),
-                    version_store:     self.deps.version_store.clone(),
-                    snapshot_store:    self.deps.snapshot_store.clone(),
-                    chunk_metadata:    self.deps.chunk_metadata.clone(),
-                    bm25_index:        self.deps.bm25_index.clone(),
+                    loaders: self.deps.loaders.clone(),
+                    context_enricher: self.deps.context_enricher.clone(),
+                    entity_extractor: self.deps.entity_extractor.clone(),
+                    embedder: self.deps.embedder.clone(),
+                    vector_store: self.deps.vector_store.clone(),
+                    graph_store: self.deps.graph_store.clone(),
+                    tree_store: self.deps.tree_store.clone(),
+                    version_store: self.deps.version_store.clone(),
+                    snapshot_store: self.deps.snapshot_store.clone(),
+                    chunk_metadata: self.deps.chunk_metadata.clone(),
+                    bm25_index: self.deps.bm25_index.clone(),
                     cache_invalidator: self.deps.cache_invalidator.clone(),
-                    embedding_cb:      self.deps.embedding_cb.clone(),
-                    vector_store_cb:   self.deps.vector_store_cb.clone(),
+                    embedding_cb: self.deps.embedding_cb.clone(),
+                    vector_store_cb: self.deps.vector_store_cb.clone(),
                 })
             }
             Err(e) => {
@@ -146,24 +156,25 @@ fn sanitize_error_message(code: &str) -> String {
 /// for it.
 #[instrument(skip(task, registry, deps, emitter, operations, payload_store), fields(source_uri = %task.source_uri), err)]
 pub async fn run_task(
-    task:      IngestionTask,
-    registry:  Arc<ArcanumPipelineRegistry>,
-    deps:      Arc<PipelineDeps>,
-    emitter:   Arc<dyn ProgressEmitter>,
+    task: IngestionTask,
+    registry: Arc<ArcanumPipelineRegistry>,
+    deps: Arc<PipelineDeps>,
+    emitter: Arc<dyn ProgressEmitter>,
     operations: Arc<dyn OperationStore>,
     payload_store: Option<Arc<dyn OperationPayloadStore>>,
 ) -> Result<()> {
-    let operation_id       = task.operation_id.clone();
-    let source_uri         = task.source_uri.clone();
-    let collection_id      = task.collection_id.clone();
-    let pipeline_template  = task.pipeline_template.clone();
-    let force              = task.force;
+    let operation_id = task.operation_id.clone();
+    let source_uri = task.source_uri.clone();
+    let collection_id = task.collection_id.clone();
+    let pipeline_template = task.pipeline_template.clone();
+    let force = task.force;
 
     // Persist Accepted -> Running BEFORE doing any work so a restart can see
     // that the operation was picked up.
     if let Err(err) = operations.mark_running(&operation_id, Utc::now()).await {
         metrics::counter!("arcanum_ingest_docs_total",
-            "source" => source_uri.clone(), "status" => "error").increment(1);
+            "source" => source_uri.clone(), "status" => "error")
+        .increment(1);
         return Err(err);
     }
 
@@ -245,17 +256,24 @@ pub async fn run_task(
             } else {
                 let built = async {
                     let state_lock = state.lock().await;
-                    let doc = state_lock.doc.as_ref().ok_or_else(|| ArcanumError::Pipeline {
-                        stage: "worker".into(),
-                        message: "pipeline succeeded but doc is None — cannot compute fingerprint".into(),
-                    })?;
+                    let doc = state_lock
+                        .doc
+                        .as_ref()
+                        .ok_or_else(|| ArcanumError::Pipeline {
+                            stage: "worker".into(),
+                            message:
+                                "pipeline succeeded but doc is None — cannot compute fingerprint"
+                                    .into(),
+                        })?;
                     let content_hash = doc.content_hash();
                     let failed_stages: Vec<String> = final_ctx
                         .get(crate::dag::CTX_STAGE_FAILURES)
                         .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter()
-                            .filter_map(|f| f["stage"].as_str().map(String::from))
-                            .collect())
+                        .map(|arr| {
+                            arr.iter()
+                                .filter_map(|f| f["stage"].as_str().map(String::from))
+                                .collect()
+                        })
                         .unwrap_or_default();
                     let status = if failed_stages.is_empty() {
                         IngestionStatus::Success
@@ -263,12 +281,12 @@ pub async fn run_task(
                         IngestionStatus::PartialSuccess { failed_stages }
                     };
                     Ok::<_, ArcanumError>(IngestionProgressReport {
-                        operation_id:         operation_id.clone(),
-                        source_uri:           source_uri.clone(),
-                        pipeline_template:    pipeline_template.clone(),
-                        stage_results:        vec![],
-                        total_chunks:         state_lock.chunks.len(),
-                        total_vectors:        state_lock.vectors.len(),
+                        operation_id: operation_id.clone(),
+                        source_uri: source_uri.clone(),
+                        pipeline_template: pipeline_template.clone(),
+                        stage_results: vec![],
+                        total_chunks: state_lock.chunks.len(),
+                        total_vectors: state_lock.vectors.len(),
                         document_fingerprint: content_hash,
                         status,
                     })
@@ -290,16 +308,22 @@ pub async fn run_task(
             // Persist the terminal report BEFORE emitting any live event.
             if let Err(err) = operations.complete(&report).await {
                 metrics::counter!("arcanum_ingest_docs_total",
-                    "source" => source_uri.clone(), "status" => "error").increment(1);
+                    "source" => source_uri.clone(), "status" => "error")
+                .increment(1);
                 return Err(err);
             }
 
             if skipped {
-                emitter.emit("ingestion:progress", serde_json::json!({
-                    "operation_id": operation_id.0,
-                    "status": "skipped",
-                    "reason": "content_unchanged",
-                })).await;
+                emitter
+                    .emit(
+                        "ingestion:progress",
+                        serde_json::json!({
+                            "operation_id": operation_id.0,
+                            "status": "skipped",
+                            "reason": "content_unchanged",
+                        }),
+                    )
+                    .await;
                 return Ok(());
             }
 
@@ -311,17 +335,23 @@ pub async fn run_task(
                 .invalidate_document(&source_uri, &collection_id)
                 .await;
             if let Some(progress) = progress {
-                emitter.emit("ingestion:progress", serde_json::json!({
-                    "operation_id": operation_id.0,
-                    "status": "completed",
-                    "report": serde_json::to_value(&progress).unwrap_or_default(),
-                })).await;
+                emitter
+                    .emit(
+                        "ingestion:progress",
+                        serde_json::json!({
+                            "operation_id": operation_id.0,
+                            "status": "completed",
+                            "report": serde_json::to_value(&progress).unwrap_or_default(),
+                        }),
+                    )
+                    .await;
             }
             Ok(())
         }
         Err(e) => {
             metrics::counter!("arcanum_ingest_docs_total",
-                "source" => source_uri.clone(), "status" => "error").increment(1);
+                "source" => source_uri.clone(), "status" => "error")
+            .increment(1);
 
             // Persist the terminal failure BEFORE surfacing the error; the store
             // is authoritative. `Failed` is terminal — the worker never

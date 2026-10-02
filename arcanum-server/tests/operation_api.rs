@@ -7,13 +7,13 @@
 //! query value); absent MIME hint; logical URI distinct from filename;
 //! collection authorization; and idempotent removal by stable source URI.
 
-use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use tower::ServiceExt;
 use arcanum_core::config::ArcanumConfig;
 use arcanum_engine::ArcanumEngine;
 use arcanum_server::build_app;
+use axum::body::Body;
+use axum::http::{Request, StatusCode};
 use std::sync::Arc;
+use tower::ServiceExt;
 
 const BOUNDARY: &str = "ARCA-T4-BOUNDARY";
 
@@ -64,8 +64,14 @@ fn metadata_json(
     payload_locator: Option<&str>,
 ) -> String {
     let mut map = serde_json::Map::new();
-    map.insert("idempotency_key".to_string(), serde_json::json!(idempotency_key));
-    map.insert("logical_source_uri".to_string(), serde_json::json!(source_uri));
+    map.insert(
+        "idempotency_key".to_string(),
+        serde_json::json!(idempotency_key),
+    );
+    map.insert(
+        "logical_source_uri".to_string(),
+        serde_json::json!(source_uri),
+    );
     if let Some(mime) = mime_hint {
         map.insert("mime_hint".to_string(), serde_json::json!(mime));
     }
@@ -109,7 +115,10 @@ async fn post_submission(
                 .method("POST")
                 .uri("/api/v1/ingestion-operations")
                 .header("Authorization", format!("Bearer {token}"))
-                .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={BOUNDARY}"),
+                )
                 .body(Body::from(body))
                 .unwrap(),
         )
@@ -126,13 +135,26 @@ fn unique_key(tag: &str) -> String {
 async fn multipart_submission_returns_202_new_operation() {
     let engine = test_engine().await;
     let token = engine.auth.generate_admin_key("tester");
-    let meta = metadata_json(&unique_key("inline"), "s3://bucket/docs/guide.md", "col1", Some("text/markdown"), None);
+    let meta = metadata_json(
+        &unique_key("inline"),
+        "s3://bucket/docs/guide.md",
+        "col1",
+        Some("text/markdown"),
+        None,
+    );
 
     let (status, json) = post_submission(&engine, &token, &meta, Some(b"# Hello world")).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "new inline submission must be 202: {json}");
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "new inline submission must be 202: {json}"
+    );
     let op_id = json["operation_id"].as_str().expect("operation_id present");
     assert_eq!(json["status"], "accepted");
-    assert_eq!(json["resource"], format!("/api/v1/ingestion-operations/{op_id}"));
+    assert_eq!(
+        json["resource"],
+        format!("/api/v1/ingestion-operations/{op_id}")
+    );
 }
 
 #[tokio::test]
@@ -149,7 +171,11 @@ async fn submission_by_payload_locator_returns_202() {
     );
 
     let (status, json) = post_submission(&engine, &token, &meta, None).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "locator submission must be 202: {json}");
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "locator submission must be 202: {json}"
+    );
     let op_id = json["operation_id"].as_str().expect("operation_id present");
     assert_eq!(json["status"], "accepted");
 
@@ -168,8 +194,14 @@ async fn submission_by_payload_locator_returns_202() {
         .unwrap();
     let (status, json) = read_json(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(json["submission"]["payload_locator"], serde_json::json!(locator));
-    assert!(json["submission"]["payload"].is_null(), "payload bytes are never surfaced");
+    assert_eq!(
+        json["submission"]["payload_locator"],
+        serde_json::json!(locator)
+    );
+    assert!(
+        json["submission"]["payload"].is_null(),
+        "payload bytes are never surfaced"
+    );
 }
 
 #[tokio::test]
@@ -177,8 +209,14 @@ async fn metadata_with_both_inline_payload_and_locator_is_rejected() {
     let engine = test_engine().await;
     let token = engine.auth.generate_admin_key("tester");
     let mut map = serde_json::Map::new();
-    map.insert("idempotency_key".to_string(), serde_json::json!(unique_key("both")));
-    map.insert("logical_source_uri".to_string(), serde_json::json!("s3://bucket/docs/both.md"));
+    map.insert(
+        "idempotency_key".to_string(),
+        serde_json::json!(unique_key("both")),
+    );
+    map.insert(
+        "logical_source_uri".to_string(),
+        serde_json::json!("s3://bucket/docs/both.md"),
+    );
     map.insert("collection_id".to_string(), serde_json::json!("col1"));
     map.insert(
         "pipeline_configuration".to_string(),
@@ -187,12 +225,18 @@ async fn metadata_with_both_inline_payload_and_locator_is_rejected() {
     map.insert("payload".to_string(), serde_json::json!([1, 2, 3]));
     map.insert(
         "payload_locator".to_string(),
-        serde_json::json!("file:///tmp/arcanum-test/operations/00000000-0000-0000-0000-000000000001"),
+        serde_json::json!(
+            "file:///tmp/arcanum-test/operations/00000000-0000-0000-0000-000000000001"
+        ),
     );
     let meta = serde_json::Value::Object(map).to_string();
 
     let (status, json) = post_submission(&engine, &token, &meta, None).await;
-    assert_eq!(status, StatusCode::BAD_REQUEST, "both inline payload and payload_locator must be 400, not 409: {json}");
+    assert_eq!(
+        status,
+        StatusCode::BAD_REQUEST,
+        "both inline payload and payload_locator must be 400, not 409: {json}"
+    );
 }
 
 #[tokio::test]
@@ -207,8 +251,15 @@ async fn idempotent_replay_returns_200_and_same_operation() {
     assert_eq!(status1, StatusCode::ACCEPTED);
 
     let (status2, json2) = post_submission(&engine, &token, &meta, Some(&payload)).await;
-    assert_eq!(status2, StatusCode::OK, "identical replay must be 200: {json2}");
-    assert_eq!(json1["operation_id"], json2["operation_id"], "replay returns the ORIGINAL operation");
+    assert_eq!(
+        status2,
+        StatusCode::OK,
+        "identical replay must be 200: {json2}"
+    );
+    assert_eq!(
+        json1["operation_id"], json2["operation_id"],
+        "replay returns the ORIGINAL operation"
+    );
 }
 
 #[tokio::test]
@@ -222,7 +273,11 @@ async fn conflicting_idempotency_returns_409() {
     assert_eq!(status1, StatusCode::ACCEPTED);
 
     let (status2, json2) = post_submission(&engine, &token, &meta, Some(b"DIFFERENT bytes")).await;
-    assert_eq!(status2, StatusCode::CONFLICT, "different submission under same key must be 409: {json2}");
+    assert_eq!(
+        status2,
+        StatusCode::CONFLICT,
+        "different submission under same key must be 409: {json2}"
+    );
 }
 
 #[tokio::test]
@@ -234,7 +289,10 @@ async fn get_unknown_operation_returns_404() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/ingestion-operations/{}", uuid::Uuid::new_v4()))
+                .uri(format!(
+                    "/api/v1/ingestion-operations/{}",
+                    uuid::Uuid::new_v4()
+                ))
                 .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -273,7 +331,10 @@ async fn query_by_id_returns_canonical_operation() {
     assert_eq!(json["submission"]["collection_id"], "colA");
     assert_eq!(json["submission"]["idempotency_key"], key);
     assert_eq!(json["status"], "Accepted");
-    assert!(json["terminal_report"].is_null(), "no worker ran in this test, so no terminal report");
+    assert!(
+        json["terminal_report"].is_null(),
+        "no worker ran in this test, so no terminal report"
+    );
 }
 
 #[tokio::test]
@@ -301,7 +362,11 @@ async fn query_by_idempotency_key_requires_exactly_one_value() {
         .await
         .unwrap();
     let (status, json) = read_json(resp).await;
-    assert_eq!(status, StatusCode::OK, "single idempotency_key must resolve: {json}");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "single idempotency_key must resolve: {json}"
+    );
     assert_eq!(json["submission"]["idempotency_key"], key);
 
     // Zero query values → 400.
@@ -317,21 +382,31 @@ async fn query_by_idempotency_key_requires_exactly_one_value() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "missing idempotency_key must be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "missing idempotency_key must be 400"
+    );
 
     // Multiple query values → 400.
     let resp = app
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/ingestion-operations?idempotency_key={key}&idempotency_key=other"))
+                .uri(format!(
+                    "/api/v1/ingestion-operations?idempotency_key={key}&idempotency_key=other"
+                ))
                 .header("Authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "multiple idempotency_key values must be 400");
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "multiple idempotency_key values must be 400"
+    );
 }
 
 #[tokio::test]
@@ -359,7 +434,10 @@ async fn absent_mime_hint_is_optional() {
         .unwrap();
     let (status, json) = read_json(resp).await;
     assert_eq!(status, StatusCode::OK);
-    assert!(json["submission"]["mime_hint"].is_null(), "MIME hint may be absent: {json}");
+    assert!(
+        json["submission"]["mime_hint"].is_null(),
+        "MIME hint may be absent: {json}"
+    );
 }
 
 #[tokio::test]
@@ -368,7 +446,13 @@ async fn logical_source_uri_stays_distinct_from_filename() {
     let token = engine.auth.generate_admin_key("tester");
     let key = unique_key("uri");
     // The logical URI is stable and is never replaced by the upload filename.
-    let meta = metadata_json(&key, "s3://bucket/canonical/docs/guide.md", "col1", None, None);
+    let meta = metadata_json(
+        &key,
+        "s3://bucket/canonical/docs/guide.md",
+        "col1",
+        None,
+        None,
+    );
 
     let (status, json) = post_submission(&engine, &token, &meta, Some(b"# Guide")).await;
     assert_eq!(status, StatusCode::ACCEPTED);
@@ -389,8 +473,7 @@ async fn logical_source_uri_stays_distinct_from_filename() {
     let (status, json) = read_json(resp).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
-        json["submission"]["logical_source_uri"],
-        "s3://bucket/canonical/docs/guide.md",
+        json["submission"]["logical_source_uri"], "s3://bucket/canonical/docs/guide.md",
         "logical source URI must be preserved verbatim"
     );
 }
@@ -399,17 +482,27 @@ async fn logical_source_uri_stays_distinct_from_filename() {
 async fn collection_authorization_is_enforced() {
     let engine = test_engine().await;
     // Non-admin key scoped to col-a only.
-    let token = engine.auth.generate_api_key("tester", vec!["col-a".to_string()]);
+    let token = engine
+        .auth
+        .generate_api_key("tester", vec!["col-a".to_string()]);
 
     // Submission to a collection outside the caller's scope → 403.
     let meta_denied = metadata_json(&unique_key("authz"), "s3://b/x.md", "col-b", None, None);
     let (status, json) = post_submission(&engine, &token, &meta_denied, Some(b"x")).await;
-    assert_eq!(status, StatusCode::FORBIDDEN, "cross-collection submission must be 403: {json}");
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "cross-collection submission must be 403: {json}"
+    );
 
     // Submission to an allowed collection → 202.
     let meta_allowed = metadata_json(&unique_key("authz"), "s3://b/y.md", "col-a", None, None);
     let (status, json) = post_submission(&engine, &token, &meta_allowed, Some(b"y")).await;
-    assert_eq!(status, StatusCode::ACCEPTED, "allowed collection must be 202: {json}");
+    assert_eq!(
+        status,
+        StatusCode::ACCEPTED,
+        "allowed collection must be 202: {json}"
+    );
     let op_id = json["operation_id"].as_str().unwrap().to_string();
 
     // Querying that operation with the same scoped key → 200.
@@ -446,10 +539,18 @@ async fn source_removal_is_idempotent_by_stable_uri() {
     };
 
     let resp = app.clone().oneshot(req(url.clone())).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "first removal must succeed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "first removal must succeed"
+    );
 
     let resp = app.oneshot(req(url)).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT, "repeated removal for an absent source is a no-op success");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NO_CONTENT,
+        "repeated removal for an absent source is a no-op success"
+    );
 }
 
 #[tokio::test]
@@ -463,7 +564,10 @@ async fn new_routes_require_auth() {
             Request::builder()
                 .method("POST")
                 .uri("/api/v1/ingestion-operations")
-                .header("content-type", format!("multipart/form-data; boundary={BOUNDARY}"))
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={BOUNDARY}"),
+                )
                 .body(Body::from(multipart_body("{}", Some(b"x"))))
                 .unwrap(),
         )
@@ -477,7 +581,10 @@ async fn new_routes_require_auth() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/ingestion-operations/{}", uuid::Uuid::new_v4()))
+                .uri(format!(
+                    "/api/v1/ingestion-operations/{}",
+                    uuid::Uuid::new_v4()
+                ))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -507,6 +614,16 @@ async fn payload_over_max_upload_bytes_is_rejected() {
     let token = engine.auth.generate_admin_key("tester");
     let meta = metadata_json(&unique_key("large"), "s3://b/large.md", "col1", None, None);
 
-    let (status, json) = post_submission(&engine, &token, &meta, Some(b"this payload is definitely more than 32 bytes")).await;
-    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "oversized payload must be 413: {json}");
+    let (status, json) = post_submission(
+        &engine,
+        &token,
+        &meta,
+        Some(b"this payload is definitely more than 32 bytes"),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::PAYLOAD_TOO_LARGE,
+        "oversized payload must be 413: {json}"
+    );
 }

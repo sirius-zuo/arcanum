@@ -57,7 +57,9 @@ fn succeeded_report(operation_id: &arcanum_core::types::OperationId) -> Ingestio
 /// A `Succeeded` report that (illegally) omits the original-content URI. A
 /// successful report is terminal truth for the content URI, so the store must
 /// reject it.
-fn succeeded_report_without_uri(operation_id: &arcanum_core::types::OperationId) -> IngestionReport {
+fn succeeded_report_without_uri(
+    operation_id: &arcanum_core::types::OperationId,
+) -> IngestionReport {
     IngestionReport {
         operation_id: operation_id.clone(),
         status: OperationStatus::Succeeded,
@@ -242,7 +244,10 @@ where
         .expect("get run-failed")
         .expect("exists");
     assert_eq!(run_failed.status, OperationStatus::Failed);
-    let run_failed_report = run_failed.terminal_report.as_ref().expect("terminal report");
+    let run_failed_report = run_failed
+        .terminal_report
+        .as_ref()
+        .expect("terminal report");
     assert_eq!(
         run_failed_report.error.as_ref().expect("error").code,
         "QUEUE_REJECTED"
@@ -322,8 +327,7 @@ async fn sqlite_store_contract() {
 #[tokio::test]
 #[ignore] // needs TEST_DATABASE_URL pointing at a reachable Postgres
 async fn postgres_store_contract() {
-    let url = std::env::var("TEST_DATABASE_URL")
-        .expect("set TEST_DATABASE_URL to run this test");
+    let url = std::env::var("TEST_DATABASE_URL").expect("set TEST_DATABASE_URL to run this test");
     run_store_contract(|| async {
         PostgresOperationStore::new(&url)
             .await

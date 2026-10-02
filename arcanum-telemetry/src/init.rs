@@ -1,7 +1,7 @@
 use crate::config::{LogFormat, OtlpProtocol, TelemetryConfig};
 use opentelemetry_sdk::trace::TracerProvider;
-use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 use std::sync::OnceLock;
+use tracing_subscriber::{util::SubscriberInitExt, EnvFilter};
 
 // Guards the panic-hook installation so repeated init() calls (e.g. in tests)
 // never chain hooks.
@@ -52,19 +52,20 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
 
     // ── C3: build OTel provider before subscriber install (layer must be
     // attached in the same try_init call), degrading gracefully on failure ─────
-    let tracer_provider: Option<TracerProvider> = config
-        .otlp_endpoint
-        .as_deref()
-        .and_then(|_| match build_tracer_provider(&config) {
-            Ok(p) => Some(p),
-            Err(e) => {
-                eprintln!(
-                    "arcanum-telemetry: OTLP exporter failed to build, \
+    let tracer_provider: Option<TracerProvider> =
+        config
+            .otlp_endpoint
+            .as_deref()
+            .and_then(|_| match build_tracer_provider(&config) {
+                Ok(p) => Some(p),
+                Err(e) => {
+                    eprintln!(
+                        "arcanum-telemetry: OTLP exporter failed to build, \
                      running without distributed tracing: {e:?}"
-                );
-                None
-            }
-        });
+                    );
+                    None
+                }
+            });
 
     // ── Subscriber layers ─────────────────────────────────────────────────────
     let json_fmt = if matches!(config.log_format, LogFormat::Json) {
@@ -146,7 +147,10 @@ pub fn init(config: TelemetryConfig) -> TelemetryGuard {
         None
     };
 
-    TelemetryGuard { metrics_enabled: config.metrics_enabled, meter_provider }
+    TelemetryGuard {
+        metrics_enabled: config.metrics_enabled,
+        meter_provider,
+    }
 }
 
 fn build_tracer_provider(
@@ -183,7 +187,8 @@ fn build_tracer_provider(
 
 fn build_meter_provider(
     config: &TelemetryConfig,
-) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<opentelemetry_sdk::metrics::SdkMeterProvider, Box<dyn std::error::Error + Send + Sync>>
+{
     use opentelemetry::KeyValue;
     use opentelemetry_sdk::{
         metrics::{MeterProviderBuilder, PeriodicReader},
@@ -228,14 +233,14 @@ mod tests {
 
     fn silent_local_config() -> TelemetryConfig {
         TelemetryConfig {
-            log_filter:       "off".into(),
-            log_format:       LogFormat::Pretty,
-            otlp_endpoint:    None,
-            otlp_protocol:    OtlpProtocol::Grpc,
-            service_name:     "test-arcanum".into(),
-            metrics_enabled:  false,
-            metrics_otlp:     false,
-            metrics_token:    None,
+            log_filter: "off".into(),
+            log_format: LogFormat::Pretty,
+            otlp_endpoint: None,
+            otlp_protocol: OtlpProtocol::Grpc,
+            service_name: "test-arcanum".into(),
+            metrics_enabled: false,
+            metrics_otlp: false,
+            metrics_token: None,
         }
     }
 
@@ -244,8 +249,10 @@ mod tests {
     fn init_local_mode_guard_returns_cleanly() {
         let guard = init(silent_local_config());
         // silent_local_config has metrics_enabled=false
-        assert!(!guard.metrics_enabled(),
-            "metrics_enabled=false config → guard.metrics_enabled() should be false");
+        assert!(
+            !guard.metrics_enabled(),
+            "metrics_enabled=false config → guard.metrics_enabled() should be false"
+        );
     }
 
     #[test]
@@ -254,7 +261,7 @@ mod tests {
         // Both the panic hook (OnceLock) and try_init() (silently ignores
         // second registration) must be idempotent. The second guard should
         // return cleanly with a None prometheus handle (metrics_enabled=false).
-        let _first  = init(silent_local_config());
+        let _first = init(silent_local_config());
         let second = init(silent_local_config());
         drop(_first);
         drop(second);
@@ -265,8 +272,10 @@ mod tests {
     #[serial]
     fn init_metrics_disabled_guard_returns_cleanly() {
         let guard = init(silent_local_config());
-        assert!(!guard.metrics_enabled(),
-            "metrics_enabled=false → guard.metrics_enabled() should be false");
+        assert!(
+            !guard.metrics_enabled(),
+            "metrics_enabled=false → guard.metrics_enabled() should be false"
+        );
     }
 
     #[test]
@@ -284,14 +293,14 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _enter = rt.enter();
         let guard = init(TelemetryConfig {
-            log_filter:    "off".into(),
-            log_format:    LogFormat::Pretty,
+            log_filter: "off".into(),
+            log_format: LogFormat::Pretty,
             otlp_endpoint: Some("http://127.0.0.1:14317".into()), // nothing listening here
             otlp_protocol: OtlpProtocol::Grpc,
-            service_name:  "test-otlp".into(),
+            service_name: "test-otlp".into(),
             metrics_enabled: false,
-            metrics_otlp:    false,
-            metrics_token:   None,
+            metrics_otlp: false,
+            metrics_token: None,
         });
         drop(guard); // returning TelemetryGuard without panic = success
     }
@@ -305,19 +314,21 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _enter = rt.enter();
         let guard = init(TelemetryConfig {
-            log_filter:    "off".into(),
-            log_format:    LogFormat::Pretty,
+            log_filter: "off".into(),
+            log_format: LogFormat::Pretty,
             otlp_endpoint: Some("http://127.0.0.1:14317".into()), // nothing listening here
             otlp_protocol: OtlpProtocol::Grpc,
-            service_name:  "test-metrics-otlp".into(),
+            service_name: "test-metrics-otlp".into(),
             metrics_enabled: false,
-            metrics_otlp:    true,
-            metrics_token:   None,
+            metrics_otlp: true,
+            metrics_token: None,
         });
         // Guard should have a meter provider (it was built successfully),
         // even though the endpoint is unreachable.
-        assert!(guard.metrics_otlp_enabled(),
-            "OTLP meter provider should be present when metrics_otlp=true");
+        assert!(
+            guard.metrics_otlp_enabled(),
+            "OTLP meter provider should be present when metrics_otlp=true"
+        );
         drop(guard); // must not panic on shutdown
     }
 }

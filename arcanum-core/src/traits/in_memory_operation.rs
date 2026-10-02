@@ -4,12 +4,12 @@ use sha2::Digest;
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+use super::OperationStore;
 use crate::types::{
-    CreateOperationResult, IngestionOperation, IngestionReport, IngestionSubmission,
-    OperationId, OperationStatus,
+    CreateOperationResult, IngestionOperation, IngestionReport, IngestionSubmission, OperationId,
+    OperationStatus,
 };
 use crate::{ArcanumError, Result};
-use super::OperationStore;
 
 /// In-memory `OperationStore` for development and tests. State does not survive
 /// process restart; production and durable local configurations use
@@ -89,7 +89,10 @@ fn validate_transition(current: &IngestionOperation, report: &IngestionReport) -
 
 #[async_trait]
 impl OperationStore for InMemoryOperationStore {
-    async fn create_or_get(&self, submission: &IngestionSubmission) -> Result<CreateOperationResult> {
+    async fn create_or_get(
+        &self,
+        submission: &IngestionSubmission,
+    ) -> Result<CreateOperationResult> {
         let hash = submission_hash(submission)?;
         let mut data = self.data.lock().unwrap();
         if let Some(op_id) = data.by_key.get(&submission.idempotency_key) {
@@ -123,8 +126,10 @@ impl OperationStore for InMemoryOperationStore {
                 operation: operation.clone(),
             },
         );
-        data.by_key
-            .insert(submission.idempotency_key.clone(), operation.operation_id.clone());
+        data.by_key.insert(
+            submission.idempotency_key.clone(),
+            operation.operation_id.clone(),
+        );
         Ok(CreateOperationResult {
             operation,
             is_new: true,

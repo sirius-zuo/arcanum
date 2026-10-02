@@ -8,7 +8,8 @@ async fn test_bm25_index_and_search() {
     idx.index_chunks(vec![
         ("chunk-1".to_string(), "the quick brown fox".to_string()),
         ("chunk-2".to_string(), "jumps over the lazy dog".to_string()),
-    ]).unwrap();
+    ])
+    .unwrap();
 
     let results = idx.search("quick fox", 5).unwrap();
     assert!(!results.is_empty());

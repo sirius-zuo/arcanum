@@ -1,9 +1,9 @@
 use crate::dag::{PipelineDAG, StageContext, StageId, CTX_STAGE_FAILURES};
 use crate::stage_failure::is_core_stage;
-use arcanum_core::{Result, ArcanumError};
+use arcanum_core::{ArcanumError, Result};
+use metrics;
 use std::collections::{HashMap, HashSet};
 use tracing::{instrument, Instrument};
-use metrics;
 
 pub struct DagExecutor;
 
@@ -19,7 +19,8 @@ impl DagExecutor {
         let mut remaining: Vec<_> = dag.stages.iter().collect();
 
         while !remaining.is_empty() {
-            let ready: Vec<_> = remaining.iter()
+            let ready: Vec<_> = remaining
+                .iter()
                 .filter(|s| s.deps.iter().all(|d| completed.contains(d)))
                 .map(|s| s.id)
                 .collect();
@@ -44,7 +45,9 @@ impl DagExecutor {
 
                 // Skip stages whose deps failed or were skipped.
                 if let Some(bad_dep) = stage.deps.iter().find(|d| unusable.contains(*d)) {
-                    let (root, root_err) = root_failures.get(bad_dep).cloned()
+                    let (root, root_err) = root_failures
+                        .get(bad_dep)
+                        .cloned()
                         .unwrap_or((bad_dep, "unknown".to_string()));
                     // A core stage must never be silently skipped: abort so the
                     // worker's retry path fires, exactly as a direct core failure.
@@ -81,7 +84,8 @@ impl DagExecutor {
                     let run_result = fut.instrument(span).await;
                     (stage_start.elapsed().as_secs_f64(), run_result)
                 }
-            })).await;
+            }))
+            .await;
 
             // Every stage in the wave has already executed (join_all resolved),
             // so record metrics for all of them first — a core failure in the
@@ -89,9 +93,11 @@ impl DagExecutor {
             for (stage, (elapsed, run_result)) in to_run.iter().zip(wave_results.iter()) {
                 let status = if run_result.is_ok() { "ok" } else { "error" };
                 metrics::counter!("arcanum_pipeline_stages_total",
-                    "stage_id" => stage.id.to_string(), "status" => status).increment(1);
+                    "stage_id" => stage.id.to_string(), "status" => status)
+                .increment(1);
                 metrics::histogram!("arcanum_pipeline_stage_duration_seconds",
-                    "stage_id" => stage.id.to_string()).record(*elapsed);
+                    "stage_id" => stage.id.to_string())
+                .record(*elapsed);
             }
 
             // Merge results deterministically in wave order, applying the same
@@ -124,7 +130,10 @@ impl DagExecutor {
         }
 
         if !failures.is_empty() {
-            ctx.insert(CTX_STAGE_FAILURES.to_string(), serde_json::Value::Array(failures));
+            ctx.insert(
+                CTX_STAGE_FAILURES.to_string(),
+                serde_json::Value::Array(failures),
+            );
         }
         Ok(ctx)
     }

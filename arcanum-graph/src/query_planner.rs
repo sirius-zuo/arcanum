@@ -1,9 +1,9 @@
+use crate::GraphTraversalPlan;
 use arcanum_core::{
     traits::TextEnricher,
     types::{EnrichIntent, EnrichRequest},
     Result,
 };
-use crate::GraphTraversalPlan;
 use async_trait::async_trait;
 use std::sync::Arc;
 use tracing::instrument;
@@ -15,7 +15,10 @@ pub struct GraphQueryPlanner {
 
 impl GraphQueryPlanner {
     pub fn new(enricher: Arc<dyn TextEnricher>, default_max_hops: usize) -> Self {
-        Self { enricher, default_max_hops }
+        Self {
+            enricher,
+            default_max_hops,
+        }
     }
 
     #[instrument(skip(self), fields(query_len = query.len()), err)]
@@ -66,7 +69,7 @@ fn parse_entity_names(json_str: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arcanum_core::types::{EnrichedText, EnrichRequest};
+    use arcanum_core::types::{EnrichRequest, EnrichedText};
 
     struct FakeEntityExtractor;
 

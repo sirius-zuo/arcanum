@@ -86,7 +86,11 @@ fn stub_deps() -> Arc<PipelineDeps> {
         ) -> arcanum_core::Result<Vec<arcanum_core::traits::ScoredChunk>> {
             Ok(vec![])
         }
-        async fn delete(&self, _: &str, _: &[arcanum_core::types::ChunkId]) -> arcanum_core::Result<()> {
+        async fn delete(
+            &self,
+            _: &str,
+            _: &[arcanum_core::types::ChunkId],
+        ) -> arcanum_core::Result<()> {
             Ok(())
         }
         async fn collection_exists(&self, _: &str) -> arcanum_core::Result<bool> {
@@ -151,9 +155,14 @@ fn submission(idempotency_key: &str, logical_source_uri: &str) -> IngestionSubmi
 async fn restart_between_submission_and_query_preserves_durable_operation() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = Arc::new(
-        SqliteOperationStore::open(dir.path().join("restart-durability.db").to_str().expect("utf8 path"))
-            .await
-            .expect("open store"),
+        SqliteOperationStore::open(
+            dir.path()
+                .join("restart-durability.db")
+                .to_str()
+                .expect("utf8 path"),
+        )
+        .await
+        .expect("open store"),
     );
     let payload_store: Arc<dyn OperationPayloadStore> =
         Arc::new(LocalOperationPayloadStore::new(dir.path().join("payloads")));
@@ -173,7 +182,11 @@ async fn restart_between_submission_and_query_preserves_durable_operation() {
 
     // 1. Submit: new operation, non-nil id, inline payload staged durably.
     let (op_id, is_new) = service1
-        .submit_operation(submission(&idempotency_key, &logical_source_uri), false, "user-1")
+        .submit_operation(
+            submission(&idempotency_key, &logical_source_uri),
+            false,
+            "user-1",
+        )
         .await
         .expect("first submit");
     assert!(!op_id.0.is_nil(), "operation id must be non-nil");
@@ -198,10 +211,17 @@ async fn restart_between_submission_and_query_preserves_durable_operation() {
     // 3. Idempotent replay: the identical submission returns the SAME id and
     //    must NOT enqueue a second task.
     let (replay_id, replay_is_new) = service1
-        .submit_operation(submission(&idempotency_key, &logical_source_uri), false, "user-1")
+        .submit_operation(
+            submission(&idempotency_key, &logical_source_uri),
+            false,
+            "user-1",
+        )
         .await
         .expect("replay");
-    assert_eq!(replay_id, op_id, "replay must return the original operation id");
+    assert_eq!(
+        replay_id, op_id,
+        "replay must return the original operation id"
+    );
     assert!(!replay_is_new, "replay must not create a new operation");
 
     // 4. Restart: drop the first service and its in-memory queue (losing the
@@ -234,7 +254,10 @@ async fn restart_between_submission_and_query_preserves_durable_operation() {
         .await
         .expect("get by idempotency after restart")
         .expect("operation exists by idempotency after restart");
-    assert_eq!(by_key.operation_id, op_id, "idempotency lookup must resolve the original operation");
+    assert_eq!(
+        by_key.operation_id, op_id,
+        "idempotency lookup must resolve the original operation"
+    );
     assert_eq!(by_key.submission.logical_source_uri, logical_source_uri);
     assert!(by_key.submission.mime_hint.is_none());
 

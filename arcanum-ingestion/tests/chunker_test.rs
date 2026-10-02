@@ -1,10 +1,15 @@
-use arcanum_ingestion::FixedSizeChunker;
 use arcanum_core::traits::Chunker;
 use arcanum_core::types::*;
+use arcanum_ingestion::FixedSizeChunker;
 
 fn make_doc(text: &str) -> RawDocument {
-    RawDocument { id: DocumentId::new(), content: text.as_bytes().to_vec(),
-        mime_type: "text/plain".into(), source_uri: "test".into(), metadata: Default::default() }
+    RawDocument {
+        id: DocumentId::new(),
+        content: text.as_bytes().to_vec(),
+        mime_type: "text/plain".into(),
+        source_uri: "test".into(),
+        metadata: Default::default(),
+    }
 }
 
 #[tokio::test]
@@ -13,7 +18,9 @@ async fn test_fixed_size_chunks_count() {
     let doc = make_doc("Hello world this is a test of chunking behavior");
     let chunks = chunker.chunk(&doc).await.unwrap();
     assert!(chunks.len() >= 2);
-    for c in &chunks { assert!(c.text.len() <= 30); }
+    for c in &chunks {
+        assert!(c.text.len() <= 30);
+    }
 }
 
 #[tokio::test]

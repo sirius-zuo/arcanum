@@ -1,8 +1,8 @@
-use arcanum_core::{traits::*, types::*, Result, ArcanumError};
+use arcanum_core::{traits::*, types::*, ArcanumError, Result};
 use async_trait::async_trait;
+use metrics;
 use serde::{Deserialize, Serialize};
 use tracing::instrument;
-use metrics;
 
 pub struct OllamaProvider {
     base_url: String,
@@ -23,16 +23,27 @@ impl OllamaProvider {
 }
 
 #[derive(Serialize)]
-struct EmbedRequest<'a> { model: &'a str, prompt: &'a str }
+struct EmbedRequest<'a> {
+    model: &'a str,
+    prompt: &'a str,
+}
 
 #[derive(Deserialize)]
-struct EmbedResponse { embedding: Vec<f32> }
+struct EmbedResponse {
+    embedding: Vec<f32>,
+}
 
 #[derive(Serialize)]
-struct GenerateRequest { model: String, prompt: String, stream: bool }
+struct GenerateRequest {
+    model: String,
+    prompt: String,
+    stream: bool,
+}
 
 #[derive(Deserialize)]
-struct GenerateResponse { response: String }
+struct GenerateResponse {
+    response: String,
+}
 
 #[async_trait]
 impl Embedder for OllamaProvider {
@@ -42,23 +53,34 @@ impl Embedder for OllamaProvider {
         let result: Result<Vec<Vector>> = async {
             let mut results = vec![];
             for text in &texts {
-                let resp: EmbedResponse = self.client
+                let resp: EmbedResponse = self
+                    .client
                     .post(format!("{}/api/embeddings", self.base_url))
-                    .json(&EmbedRequest { model: &self.embed_model, prompt: text })
-                    .send().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?
-                    .json().await.map_err(|e| ArcanumError::Embedding(e.to_string()))?;
+                    .json(&EmbedRequest {
+                        model: &self.embed_model,
+                        prompt: text,
+                    })
+                    .send()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?
+                    .json()
+                    .await
+                    .map_err(|e| ArcanumError::Embedding(e.to_string()))?;
                 results.push(Vector(resp.embedding));
             }
             tracing::Span::current().record("dimension", self.dimension());
             Ok(results)
-        }.await;
+        }
+        .await;
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_model_calls_total", "provider" => "ollama", "operation" => "embed", "status" => status).increment(1);
         metrics::histogram!("arcanum_model_call_duration_seconds", "provider" => "ollama", "operation" => "embed").record(start.elapsed().as_secs_f64());
         result
     }
 
-    fn dimension(&self) -> usize { 0 } // determined at runtime from API response
+    fn dimension(&self) -> usize {
+        0
+    } // determined at runtime from API response
 }
 
 #[async_trait]
@@ -67,11 +89,20 @@ impl TextEnricher for OllamaProvider {
     async fn enrich(&self, request: EnrichRequest) -> Result<EnrichedText> {
         let start = std::time::Instant::now();
         let prompt = build_prompt_for_enricher(&request);
-        let result = self.client
+        let result = self
+            .client
             .post(format!("{}/api/generate", self.base_url))
-            .json(&GenerateRequest { model: self.generate_model.clone(), prompt, stream: false })
-            .send().await.map_err(|e| ArcanumError::Enrichment(e.to_string()))?
-            .json().await.map_err(|e| ArcanumError::Enrichment(e.to_string()));
+            .json(&GenerateRequest {
+                model: self.generate_model.clone(),
+                prompt,
+                stream: false,
+            })
+            .send()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()))?
+            .json()
+            .await
+            .map_err(|e| ArcanumError::Enrichment(e.to_string()));
         let result = result.map(|resp: GenerateResponse| EnrichedText(resp.response));
         let status = if result.is_ok() { "ok" } else { "error" };
         metrics::counter!("arcanum_model_calls_total", "provider" => "ollama", "operation" => "enrich", "status" => status).increment(1);
@@ -96,7 +127,8 @@ pub fn build_prompt_for_enricher(req: &EnrichRequest) -> String {
         EnrichIntent::Caption => format!("Describe this image content: {}", req.text),
         EnrichIntent::Rerank => format!(
             "Rate the relevance of this passage to the query on a scale of 0-1. \
-             Return only the number. Passage: {}", req.text
+             Return only the number. Passage: {}",
+            req.text
         ),
         EnrichIntent::Custom(prompt_prefix) => format!("{}\n{}", prompt_prefix, req.text),
     }

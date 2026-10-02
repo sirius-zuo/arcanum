@@ -1,3 +1,5 @@
+use crate::audit::{AuditEntry, AuditLogger};
+use crate::event_bus::EventBus;
 use arcanum_core::{
     traits::{ByteStream, OperationPayloadStore, OperationStore},
     types::{CollectionId, IngestionReport, IngestionSubmission, IngestionTask, OperationId},
@@ -6,8 +8,6 @@ use arcanum_core::{
 use arcanum_middleware::BoundedQueue;
 use std::sync::Arc;
 use tracing::instrument;
-use crate::audit::{AuditLogger, AuditEntry};
-use crate::event_bus::EventBus;
 
 #[derive(Debug, Clone)]
 pub struct IngestRequest {
@@ -56,7 +56,13 @@ impl IngestionService {
         operations: Arc<dyn OperationStore>,
         payload_store: Arc<dyn OperationPayloadStore>,
     ) -> Self {
-        Self { queue, events, audit, operations, payload_store }
+        Self {
+            queue,
+            events,
+            audit,
+            operations,
+            payload_store,
+        }
     }
 
     /// Access the resolved durable operation store for query routes.
@@ -72,7 +78,10 @@ impl IngestionService {
     /// through `IngestRequest`).
     #[instrument(skip(self, req), fields(user_id, source = %req.source_uri, collection_id = %req.collection_id.0), err)]
     pub async fn ingest(&self, req: IngestRequest, user_id: &str) -> Result<OperationId> {
-        let pipeline_template = req.pipeline_template.clone().unwrap_or_else(|| "standard".into());
+        let pipeline_template = req
+            .pipeline_template
+            .clone()
+            .unwrap_or_else(|| "standard".into());
         let submission = IngestionSubmission {
             idempotency_key: derive_idempotency_key(&req),
             logical_source_uri: req.source_uri.clone(),
@@ -82,7 +91,9 @@ impl IngestionService {
             payload: req.content.clone(),
             payload_locator: None,
         };
-        let (op_id, _is_new) = self.submit_operation(submission, req.force, user_id).await?;
+        let (op_id, _is_new) = self
+            .submit_operation(submission, req.force, user_id)
+            .await?;
         Ok(op_id)
     }
 
@@ -175,19 +186,26 @@ impl IngestionService {
             return Err(err);
         }
 
-        self.audit.log(AuditEntry {
-            operation: "submit_operation".into(),
-            user_id: user_id.to_string(),
-            collection_id: submission.collection_id.0,
-            result: "accepted".into(),
-        }).await;
+        self.audit
+            .log(AuditEntry {
+                operation: "submit_operation".into(),
+                user_id: user_id.to_string(),
+                collection_id: submission.collection_id.0,
+                result: "accepted".into(),
+            })
+            .await;
         // Events stay secondary: the durable store is truth. A progress event
         // carries only the operation id, status, and a link to the resource.
-        self.events.publish("ingestion:progress", serde_json::json!({
-            "operation_id": op_id.0,
-            "status": "accepted",
-            "resource": format!("/api/v1/ingestion-operations/{}", op_id.0),
-        })).await;
+        self.events
+            .publish(
+                "ingestion:progress",
+                serde_json::json!({
+                    "operation_id": op_id.0,
+                    "status": "accepted",
+                    "resource": format!("/api/v1/ingestion-operations/{}", op_id.0),
+                }),
+            )
+            .await;
         let elapsed = start.elapsed().as_secs_f64();
         metrics::counter!("arcanum_ingest_docs_total", "source" => source.clone(), "status" => "ok").increment(1);
         metrics::histogram!("arcanum_ingest_duration_seconds", "source" => source).record(elapsed);
@@ -207,7 +225,12 @@ fn derive_idempotency_key(req: &IngestRequest) -> String {
     hasher.update(b"\0");
     hasher.update(req.collection_id.0.as_bytes());
     hasher.update(b"\0");
-    hasher.update(req.pipeline_template.as_deref().unwrap_or("standard").as_bytes());
+    hasher.update(
+        req.pipeline_template
+            .as_deref()
+            .unwrap_or("standard")
+            .as_bytes(),
+    );
     hasher.update(b"\0");
     hasher.update([req.force as u8]);
     hasher.update(b"\0");
@@ -277,7 +300,10 @@ mod tests {
             derive_idempotency_key(&base),
             derive_idempotency_key(&different_source)
         );
-        assert_ne!(derive_idempotency_key(&base), derive_idempotency_key(&forced));
+        assert_ne!(
+            derive_idempotency_key(&base),
+            derive_idempotency_key(&forced)
+        );
         assert_ne!(
             derive_idempotency_key(&base),
             derive_idempotency_key(&different_mime),

@@ -1,22 +1,26 @@
 pub mod chunk_config;
 pub mod document;
 pub mod enrichment;
+pub mod evidence;
 pub mod graph;
 pub mod operation;
 pub mod provenance;
 pub mod query;
-pub mod evidence;
 pub mod tree;
-pub use evidence::{EvidenceKind, ProofNode, RawSourceRef, ProofChain, ChunkMetadataRecord, GcReport};
 pub use chunk_config::{
-    ChunkStrategyConfig, PerBackendChunkConfig, PerBackendChunkers,
-    ExperimentId, ShadowContext,
+    ChunkStrategyConfig, ExperimentId, PerBackendChunkConfig, PerBackendChunkers, ShadowContext,
 };
 pub use document::*;
 pub use enrichment::*;
+pub use evidence::{
+    ChunkMetadataRecord, EvidenceKind, GcReport, ProofChain, ProofNode, RawSourceRef,
+};
 pub use graph::*;
 pub use operation::*;
-pub use provenance::{ChunkProvenance, DocumentEntry, DocumentVersion, SnapshotLocation, VersionStatus, VersioningPolicy};
+pub use provenance::{
+    ChunkProvenance, DocumentEntry, DocumentVersion, SnapshotLocation, VersionStatus,
+    VersioningPolicy,
+};
 pub use query::*;
 pub use tree::*;
 
@@ -62,14 +66,12 @@ mod ingestion_report_tests {
             operation_id: OperationId::new(),
             source_uri: "file://test.pdf".to_string(),
             pipeline_template: "standard".to_string(),
-            stage_results: vec![
-                StageResult {
-                    stage_id: "load".to_string(),
-                    success: true,
-                    duration_ms: 12,
-                    error: None,
-                },
-            ],
+            stage_results: vec![StageResult {
+                stage_id: "load".to_string(),
+                success: true,
+                duration_ms: 12,
+                error: None,
+            }],
             total_chunks: 5,
             total_vectors: 5,
             document_fingerprint: "abc123".to_string(),
