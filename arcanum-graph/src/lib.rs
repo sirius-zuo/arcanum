@@ -17,6 +17,9 @@ use tracing::instrument;
 pub mod query_planner;
 pub use query_planner::GraphQueryPlanner;
 
+pub mod scorer;
+pub use scorer::HopDecayScorer;
+
 pub mod neo4j_store;
 pub use neo4j_store::Neo4jStore;
 
