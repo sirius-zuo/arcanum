@@ -56,6 +56,26 @@ impl Bm25Index {
         ))
     }
 
+    /// Runs `f` on the shared writer. Any error rolls the writer back: after a
+    /// failed commit Tantivy otherwise keeps accepting writes that never become
+    /// searchable. A poisoned mutex is recovered and rolled back the same way.
+    fn with_writer(
+        &self,
+        f: impl FnOnce(&mut IndexWriter) -> tantivy::Result<()>,
+    ) -> Result<()> {
+        let mut writer = self.writer.lock().unwrap_or_else(|p| {
+            let mut w = p.into_inner();
+            let _ = w.rollback();
+            w
+        });
+        f(&mut writer).map_err(|e| {
+            if let Err(re) = writer.rollback() {
+                tracing::warn!(err = %re, "bm25 writer rollback failed");
+            }
+            storage_err(e)
+        })
+    }
+
     /// Adds all chunks for one source and commits once.
     pub fn index_chunks(
         &self,
@@ -63,17 +83,18 @@ impl Bm25Index {
         source_uri: &str,
         chunks: &[(ChunkId, String)],
     ) -> Result<()> {
-        let mut writer = self.writer.lock().map_err(storage_err)?;
-        for (id, text) in chunks {
-            let mut doc = TantivyDocument::default();
-            doc.add_text(self.id_field, id.0.to_string());
-            doc.add_text(self.collection_field, collection_id);
-            doc.add_text(self.source_uri_field, source_uri);
-            doc.add_text(self.body_field, text);
-            writer.add_document(doc).map_err(storage_err)?;
-        }
-        writer.commit().map_err(storage_err)?;
-        Ok(())
+        self.with_writer(|writer| {
+            for (id, text) in chunks {
+                let mut doc = TantivyDocument::default();
+                doc.add_text(self.id_field, id.0.to_string());
+                doc.add_text(self.collection_field, collection_id);
+                doc.add_text(self.source_uri_field, source_uri);
+                doc.add_text(self.body_field, text);
+                writer.add_document(doc)?;
+            }
+            writer.commit()?;
+            Ok(())
+        })
     }
 
     /// Deletes every chunk of a source within a collection, then commits.
@@ -88,10 +109,11 @@ impl Bm25Index {
                 self.term_query(self.source_uri_field, source_uri),
             ),
         ]);
-        let mut writer = self.writer.lock().map_err(storage_err)?;
-        writer.delete_query(Box::new(query)).map_err(storage_err)?;
-        writer.commit().map_err(storage_err)?;
-        Ok(())
+        self.with_writer(|writer| {
+            writer.delete_query(Box::new(query))?;
+            writer.commit()?;
+            Ok(())
+        })
     }
 
     /// Returns (chunk_id, score) pairs within one collection, sorted by score descending.

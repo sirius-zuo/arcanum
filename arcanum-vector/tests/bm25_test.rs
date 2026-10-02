@@ -109,3 +109,32 @@ fn concurrent_index_chunks_all_succeed() {
         assert!(found.contains(&id));
     }
 }
+
+/// A failed commit must not poison the shared writer: after the failure clears,
+/// later writes have to be searchable. Induced by making the index dir read-only,
+/// so it is skipped when running as a user that ignores permissions (root).
+#[cfg(unix)]
+#[test]
+fn writes_succeed_after_a_failed_commit() {
+    use std::os::unix::fs::PermissionsExt;
+    let (dir, idx) = new_index();
+    let before = ChunkId::new();
+    idx.index_chunks("col", "u", &[(before.clone(), "alpha text".into())])
+        .unwrap();
+
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o500)).unwrap();
+    let failed = idx.index_chunks("col", "u2", &[(ChunkId::new(), "lost text".into())]);
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    if failed.is_ok() {
+        return; // permissions not enforced (root); failure could not be induced
+    }
+
+    let after = ChunkId::new();
+    idx.index_chunks("col", "u3", &[(after.clone(), "bravo text".into())])
+        .unwrap();
+    let hits = idx.search("col", "bravo", 5).unwrap();
+    assert_eq!(hits.len(), 1, "write after a failed commit must be searchable");
+    assert_eq!(hits[0].0, after);
+    assert!(idx.search("col", "lost", 5).unwrap().is_empty());
+    assert_eq!(idx.search("col", "alpha", 5).unwrap()[0].0, before);
+}
