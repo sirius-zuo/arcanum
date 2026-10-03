@@ -10,9 +10,10 @@
 
 /*
  * One token set, two themes. Values are space separated RGB channels so Tailwind
- * can apply alpha (bg-accent/10). Contrast (WCAG): light text 16.9:1 on surface,
- * muted 4.8:1; dark text 15.9:1 on surface, muted 7.0:1. Verdict colors are
- * tuned to at least 4.5:1 on their own surface in each theme.
+ * can apply alpha (bg-accent/10). Measured WCAG contrast: light text 17.7:1 on
+ * surface and 16.1:1 on surface-2; light muted and the light verdict colors are
+ * at least 4.5:1 on both surface and surface-2 (muted 5.9 and 5.3). Dark text is
+ * 16.1:1 on surface; dark muted 6.9:1 on surface and 5.8:1 on surface-2.
  */
 :root {
   --bg: 250 250 250;
@@ -20,16 +21,16 @@
   --surface-2: 244 244 245;
   --border: 228 228 231;
   --text: 24 24 27;
-  --muted: 113 113 122;
+  --muted: 100 100 110;
   --accent: 79 70 229;
   --accent-fg: 255 255 255;
 
   --v-supported: 21 128 61;
-  --v-partial: 161 98 7;
-  --v-unsupported: 220 38 38;
+  --v-partial: 150 90 5;
+  --v-unsupported: 205 30 30;
   --v-miscited: 194 65 12;
   --v-uncited: 15 118 110;
-  --v-noclaim: 113 113 122;
+  --v-noclaim: 100 100 110;
 
   --shadow-soft: 0 1px 2px rgb(24 24 27 / 0.04), 0 4px 16px -6px rgb(24 24 27 / 0.08);
   --shadow-lift: 0 2px 4px rgb(24 24 27 / 0.05), 0 12px 32px -10px rgb(24 24 27 / 0.16);

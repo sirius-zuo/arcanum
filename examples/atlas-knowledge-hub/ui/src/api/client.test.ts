@@ -57,4 +57,14 @@ describe('api client', () => {
     await expect(c.get('/x')).rejects.toBeInstanceOf(ApiError)
     expect(fn).not.toHaveBeenCalled()
   })
+
+  it('non_json_error_body_uses_first_200_chars_as_message', async () => {
+    const long = 'x'.repeat(500)
+    mockFetch(new Response(long, { status: 502 }))
+    const c = createClient(() => 'k')
+    const err = (await c.get('/x').catch((e: unknown) => e)) as ApiError
+    expect(err.status).toBe(502)
+    expect(err.message).toBe('x'.repeat(200))
+    expect(err.body).toBe(long)
+  })
 })
