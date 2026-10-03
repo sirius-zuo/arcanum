@@ -11,6 +11,7 @@ mod ollama;
 pub mod openai;
 mod router;
 pub mod spacy;
+pub mod sse;
 
 pub use anthropic::AnthropicProvider;
 pub use bge::BgeProvider;
