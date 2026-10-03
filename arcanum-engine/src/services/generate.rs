@@ -1,6 +1,7 @@
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::auth::ApiKeyClaims;
 use crate::services::context::{ContextError, ContextService};
+use crate::services::verify::VerifyService;
 use arcanum_core::{
     config::GenerateConfig,
     traits::{GenerationEvent, GenerationRequest, GenerationUsage, Generator, StopReason},
@@ -69,7 +70,10 @@ pub struct GenerateStream {
 
 pub struct GenerateService {
     context: Arc<ContextService>,
-    generators: HashMap<String, GeneratorEntry>,
+    generators: Arc<HashMap<String, GeneratorEntry>>,
+    /// Consumed by the verification phase added next.
+    #[allow(dead_code)]
+    verify: Option<Arc<VerifyService>>,
     config: GenerateConfig,
     audit: Arc<AuditLogger>,
 }
@@ -83,13 +87,15 @@ impl std::fmt::Debug for GenerateService {
 impl GenerateService {
     pub fn new(
         context: Arc<ContextService>,
-        generators: HashMap<String, GeneratorEntry>,
+        generators: Arc<HashMap<String, GeneratorEntry>>,
+        verify: Option<Arc<VerifyService>>,
         config: GenerateConfig,
         audit: Arc<AuditLogger>,
     ) -> Self {
         Self {
             context,
             generators,
+            verify,
             config,
             audit,
         }
@@ -491,7 +497,13 @@ mod tests {
                 breaker: breaker.clone(),
             },
         );
-        let svc = GenerateService::new(context, generators, o.config.clone(), audit.clone());
+        let svc = GenerateService::new(
+            context,
+            Arc::new(generators),
+            None,
+            o.config.clone(),
+            audit.clone(),
+        );
         let claims = auth
             .validate_api_key(&auth.generate_admin_key("tester"))
             .unwrap();

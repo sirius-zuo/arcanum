@@ -82,7 +82,7 @@ async fn generate_over_full_ingestion_maps_citations_to_registry() {
         default_generator: Some("fake".into()),
         ..GenerateConfig::default()
     };
-    let svc = GenerateService::new(context, generators, config, audit);
+    let svc = GenerateService::new(context, Arc::new(generators), None, config, audit);
     let claims = ApiKeyClaims {
         user_id: "u1".into(),
         allowed_collections: vec![COLLECTION.into()],
