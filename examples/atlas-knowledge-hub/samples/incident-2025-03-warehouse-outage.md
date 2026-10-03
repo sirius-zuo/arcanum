@@ -13,7 +13,7 @@ All times are local to Utrecht.
 - 06:05: Platform rolls out Wayfinder 4.2 to the Northgate fleet through the fleet gateway.
 - 06:20: Robots begin reporting deadlock warnings in narrow aisles. The warnings are rated low severity and do not page anyone.
 - 06:48: The customer's shift lead calls the support line. Samir Haddad's Customer Success team opens a ticket.
-- 07:02: The pager fires after the stalled robot count passes 100. Imani Okoye, the Navigation on-call lead, acknowledges within three minutes.
+- 07:02: The pager fires after the stalled robot count passes 100. Imani Okoye acknowledges the page within three minutes.
 - 07:25: Priya Raman declares a SEV1 and opens the incident channel. Nadia Petrova joins for Platform.
 - 08:10: Imani Okoye and Tobias Lindqvist identify a new lock ordering rule in the traffic manager that deadlocks when more than 40 robots queue at one intersection.
 - 08:55: The decision is taken to roll back instead of patching forward.

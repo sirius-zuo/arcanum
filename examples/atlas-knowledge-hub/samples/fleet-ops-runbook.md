@@ -30,7 +30,7 @@ Use the pager only for SEV1 and SEV2. The alert policy pages when more than 10 r
 1. Confirm the scope in the fleet console: which site, which zone, how many robots.
 2. Declare the severity and open an incident channel named after the date and the site.
 3. Check the last deployment. If a release reached the fleet in the last 24 hours, consider a rollback before debugging.
-4. Page the on-call lead of the team that owns the affected component. Navigation owns the Wayfinder stack, Perception owns the camera and lidar pipeline, and Platform owns the gateway and console.
+4. Page the on-call lead of the team that owns the affected component, found through the org chart.
 5. Post an update to the customer through Customer Success every 30 minutes.
 
 ## Rollback procedure

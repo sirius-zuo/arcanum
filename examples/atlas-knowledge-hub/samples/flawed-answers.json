@@ -8,7 +8,7 @@
   },
   {
     "id": "flawed",
-    "title": "A wrong number and a wrong citation",
+    "title": "Wrong number plus a wrong-robot claim (needs the HX-1 datasheet among the passages)",
     "question": "Compare the payload and battery runtime of the HX-2 and the older HX-1.",
     "answer": "The HX-2 has a payload of 60 kg [P1]. The HX-2 can carry a payload of 80 kg [P1]. The older HX-1 runs for 5 hours per charge [P1].",
     "expected": ["supported", "unsupported", "miscited"]
