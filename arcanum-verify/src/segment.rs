@@ -7,6 +7,10 @@ pub struct Unit {
     pub code: bool,
 }
 
+const CLOSING: &[char] = &[
+    '.', ',', ';', ':', '!', '?', '。', '！', '？', '，', '；', '：', ')', '）',
+];
+
 /// Trim whitespace from both ends of `s[start..end]`, returning absolute span.
 fn trimmed(s: &str, start: usize, end: usize) -> Option<(usize, usize)> {
     let piece = &s[start..end];
@@ -47,7 +51,10 @@ fn split_line(line: &str) -> Vec<(usize, usize)> {
                 }
             }
             let rest = &line[end..];
+            end += rest.len() - rest.trim_start_matches(CLOSING).len();
+            let rest = &line[end..];
             end += rest.len() - rest.trim_start_matches(char::is_whitespace).len();
+            bounds.retain(|&b| b < gs || b >= end);
             if end < line.len() {
                 added.push(end);
             }
@@ -138,6 +145,32 @@ mod tests {
                 "- Bob works there [P1]",
                 "- He mentors hires [P2]"
             ]
+        );
+    }
+    #[test]
+    fn closing_punctuation_after_marker_run_stays() {
+        assert_eq!(
+            texts("Acme builds rockets. [P1]. Next"),
+            vec!["Acme builds rockets. [P1].", "Next"]
+        );
+        assert_eq!(
+            texts("Acme builds rockets. [P1], and more"),
+            vec!["Acme builds rockets. [P1],", "and more"]
+        );
+    }
+    #[test]
+    fn empty_whitespace_and_marker_only() {
+        assert!(texts("").is_empty());
+        assert!(texts(" \n\t\r\n ").is_empty());
+        assert_eq!(texts("[P1]"), vec!["[P1]"]);
+    }
+    #[test]
+    fn indented_fence_is_code() {
+        let a = "a\n   ```\n  x. y\n  ```\nb";
+        assert_eq!(texts(a), vec!["a", "```\n  x. y\n  ```", "b"]);
+        assert_eq!(
+            segment(a).iter().map(|u| u.code).collect::<Vec<_>>(),
+            vec![false, true, false]
         );
     }
     #[test]
