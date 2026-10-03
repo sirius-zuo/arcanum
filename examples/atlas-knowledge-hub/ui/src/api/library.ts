@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useBootstrap } from '../state/bootstrap'
 import { useOperations } from '../state/operations'
-import type { DemoHealth, Library, Samples, SamplesOperations } from './types'
+import type { DemoHealth, DocumentText, Library, Samples, SamplesOperations } from './types'
 
 /** Poll quickly while something is wrong, slowly once everything is ready. */
 export function healthRefetchInterval(data: DemoHealth | undefined): number {
@@ -35,6 +35,17 @@ export function useLibrary() {
     queryKey: ['demo', 'library'],
     queryFn: () => client.get<Library>('/demo/library'),
     enabled: data !== null,
+    retry: false,
+  })
+}
+
+export function useDocumentText(documentId: string, versionNum: number) {
+  const { data, client } = useBootstrap()
+  return useQuery({
+    queryKey: ['demo', 'document-text', documentId, versionNum],
+    queryFn: () => client.get<DocumentText>(`/demo/documents/${encodeURIComponent(documentId)}/versions/${versionNum}/text`),
+    enabled: data !== null,
+    staleTime: Infinity,
     retry: false,
   })
 }

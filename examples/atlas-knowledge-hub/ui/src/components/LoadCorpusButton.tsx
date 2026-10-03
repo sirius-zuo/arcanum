@@ -6,6 +6,8 @@ interface LoadCorpusButtonProps {
   loading: boolean
   /** Number of ingestion operations already submitted from this browser. */
   trackedCount: number
+  /** How many of the tracked operations have reached a terminal state. */
+  doneCount?: number
   onLoad: () => void
 }
 
@@ -16,7 +18,7 @@ export function loadBlockedReason(health: DemoHealth | undefined): string | null
   return health.checks.find((c) => !c.ok)?.label ?? 'Atlas is not ready'
 }
 
-export function LoadCorpusButton({ health, loading, trackedCount, onLoad }: LoadCorpusButtonProps) {
+export function LoadCorpusButton({ health, loading, trackedCount, doneCount, onLoad }: LoadCorpusButtonProps) {
   const reason = loadBlockedReason(health)
   const disabled = reason !== null || loading
   return (
@@ -35,7 +37,7 @@ export function LoadCorpusButton({ health, loading, trackedCount, onLoad }: Load
         <p className="max-w-[15rem] text-xs text-muted">Blocked until this is fixed: {reason}</p>
       ) : trackedCount > 0 ? (
         <p className="max-w-[15rem] text-xs text-muted">
-          {trackedCount} ingestion {trackedCount === 1 ? 'operation' : 'operations'} submitted. Follow them in the Library.
+          {doneCount ?? 0}/{trackedCount} ingestion {trackedCount === 1 ? 'operation' : 'operations'} finished. Follow them in the Library.
         </p>
       ) : (
         <p className="max-w-[15rem] text-xs text-muted">Ingests ten fictional company documents through the full pipeline.</p>

@@ -9,11 +9,15 @@ export interface TrackedOp {
   source_uri: string
   operation_id: string
   addedAt: number
+  /** True when the server answered 200: the upload replayed an earlier identical submission. */
+  replay?: boolean
 }
+
+export type TrackInput = OperationRef & { replay?: boolean }
 
 interface OperationsValue {
   ops: TrackedOp[]
-  track: (ids: OperationRef[]) => void
+  track: (ids: TrackInput[]) => void
 }
 
 const Ctx = createContext<OperationsValue | null>(null)
@@ -38,7 +42,7 @@ function load(): TrackedOp[] {
 export function OperationsProvider({ children }: { children: ReactNode }) {
   const [ops, setOps] = useState<TrackedOp[]>(load)
 
-  const track = useCallback((ids: OperationRef[]) => {
+  const track = useCallback((ids: TrackInput[]) => {
     setOps((current) => {
       const seen = new Set(current.map((o) => o.operation_id))
       const now = Date.now()
@@ -46,7 +50,7 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
       for (const id of ids) {
         if (seen.has(id.operation_id)) continue
         seen.add(id.operation_id)
-        added.push({ source_uri: id.source_uri, operation_id: id.operation_id, addedAt: now })
+        added.push({ source_uri: id.source_uri, operation_id: id.operation_id, addedAt: now, ...(id.replay ? { replay: true } : {}) })
       }
       if (added.length === 0) return current
       const next = [...current, ...added]

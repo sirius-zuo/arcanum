@@ -18,6 +18,7 @@ import {
   ShieldCheck,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
+import { useTerminalCount } from '../api/ingest'
 import { useApplyUpdate, useHealth, useLibrary, useLoadSamples } from '../api/library'
 import type { Bootstrap, DemoHealth, Library } from '../api/types'
 import { CapabilityCard } from '../components/CapabilityCard'
@@ -100,6 +101,7 @@ export default function OverviewPage() {
   const load = useLoadSamples()
   const update = useApplyUpdate()
   const { ops } = useOperations()
+  const progress = useTerminalCount(ops.map((o) => o.operation_id))
   const ctx: StatusContext = { boot, health: health.data, library: library.data }
 
   return (
@@ -116,7 +118,7 @@ export default function OverviewPage() {
             Atlas runs the whole Arcanum stack against the documents of a fictional company: ingest, retrieve, generate with citations, verify every sentence and follow any claim back to the bytes it came from.
           </p>
           <div className="mt-7 flex flex-wrap items-start gap-4">
-            <LoadCorpusButton health={health.data} loading={load.isPending} trackedCount={ops.length} onLoad={() => load.mutate()} />
+            <LoadCorpusButton health={health.data} loading={load.isPending} trackedCount={ops.length} doneCount={progress.done} onLoad={() => load.mutate()} />
             <button
               type="button"
               disabled

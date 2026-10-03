@@ -8,6 +8,7 @@ import type { PaletteAction } from './CommandPalette'
 import { Inspector, InspectorProvider } from './Inspector'
 import { CommandActionsProvider, useCommandActions } from '../state/commandActions'
 import { OperationsProvider } from '../state/operations'
+import { IngestEventsProvider } from '../state/ingestEvents'
 import { useApplyUpdate, useLoadSamples } from '../api/library'
 import { useTheme } from '../state/theme'
 import { useBootstrap } from '../state/bootstrap'
@@ -52,6 +53,7 @@ export function AppShell() {
 
   return (
     <OperationsProvider>
+    <IngestEventsProvider>
     <CommandActionsProvider>
     <InspectorProvider>
     <div className="flex min-h-screen">
@@ -84,6 +86,7 @@ export function AppShell() {
     </div>
     </InspectorProvider>
     </CommandActionsProvider>
+    </IngestEventsProvider>
     </OperationsProvider>
   )
 }
