@@ -1,0 +1,6 @@
+data/
+.arcanum-dev-key
+ui/node_modules/
+ui/dist/
+target/
+*.lance
