@@ -85,6 +85,7 @@ async fn eval_reports_metrics_on_loaded_corpus() {
         let v = report[m].as_f64().unwrap_or_else(|| panic!("{m} missing"));
         assert!((0.0..=1.0).contains(&v), "{m} = {v}");
     }
+    assert!(report["hit_rate_at_k"].as_f64().unwrap() > 0.0);
     let queries = body["queries"].as_array().unwrap();
     assert_eq!(queries.len(), 2);
     for q in queries {
@@ -122,4 +123,33 @@ fn rank_is_none_when_not_retrieved() {
 
     let relevant: HashSet<ChunkId> = [ids[2].clone()].into_iter().collect();
     assert_eq!(first_relevant_rank(&ids, &relevant), Some(3));
+}
+
+#[tokio::test]
+async fn superseded_version_chunks_do_not_matter() {
+    let (state, _d) = test_state().await;
+    for f in ["security-policy.md", "updates/security-policy.md"] {
+        let r = ingest_and_wait(&state, "security-policy.md", &sample(f), "standard").await;
+        assert_eq!(format!("{:?}", r.status), "Succeeded", "{r:?}");
+    }
+    let mut manifest = load_manifest(&samples_dir()).unwrap();
+    manifest.golden = vec![golden("security policy requirements", "security-policy.md")];
+    let router = demo_router(state.clone(), Arc::new(manifest), Arc::new(NoProbe));
+    let (st, body) = post_eval(&router, Some(&state.admin_key)).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(
+        body["queries"][0]["first_relevant_rank"].is_number(),
+        "{body}"
+    );
+}
+
+#[tokio::test]
+async fn empty_golden_is_409() {
+    let (state, _d) = test_state().await;
+    let mut manifest = load_manifest(&samples_dir()).unwrap();
+    manifest.golden = vec![];
+    let router = demo_router(state.clone(), Arc::new(manifest), Arc::new(NoProbe));
+    let (st, body) = post_eval(&router, Some(&state.admin_key)).await;
+    assert_eq!(st, StatusCode::CONFLICT);
+    assert_eq!(body["error"], "no golden queries");
 }
