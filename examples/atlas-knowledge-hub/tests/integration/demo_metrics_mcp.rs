@@ -20,6 +20,19 @@ impl OllamaProbe for NoProbe {
 
 async fn app() -> (Router, tempfile::TempDir) {
     let (state, dir) = crate::common::test_state().await;
+    app_with(state, dir)
+}
+
+/// A port nothing is listening on (bound then released).
+fn free_port() -> u16 {
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+fn app_with(state: Arc<atlas::AtlasState>, dir: tempfile::TempDir) -> (Router, tempfile::TempDir) {
     let manifest = load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("samples")).unwrap();
     (
         demo_router(state, Arc::new(manifest), Arc::new(NoProbe)),
@@ -120,11 +133,13 @@ fn parse_nonfinite_values_serialize() {
 
 #[tokio::test]
 async fn mcp_route_lists_seven_tools() {
-    let (router, _dir) = app().await;
+    let (state, dir) = crate::common::test_state().await;
+    let mcp_port = state.settings.mcp_port;
+    let (router, _dir) = app_with(state, dir);
     let k = key(&router).await;
     let (st, body) = get(&router, "/demo/mcp", Some(&k)).await;
     assert_eq!(st, StatusCode::OK);
-    assert_eq!(body["endpoint"], "http://localhost:8081/mcp");
+    assert_eq!(body["endpoint"], format!("http://localhost:{mcp_port}/mcp"));
     let tools = body["tools"].as_array().unwrap();
     let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
     for n in [
@@ -161,9 +176,51 @@ async fn metrics_requires_key() {
 
 #[tokio::test]
 async fn metrics_503_when_unreachable() {
-    let (router, _dir) = app().await;
+    let (state, dir) = crate::common::test_state().await;
+    let mut st = (*state).clone();
+    st.settings.port = free_port();
+    let (router, _dir) = app_with(Arc::new(st), dir);
     let k = key(&router).await;
     let (st, body) = get(&router, "/demo/metrics", Some(&k)).await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["error"], "metrics recorder not installed");
+}
+
+#[tokio::test]
+async fn metrics_proxies_when_recorder_responds() {
+    let (state, dir) = crate::common::test_state().await;
+    let expected = format!("Bearer {}", state.metrics_token);
+    let fake = Router::new().route(
+        "/metrics",
+        axum::routing::get(move |headers: http::HeaderMap| {
+            let expected = expected.clone();
+            async move {
+                if headers.get("Authorization").and_then(|v| v.to_str().ok())
+                    == Some(expected.as_str())
+                {
+                    (
+                        StatusCode::OK,
+                        "# TYPE c counter\nc{a=\"b\"} 3\nh_sum 1.5\nh_count 2\n",
+                    )
+                } else {
+                    (StatusCode::UNAUTHORIZED, "")
+                }
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, fake).await.unwrap() });
+    let mut st = (*state).clone();
+    st.settings.port = port;
+    let (router, _dir) = app_with(Arc::new(st), dir);
+    let k = key(&router).await;
+    let (status, body) = get(&router, "/demo/metrics", Some(&k)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["counters"][0]["name"], "c");
+    assert_eq!(body["counters"][0]["labels"]["a"], "b");
+    assert_eq!(body["counters"][0]["value"], 3.0);
+    assert_eq!(body["histograms"][0]["name"], "h");
+    assert_eq!(body["histograms"][0]["count"], 2.0);
+    assert_eq!(body["histograms"][0]["sum"], 1.5);
 }
