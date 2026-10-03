@@ -3,6 +3,7 @@ pub mod context;
 pub mod document;
 pub mod enrichment;
 pub mod evidence;
+pub mod generate;
 pub mod graph;
 pub mod operation;
 pub mod provenance;
@@ -16,6 +17,12 @@ pub use document::*;
 pub use enrichment::*;
 pub use evidence::{
     ChunkBackend, ChunkMetadataRecord, EvidenceKind, GcReport, ProofChain, ProofNode, RawSourceRef,
+};
+// `generate::Citation` collides with `query::Citation`, so it is reached via
+// `types::generate::Citation` rather than re-exported here.
+pub use generate::{
+    GenerateContextOptions, GenerateMode, GenerateOutcome, GenerateRequest, GenerateResponse,
+    GenerateStatus, GeneratorInfo,
 };
 pub use graph::*;
 pub use operation::*;

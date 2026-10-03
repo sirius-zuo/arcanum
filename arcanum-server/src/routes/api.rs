@@ -313,6 +313,8 @@ fn operation_error_response(e: &ArcanumError) -> Response {
             Json(serde_json::json!({ "error": "operation not found" }))).into_response(),
         ArcanumError::QueueFull => (StatusCode::SERVICE_UNAVAILABLE,
             Json(serde_json::json!({ "error": "ingestion queue is full" }))).into_response(),
+        ArcanumError::Generation(_) => (StatusCode::BAD_GATEWAY,
+            Json(serde_json::json!({ "error": "generation failed" }))).into_response(),
         _ => (StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "error": "internal error" }))).into_response(),
     }

@@ -22,6 +22,8 @@ pub enum ArcanumError {
     AlreadyExists(String),
     #[error("conflict: {0}")]
     Conflict(String),
+    #[error("generation error: {0}")]
+    Generation(String),
     #[error("queue full")]
     QueueFull,
     #[error("pipeline error in stage '{stage}': {message}")]

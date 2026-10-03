@@ -131,6 +131,7 @@ fn classify_error(err: &ArcanumError) -> (&'static str, bool) {
         ArcanumError::AlreadyExists(_) => ("ALREADY_EXISTS", false),
         ArcanumError::Conflict(_) => ("CONFLICT", false),
         ArcanumError::QueueFull => ("QUEUE_FULL", true),
+        ArcanumError::Generation(_) => ("GENERATION", true),
         ArcanumError::Pipeline { .. } => ("PIPELINE_FAILURE", true),
         ArcanumError::Other(_) => ("INTERNAL_ERROR", false),
     }
