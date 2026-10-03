@@ -9,7 +9,7 @@ wiring `arcanum-middleware`'s circuit breakers and queue, assembling
 `arcanum-pipeline`'s `PipelineDeps` and spawning its `IngestionWorker`
 pool, building `arcanum-retrieval`'s `RetrievalOrchestrator`, and
 constructing every service (`IngestionService`, `RetrievalService`,
-`ContextService`, `CollectionService`, `ExperimentService`, `EvalService`,
+`ContextService`, `GenerateService`, `CollectionService`, `ExperimentService`, `EvalService`,
 `IngestionSourceService`, `AdminService`) plus the cross-cutting
 concerns (`AuthMiddleware`, `AuditLogger`, `EventBus`, `SecretStore`)
 that those services and the HTTP/MCP layer share. It exists as its own
@@ -166,6 +166,25 @@ unknown provider name fails `build()` with a config error. With neither,
 `rewriter` is `None` and conversations fall back to the last user message
 (logged once at startup).
 
+### GenerateService
+
+`GenerateService` (`services/generate.rs`) backs `POST /api/v1/generate`
+and the MCP `generate` tool. It wraps `ContextService`, a map of
+`GeneratorEntry`s (generator, `max_output_tokens`, and a per-generator
+`CircuitBreaker` named `generator:<name>`), the `[generate]`
+`GenerateConfig`, and the `AuditLogger`. `ArcanumEngine.generate` is an
+`Option<Arc<GenerateService>>`: `build()` constructs it only when
+`ContextService` exists and at least one generator is configured.
+Generators come from `[generate.generators]` (the API key is read from the
+`api_key_env` variable at build time) or from
+`ArcanumEngineBuilder::generator(name, generator, max_output_tokens)`,
+which replaces a config entry of the same name. `build()` fails with a
+config error when generators exist and `default_generator` is unset or
+names none of them. Prompt building and citation parsing live in the pure
+`arcanum-generate` crate (`build_prompt`, `parse_citations`), which depends
+only on `arcanum-core`. `GenerateError` (`Invalid`, `Forbidden`,
+`Unavailable`, `Upstream`, `Timeout`, `Internal`) mirrors `ContextError`.
+
 ## Runtime Flows
 
 **1. `ArcanumEngineBuilder::build`**
@@ -287,9 +306,60 @@ unknown provider name fails `build()` with a config error. With neither,
    returned, strategies that failed with reasons), writes a `context`
    audit entry, and returns the `ContextResponse`.
 
+### Generating an answer (`GenerateService::generate_stream`)
+
+1. `GenerateRequest::validate` and generator resolution (the request's
+   `generator`, else `default_generator`) reject bad input as `Invalid`,
+   including an unknown generator and `max_tokens` above the generator's
+   cap. The default `max_tokens` is clamped to that cap. `summarize` mode
+   swaps in `summarize_token_budget` as the Context budget default.
+2. `ContextService::assemble` runs (auth `Forbidden`, retrieval
+   `Unavailable`).
+3. With no passages the service short-circuits: one `Delta` with
+   `no_context_answer`, then `Done` with status `no_context`. The generator
+   and its breaker are not touched, so this is served even with an open
+   breaker.
+4. Otherwise `generators[name].breaker.allow_request()` guards the
+   generator (`Unavailable` when open).
+5. `build_prompt` produces the system prompt and messages; the returned
+   event stream is lazy, so the LLM call happens when it is first polled.
+   Dropping the stream cancels the upstream request and records nothing.
+6. Polling drives `Generator::stream` under `timeout_at`: the first-token
+   deadline covers the call and the first event, the total deadline covers
+   everything. A timeout yields `Timeout`; a generator error or a stream
+   that ends without `Done` yields `Upstream`. Both record a breaker
+   failure.
+7. On `Done` the service records breaker success, runs `parse_citations`
+   once over the whole answer, and emits the outcome. `generate` drains
+   this stream into a `GenerateResponse`, turning an `Error` event into
+   `Err`.
+
+Every terminal event increments `arcanum_generation_total{generator, mode,
+status}` (`ok`, `no_context`, `error`, `timeout`), records
+`arcanum_generation_duration_seconds` for real generations, adds
+`arcanum_generation_tokens_total{generator, kind}` when the provider
+reports usage, and writes a `generate` audit entry.
+
 ## Key Decisions
 
 Newest first.
+
+### `GenerateService` serves `no_context` before the generator breaker, and calls the generator lazily
+- **Decision**: validation, then Context, then the `no_context`
+  short-circuit, then the breaker check; the generator is called only when
+  the event stream is first polled, with timeouts implemented inside the
+  stream rather than a spawned task.
+- **Context**: an open generator breaker should not hide that a collection
+  has nothing relevant, and a client disconnect must cancel the upstream
+  request.
+- **Alternatives rejected**: checking the breaker first (turns an empty
+  retrieval into a 503); spawning a task to pump the generator (outlives a
+  dropped stream).
+- **Consequences**: upstream failures surface as an `error` SSE event or
+  `Upstream` on the JSON path, both carrying only the fixed text
+  `generation failed` (the detail is logged server-side); cancelled streams record no metric, breaker
+  result, or audit entry.
+- **Ref**: 2026-10-02, commit 816e913.
 
 ### `ContextService` requires the chunk registry and is absent without one
 - **Decision**: `ArcanumEngine.context` is `Some` only when a
@@ -568,6 +638,8 @@ Newest first.
 - `arcanum-engine/src/event_bus.rs`
 - `arcanum-engine/src/services/`
 - `arcanum-engine/src/services/context.rs`
+- `arcanum-engine/src/services/generate.rs`
+- `arcanum-generate/` (crate)
 - `arcanum-context/` (crate)
 
 <!-- The drift contract: a PR changing files under these anchors updates this page

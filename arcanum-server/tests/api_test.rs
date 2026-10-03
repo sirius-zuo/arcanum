@@ -103,3 +103,142 @@ async fn test_ws_route_exists() {
     let status = get("/ws/events").await;
     assert_ne!(status, StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn test_generate_requires_auth() {
+    let status = post_json(
+        "/api/v1/generate",
+        serde_json::json!({ "collection_id": "docs", "query": "test" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// POSTs to /api/v1/generate as an authenticated admin. With `generator` the
+/// engine has a chunk registry, an empty BM25 index and a scripted generator;
+/// without it, neither. Returns status, content type and raw body.
+async fn post_generate_authed(
+    body: serde_json::Value,
+    generator: bool,
+) -> (StatusCode, String, String) {
+    use arcanum_core::traits::{InMemoryChunkMetadataStore, NoOpDocumentVersionStore};
+    use arcanum_core::traits::{ScriptStep, ScriptedGenerator, StopReason};
+    use arcanum_engine::ArcanumEngine;
+    use std::sync::Arc;
+    let dir = tempfile::tempdir().unwrap();
+    let mut builder = ArcanumEngine::builder()
+        .auth_secret("a-32-char-secret-for-testing-ok!")
+        .version_store(Arc::new(NoOpDocumentVersionStore));
+    if generator {
+        let bm25 = Arc::new(arcanum_vector::Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
+        let fake = Arc::new(ScriptedGenerator::new(
+            "fake-model",
+            vec![ScriptStep::Done(StopReason::EndTurn)],
+        ));
+        builder = builder
+            .bm25_index(bm25)
+            .chunk_metadata_store(Arc::new(InMemoryChunkMetadataStore::new()))
+            .generator("fake", fake, 100);
+    }
+    let mut cfg = arcanum_core::ArcanumConfig::default();
+    if generator {
+        cfg.generate.default_generator = Some("fake".into());
+    }
+    let engine = builder.config(cfg).build().await.unwrap();
+    let token = engine.auth.generate_admin_key("tester");
+    let app = build_app(Some(engine));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/generate")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .map(|v| v.to_str().unwrap().to_string())
+        .unwrap_or_default();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, ct, String::from_utf8(bytes.to_vec()).unwrap())
+}
+
+#[tokio::test]
+async fn test_generate_unconfigured_is_503() {
+    let (status, _, body) = post_generate_authed(
+        serde_json::json!({ "collection_id": "docs", "query": "t" }),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        v["error"],
+        "generation requires a configured generator and a chunk registry"
+    );
+}
+
+#[tokio::test]
+async fn test_generate_bad_mode_is_400() {
+    let (status, _, _) = post_generate_authed(
+        serde_json::json!({ "collection_id": "docs", "query": "t", "mode": "poem" }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn test_generate_no_context_json_and_sse_agree() {
+    let (status, ct, body) = post_generate_authed(
+        serde_json::json!({ "collection_id": "docs", "query": "t" }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ct.starts_with("application/json"), "{ct}");
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["status"], "no_context");
+    assert_eq!(
+        json["answer"],
+        "No relevant information was found in the collection."
+    );
+
+    let (status, ct, body) = post_generate_authed(
+        serde_json::json!({ "collection_id": "docs", "query": "t", "stream": true }),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(ct.starts_with("text/event-stream"), "{ct}");
+    let events: Vec<(String, serde_json::Value)> = body
+        .split("\n\n")
+        .filter(|b| !b.trim().is_empty())
+        .map(|block| {
+            let name = block
+                .lines()
+                .find_map(|l| l.strip_prefix("event:"))
+                .unwrap()
+                .trim()
+                .to_string();
+            let data = block
+                .lines()
+                .find_map(|l| l.strip_prefix("data:"))
+                .unwrap()
+                .trim();
+            (name, serde_json::from_str(data).unwrap())
+        })
+        .collect();
+    let names: Vec<&str> = events.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["context", "delta", "done"]);
+    assert_eq!(events[1].1["text"], json["answer"]);
+    let mut expected = json.clone();
+    let obj = expected.as_object_mut().unwrap();
+    obj.remove("answer");
+    obj.remove("context");
+    assert_eq!(events[2].1, expected);
+}

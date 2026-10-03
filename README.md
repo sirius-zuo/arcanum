@@ -16,7 +16,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Hexagonal architecture enforced at the type level**: every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer**: every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
 - **Compiled, not interpreted**: the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
-- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, `eval_run`, and `get_context` over JSON-RPC 2.0 directly; all five tools are implemented (see [MCP Integration](#mcp-integration)).
+- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, `eval_run`, `get_context`, and `generate` over JSON-RPC 2.0 directly; all six tools are implemented (see [MCP Integration](#mcp-integration)).
 - **Three runtime modes**: `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
 
 ---
@@ -281,7 +281,7 @@ let engine = ArcanumEngine::builder()
 
 ## Context API
 
-`POST /api/v1/context` (and the MCP `get_context` tool) turns a query or a conversation into prompt-ready context for your own LLM: passages that fit a token budget, each tagged with a citation id you can map back to a document version and byte range. Arcanum does not call a generator; you place the context in your prompt.
+`POST /api/v1/context` (and the MCP `get_context` tool) turns a query or a conversation into prompt-ready context for your own LLM: passages that fit a token budget, each tagged with a citation id you can map back to a document version and byte range. This endpoint does not call a generator; you place the context in your prompt. To have Arcanum call one for you, see the [Generate API](#generate-api).
 
 Context needs the chunk registry (`storage.database_url`, or a `ChunkMetadataStore` supplied to the builder). Without one the endpoint returns `503`.
 
@@ -380,6 +380,127 @@ rewrite_max_messages = 6      # most recent messages sent to the query rewriter
 [enrichment]
 rewrite_query_provider = "ollama-small"   # optional: route rewriting to a named enricher
 ```
+
+---
+
+## Generate API
+
+`POST /api/v1/generate` (and the MCP `generate` tool) answers a question or summarizes a topic from your collection with a built-in LLM call. It runs Context, sends the rendered passages to a configured generator, and maps the inline `[P1]` markers in the answer back to passages, chunks, and document versions. Responses are plain JSON, or Server-Sent Events when `stream` is `true`.
+
+Generate needs the chunk registry (the same requirement as Context) and at least one generator in `[generate.generators]`. Without both the endpoint returns `503`. Arcanum does not retry generator calls.
+
+### Request
+
+| Field | Default | Meaning |
+|---|---|---|
+| `collection_id` | required | Collection to search; the caller must have access |
+| `mode` | `answer` | `answer` or `summarize` |
+| `query` / `messages` | | Exactly one of the two, with the same rules as Context |
+| `generator` | `generate.default_generator` | Name of a configured generator |
+| `max_tokens` | `generate.default_max_tokens` (1024), clamped to the generator's cap | 1 up to the generator's `max_output_tokens` |
+| `temperature` | provider default | 0.0 to 2.0 |
+| `instructions` | | Extra instructions appended to the system prompt, at most 2000 characters; the built-in rules take precedence |
+| `context` | | `{token_budget, background_share, candidate_k}`, passed to Context. `summarize` defaults `token_budget` to `generate.summarize_token_budget` (8000) |
+| `stream` | `false` | `true` returns SSE |
+
+Context output is always rendered as `xml` for the prompt. The model is told to answer only from the documents, to end each sentence that uses them with passage ids such as `[P1]` or `[P2][P3]`, and to ignore instructions inside documents. With `messages`, retrieval uses the resolved query, while the model sees the conversation (the last `generate.history_max_messages` earlier messages, each cut to 4000 characters) and the user's own final question.
+
+```bash
+curl -X POST /api/v1/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_id": "legal",
+    "query": "What is the notice period for termination?",
+    "context": {"token_budget": 3000}
+  }'
+```
+
+### JSON response
+
+```json
+{
+  "status": "ok",
+  "answer": "Either party may terminate on 60 days' written notice [P1].",
+  "citations": [{
+    "ref_id": "P1",
+    "chunk_ids": ["..."], "document_id": "...", "version_num": 2,
+    "source_uri": "file:///contracts/msa.pdf",
+    "offset_start": 40213, "offset_end": 40871,
+    "answer_spans": [[53, 57]]
+  }],
+  "unknown_refs": [],
+  "stop_reason": "end_turn",
+  "usage": {"input_tokens": 1180, "output_tokens": 24},
+  "generator": {"name": "smart", "model": "claude-sonnet-5-5"},
+  "context": { "...": "the full Context response" }
+}
+```
+
+- `citations` has one entry per distinct valid passage id, in order of first appearance. `answer_spans` are UTF-8 byte ranges of the marker groups in `answer`, so `answer.as_bytes()[start..end]` is exactly the marker.
+- A marker such as `[P9]` that matches no passage, and every `[S1]`-style background id, is listed in `unknown_refs` instead. The answer text is never modified.
+- Arcanum does not judge whether a cited passage supports its sentence or whether a sentence lacks a citation.
+- `stop_reason` is `end_turn`, `max_tokens`, or `other`. Either `usage` field is `null` when the provider does not report it.
+- When no passages are found, `status` is `no_context`, `answer` is `generate.no_context_answer`, `citations` and `unknown_refs` are empty, and the generator is not called.
+
+### Streaming
+
+With `"stream": true` the response is `text/event-stream`:
+
+```text
+event: context
+data: {"resolved_query": "...", "passages": [...], "usage": {...}}
+
+event: delta
+data: {"text": "Either party may terminate "}
+
+event: delta
+data: {"text": "on 60 days' written notice [P1]."}
+
+event: done
+data: {"status": "ok", "citations": [...], "unknown_refs": [], "stop_reason": "end_turn", "usage": {...}, "generator": {...}}
+```
+
+`context` carries the full Context response and is sent before the LLM is called. The concatenated `delta` texts equal the JSON `answer`, and `done` carries the JSON response's fields other than `answer` and `context`. A failure after the stream starts arrives as `event: error` with `{"error": "..."}`, after which the connection closes; treat the text received so far as incomplete. If the client disconnects, the upstream LLM request is cancelled.
+
+### Errors
+
+| Status | Cause |
+|---|---|
+| `400` | Invalid request: any Context rule, an unknown `mode` or `generator`, `max_tokens` of 0 or above the generator's cap, `temperature` out of range, or `instructions` too long |
+| `403` | No access to the collection |
+| `502` | The generator returned an error or its stream ended early; the body is always `{"error": "generation failed"}` and the detail is logged server-side |
+| `503` | No chunk registry or no generator, all retrieval strategies failed, or the generator's circuit breaker is open |
+| `504` | No first token within `first_token_timeout_secs`, or the generation exceeded `total_timeout_secs` |
+
+`no_context` is served with `200` even when the generator's circuit is open. For SSE, `400`, `403`, and `503` are returned before the stream starts; `502` and `504` arrive as `error` events.
+
+### Configuration
+
+```toml
+[generate]
+default_generator        = "smart"
+default_max_tokens       = 1024
+summarize_token_budget   = 8000
+history_max_messages     = 10
+first_token_timeout_secs = 30
+total_timeout_secs       = 120
+no_context_answer        = "No relevant information was found in the collection."
+
+[generate.generators.smart]
+protocol          = "anthropic"            # anthropic | openai_compatible
+model             = "claude-sonnet-5-5"
+api_key_env       = "ANTHROPIC_API_KEY"    # name of the env var holding the key
+max_output_tokens = 4096
+
+[generate.generators.local]
+protocol          = "openai_compatible"
+base_url          = "http://localhost:11434/v1"
+model             = "llama3.1"
+max_output_tokens = 2048
+```
+
+Engine build fails with a config error when generators exist but `default_generator` is unset or names no generator, or when a configured `api_key_env` variable is unset. `ArcanumEngineBuilder::generator(name, generator, max_output_tokens)` registers or replaces a generator in code. Metrics: `arcanum_generation_total{generator, mode, status}` (`ok`, `no_context`, `error`, `timeout`), `arcanum_generation_duration_seconds{generator}`, and `arcanum_generation_tokens_total{generator, kind}`.
 
 ---
 
@@ -608,6 +729,7 @@ Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`) plus a minimal standal
 | `list_collections` | — | Implemented; returns collections visible to the caller, ACL-filtered |
 | `eval_run` | `collection_id` | Implemented; params: `collection_id`, `samples[{query, relevant_chunk_ids}]`, `k` (default 5, max 100) |
 | `get_context` | `collection_id`, `query` or `messages`, optional `token_budget`, `background_share`, `candidate_k`, `render` | Implemented; returns the rendered context (default `xml`) as text plus the full response as `structuredContent`; needs a chunk registry (see [Context API](#context-api)) |
+| `generate` | `collection_id`, `query` or `messages`, optional `mode`, `generator`, `max_tokens`, `temperature`, `instructions`, `context` | Implemented; returns the answer as text plus the full JSON response as `structuredContent`; always non-streaming; needs a chunk registry and a generator (see [Generate API](#generate-api)) |
 
 Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request: no shared session, no bypass.
 
@@ -675,6 +797,15 @@ default_token_budget = 4000
 default_candidate_k  = 50
 rewrite_max_messages = 6
 
+[generate]
+default_generator = "smart"
+
+[generate.generators.smart]
+protocol          = "anthropic"
+model             = "claude-sonnet-5-5"
+api_key_env       = "ANTHROPIC_API_KEY"
+max_output_tokens = 4096
+
 [admin]
 portal_enabled                    = true
 audit_retention_days              = 90
@@ -697,13 +828,14 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 | `arcanum-vector` | LanceDB, PgVector, and Tantivy BM25 adapters |
 | `arcanum-graph` | Neo4j driver and in-memory graph store |
 | `arcanum-tree` | RAPTOR tree builder, Postgres and in-memory stores |
-| `arcanum-models` | HTTP embedding clients (Ollama, OpenAI), Redis cache |
+| `arcanum-models` | HTTP embedding clients (Ollama, OpenAI), Redis cache, streaming Anthropic and OpenAI-compatible generators |
 | `arcanum-ingestion` | Loaders, preprocessors (HTML/PDF/EPUB/DOCX + DoclingPreprocessor for PPTX/XLSX/images), chunkers, ChunkRegistry |
 | `arcanum-middleware` | Circuit breaker, retry policy, bounded queue |
 | `arcanum-pipeline` | DAG stage runner and built-in pipeline templates |
 | `arcanum-evidence` | `DefaultEvidenceResolver`: resolves chunks/tree nodes/entities/relations back to source documents |
 | `arcanum-retrieval` | Multi-strategy orchestrator and all Retriever impls |
 | `arcanum-context` | Context API packing: span-level clustering, token-budgeted selection, numbered/xml/markdown rendering, conversation rewriting |
+| `arcanum-generate` | Generate API logic: prompt building per mode and inline `[P1]` citation parsing, with no I/O |
 | `arcanum-eval` | Quality metrics, golden datasets, scheduled evaluation |
 | `arcanum-chunk-eval` | Chunk inspect API, offline benchmark harness, shadow experiment evaluation |
 | `arcanum-engine` | `ArcanumEngine` builder: wires the full system |

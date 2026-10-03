@@ -16,6 +16,7 @@ arcanum-pipeline   = { path = "../arcanum-pipeline" }
 arcanum-middleware = { path = "../arcanum-middleware" }
 arcanum-evidence   = { path = "../arcanum-evidence" }
 arcanum-context    = { path = "../arcanum-context" }
+arcanum-generate   = { path = "../arcanum-generate" }
 async-trait        = { workspace = true }
 tokio              = { workspace = true }
 serde              = { workspace = true }
@@ -32,6 +33,6 @@ bytes              = "1"
 futures            = "0.3"
 
 [dev-dependencies]
-tokio    = { workspace = true }
+tokio    = { workspace = true, features = ["test-util"] }
 uuid     = { workspace = true }
 tempfile = "3"

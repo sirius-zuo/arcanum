@@ -21,6 +21,7 @@ metrics-prometheus = { workspace = true }
 prometheus         = { workspace = true }
 tower-http     = { version = "0.5", features = ["trace", "cors"] }
 uuid           = { workspace = true }
+futures        = "0.3"
 
 [dev-dependencies]
 arcanum-telemetry = { path = "../arcanum-telemetry", features = ["testing-helpers"] }

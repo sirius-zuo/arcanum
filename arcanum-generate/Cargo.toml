@@ -1,0 +1,12 @@
+[package]
+name    = "arcanum-generate"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+arcanum-core = { path = "../arcanum-core" }
+regex        = "1"
+serde        = { workspace = true }
+
+[dev-dependencies]
+uuid = { workspace = true }

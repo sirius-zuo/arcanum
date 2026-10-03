@@ -274,6 +274,85 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
 
+  /api/v1/generate:
+    post:
+      summary: Generate a grounded answer with inline citations
+      description: |
+        Assembles context as `/api/v1/context` does, then asks the configured
+        generator for an answer that cites passages as `[P1]`. Citations map
+        each marker back to its passage, chunks and document version. When
+        `stream` is true the response is `text/event-stream` with the events
+        `context` (the context response), `delta` (`{"text"}`), then exactly
+        one `done` (outcome without `answer` and `context`) or `error`
+        (`{"error"}`). Failures before the first event are JSON `ErrorBody`.
+        An upstream failure after the stream has started arrives as an
+        `error` event. Upstream failures (502) always carry the fixed text
+        `generation failed`; the detail is logged server-side. When no context is found, `status` is `no_context` and
+        the generator is not called. Requires a configured generator and a
+        chunk registry, otherwise 503.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRequest'
+      responses:
+        '200':
+          description: The generated answer (JSON) or an event stream.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateResponse'
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Server-sent events in order: `context` (ContextResponse JSON),
+                  zero or more `delta` (`{"text": string}`), then one `done`
+                  (GenerateOutcome JSON) or one `error` (`{"error": string}`).
+        '400':
+          description: Malformed body, failed validation or unknown generator.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller cannot access the collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '502':
+          description: The generator failed or its stream ended early.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: >-
+            No generator or chunk registry is configured
+            (`generation requires a configured generator and a chunk registry`),
+            the generator circuit breaker is open, or context assembly is
+            unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '504':
+          description: The generator exceeded its first-token or total timeout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
   # ── Legacy routes preserved during the deprecation window ────────────────
   /api/v1/ingest:
     post:
@@ -592,6 +671,130 @@ components:
           type: string
           description: Present only when render was requested.
       required: [resolved_query, resolved_query_source, passages, background, usage, retrieval]
+    GenerateRequest:
+      type: object
+      properties:
+        collection_id:
+          type: string
+        mode:
+          type: string
+          enum: [answer, summarize]
+          default: answer
+        query:
+          type: string
+          description: Exactly one of query or messages.
+        messages:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/ContextMessage'
+        generator:
+          type: string
+          description: Generator name. Defaults to the configured default_generator.
+        max_tokens:
+          type: integer
+          minimum: 1
+        temperature:
+          type: number
+          minimum: 0.0
+          maximum: 2.0
+        instructions:
+          type: string
+          maxLength: 2000
+          description: Extra caller instructions appended to the system prompt.
+        context:
+          type: object
+          properties:
+            token_budget:
+              type: integer
+              minimum: 200
+            background_share:
+              type: number
+              minimum: 0.0
+              maximum: 1.0
+            candidate_k:
+              type: integer
+              minimum: 1
+              maximum: 200
+        stream:
+          type: boolean
+          default: false
+          description: When true, respond with text/event-stream.
+      required: [collection_id]
+    GenerateCitation:
+      type: object
+      properties:
+        ref_id:
+          type: string
+        chunk_ids:
+          type: array
+          items:
+            type: string
+        document_id:
+          type: string
+        version_num:
+          type: integer
+        source_uri:
+          type: string
+        offset_start:
+          type: integer
+        offset_end:
+          type: integer
+        answer_spans:
+          type: array
+          description: Byte offsets (start, end) of each marker in the answer.
+          items:
+            type: array
+            minItems: 2
+            maxItems: 2
+            items:
+              type: integer
+      required: [ref_id, chunk_ids, document_id, version_num, source_uri, offset_start, offset_end, answer_spans]
+    GenerateOutcome:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [ok, no_context]
+        citations:
+          type: array
+          items:
+            $ref: '#/components/schemas/GenerateCitation'
+        unknown_refs:
+          type: array
+          items:
+            type: string
+        stop_reason:
+          type: string
+          enum: [end_turn, max_tokens, other]
+        usage:
+          type: object
+          properties:
+            input_tokens:
+              type: integer
+              nullable: true
+            output_tokens:
+              type: integer
+              nullable: true
+        generator:
+          type: object
+          properties:
+            name:
+              type: string
+            model:
+              type: string
+          required: [name, model]
+      required: [status, citations, unknown_refs, stop_reason, usage, generator]
+    GenerateResponse:
+      allOf:
+        - $ref: '#/components/schemas/GenerateOutcome'
+        - type: object
+          properties:
+            answer:
+              type: string
+            context:
+              $ref: '#/components/schemas/ContextResponse'
+          required: [answer, context]
     ErrorBody:
       type: object
       properties:

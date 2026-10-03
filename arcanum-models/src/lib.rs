@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod anthropic_generator;
 pub mod bge;
 pub mod cache;
 mod dispatcher;
@@ -9,10 +10,13 @@ pub mod llm2vec;
 pub mod mistral;
 mod ollama;
 pub mod openai;
+pub mod openai_generator;
 mod router;
 pub mod spacy;
+pub mod sse;
 
 pub use anthropic::AnthropicProvider;
+pub use anthropic_generator::AnthropicGenerator;
 pub use bge::BgeProvider;
 pub use cache::{CachingEmbedder, EmbeddingCache};
 pub use dispatcher::EnrichmentDispatcher;
@@ -23,5 +27,6 @@ pub use llm2vec::Llm2VecProvider;
 pub use mistral::MistralProvider;
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
+pub use openai_generator::OpenAiCompatibleGenerator;
 pub use router::EmbeddingParallelismRouter;
 pub use spacy::SpacyProvider;

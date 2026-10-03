@@ -1,7 +1,7 @@
 use crate::types::PerBackendChunkConfig;
 use crate::{ArcanumError, Result};
 use serde::{Deserialize, Serialize};
-use std::{path::Path, sync::Arc};
+use std::{collections::BTreeMap, path::Path, sync::Arc};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -245,6 +245,52 @@ impl Default for ContextConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GenerateConfig {
+    pub default_generator: Option<String>,
+    pub default_max_tokens: u32,
+    pub summarize_token_budget: usize,
+    pub history_max_messages: usize,
+    pub first_token_timeout_secs: u64,
+    pub total_timeout_secs: u64,
+    pub no_context_answer: String,
+    pub generators: BTreeMap<String, GeneratorConfig>,
+}
+
+impl Default for GenerateConfig {
+    fn default() -> Self {
+        Self {
+            default_generator: None,
+            default_max_tokens: 1024,
+            summarize_token_budget: 8000,
+            history_max_messages: 10,
+            first_token_timeout_secs: 30,
+            total_timeout_secs: 120,
+            no_context_answer: "No relevant information was found in the collection.".into(),
+            generators: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GeneratorConfig {
+    pub protocol: GeneratorProtocol,
+    pub model: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    pub max_output_tokens: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GeneratorProtocol {
+    Anthropic,
+    OpenaiCompatible,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerConfig {
     /// Origins allowed for CORS. Empty = deny all cross-origin requests (fail-closed).
@@ -273,6 +319,8 @@ pub struct ArcanumConfig {
     pub server: ServerConfig,
     #[serde(default)]
     pub context: ContextConfig,
+    #[serde(default)]
+    pub generate: GenerateConfig,
 }
 
 impl ArcanumConfig {
@@ -773,5 +821,71 @@ database_url = "postgres://arcanum:arcanum@localhost:5439/arcanum"
             cfg.storage.database_url.as_deref(),
             Some("postgres://arcanum:arcanum@localhost:5439/arcanum")
         );
+    }
+
+    const GENERATE_TOML: &str = r#"
+[generate]
+default_generator = "smart"
+
+[generate.generators.smart]
+protocol          = "anthropic"
+model             = "claude-sonnet-5-5"
+api_key_env       = "ANTHROPIC_API_KEY"
+max_output_tokens = 4096
+
+[generate.generators.local]
+protocol          = "openai_compatible"
+base_url          = "http://localhost:11434/v1"
+model             = "llama3.1"
+max_output_tokens = 2048
+"#;
+
+    #[test]
+    fn generate_config_defaults() {
+        let g = ArcanumConfig::default().generate;
+        assert_eq!(g.default_generator, None);
+        assert_eq!(g.default_max_tokens, 1024);
+        assert_eq!(g.summarize_token_budget, 8000);
+        assert_eq!(g.history_max_messages, 10);
+        assert_eq!(g.first_token_timeout_secs, 30);
+        assert_eq!(g.total_timeout_secs, 120);
+        assert_eq!(
+            g.no_context_answer,
+            "No relevant information was found in the collection."
+        );
+        assert!(g.generators.is_empty());
+    }
+
+    #[test]
+    fn generate_config_parses_generators() {
+        let cfg: ArcanumConfig = toml::from_str(GENERATE_TOML).unwrap();
+        let g = &cfg.generate;
+        assert_eq!(g.default_generator.as_deref(), Some("smart"));
+        assert_eq!(g.generators["smart"].protocol, GeneratorProtocol::Anthropic);
+        assert_eq!(
+            g.generators["smart"].api_key_env.as_deref(),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(g.generators["smart"].max_output_tokens, 4096);
+        assert_eq!(
+            g.generators["local"].protocol,
+            GeneratorProtocol::OpenaiCompatible
+        );
+        assert_eq!(
+            g.generators["local"].base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+        assert_eq!(g.summarize_token_budget, 8000);
+    }
+
+    #[test]
+    fn unknown_protocol_fails_to_parse() {
+        let toml = r#"
+[generate.generators.x]
+protocol = "grpc"
+model = "m"
+max_output_tokens = 1
+"#;
+        assert!(toml::from_str::<ArcanumConfig>(toml).is_err());
     }
 }
