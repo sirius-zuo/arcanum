@@ -187,6 +187,7 @@ pub struct EnrichmentConfig {
     pub entity_extraction_provider: Option<String>,
     pub summarize_provider: Option<String>,
     pub caption_provider: Option<String>,
+    pub rewrite_query_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

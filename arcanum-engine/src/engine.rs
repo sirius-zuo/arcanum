@@ -344,6 +344,7 @@ impl ArcanumEngineBuilder {
             ),
             (EnrichIntent::Summarize, &ec.summarize_provider),
             (EnrichIntent::Caption, &ec.caption_provider),
+            (EnrichIntent::RewriteQuery, &ec.rewrite_query_provider),
         ];
         let any_named = intent_names.iter().any(|(_, n)| n.is_some());
         if !any_named {
@@ -993,6 +994,21 @@ mod tests {
             summary.0, "default",
             "Summarize has no named provider and should fall back to the default"
         );
+    }
+
+    #[tokio::test]
+    async fn rewrite_query_provider_unknown_name_is_config_error() {
+        let mut config = ArcanumConfig::default();
+        config.enrichment.rewrite_query_provider = Some("nope".into());
+        let err = ArcanumEngine::builder()
+            .config(config)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .enricher(Arc::new(TaggingEnricher("default")))
+            .build()
+            .await
+            .expect_err("must fail");
+        assert!(err.to_string().contains("nope"), "{}", err);
     }
 
     #[tokio::test]
