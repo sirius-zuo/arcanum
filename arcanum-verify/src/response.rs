@@ -9,9 +9,18 @@ use crate::verdict::sentence_verdict;
 use arcanum_core::types::{ClaimResult, Evidence, SentenceResult, SentenceVerdict};
 use std::collections::HashMap;
 
+/// Reverses the XML escaping the judge prompt applies to passage text.
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&amp;", "&")
+}
+
 fn evidence(support: &Support, passages: &[HydratedPassage]) -> Option<Evidence> {
     let p = passages.iter().find(|p| p.ref_id == support.ref_id)?;
-    let located = locate(&p.text, &support.quote);
+    let located =
+        locate(&p.text, &support.quote).or_else(|| locate(&p.text, &unescape(&support.quote)));
     let (start, end, chunk_id, quote, matched) = match located {
         Some((a, b)) => {
             let start = p.offset_start + a;
@@ -189,6 +198,30 @@ mod tests {
         assert_eq!(e.chunk_id, first);
         assert!(!e.quote_matched);
         assert_eq!(e.quote, "purple");
+    }
+
+    #[test]
+    fn escaped_quote_is_located_in_raw_text() {
+        let text = "Tom & Jerry <3 \"cheese\".";
+        let mut p = passage().0;
+        p.text = text.into();
+        p.offset_start = 0;
+        p.offset_end = text.len();
+        let answer = "A fox [P1].";
+        let units = vec![Unit {
+            span: (0, answer.len()),
+            code: false,
+        }];
+        let attrs = vec![Attribution {
+            cited: vec!["P1".into()],
+            invalid_refs: vec![],
+        }];
+        let quote = "Tom &amp; Jerry &lt;3 &quot;cheese&quot;";
+        let out = build_sentences(answer, &units, &attrs, &judged_with(quote), &[p]);
+        let e = &out[0].claims[0].evidence[0];
+        assert!(e.quote_matched);
+        assert_eq!((e.offset_start, e.offset_end), (0, text.len() - 1));
+        assert_eq!(e.quote, "Tom & Jerry <3 \"cheese\"");
     }
 
     #[test]

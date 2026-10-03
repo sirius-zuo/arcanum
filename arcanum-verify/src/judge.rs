@@ -37,16 +37,21 @@ fn esc(s: &str) -> String {
     out
 }
 
+/// One `<sentence>` line of the user message; the single owner of that format.
+pub fn sentence_fragment(s: &JudgeSentence) -> String {
+    format!(
+        "<sentence id=\"{}\" cited=\"{}\">{}</sentence>\n",
+        s.id,
+        esc(&s.cited.join(",")),
+        esc(&s.text)
+    )
+}
+
 pub fn user_message(passages: &[Passage], sentences: &[JudgeSentence]) -> String {
     let mut out = render(RenderFormat::Xml, passages, &[]);
     out.push_str("<sentences>\n");
     for s in sentences {
-        out.push_str(&format!(
-            "<sentence id=\"{}\" cited=\"{}\">{}</sentence>\n",
-            s.id,
-            esc(&s.cited.join(",")),
-            esc(&s.text)
-        ));
+        out.push_str(&sentence_fragment(s));
     }
     out.push_str("</sentences>\n");
     out
@@ -93,10 +98,15 @@ struct Output {
 
 /// Strips one surrounding code fence, then falls back to the first `{` .. last `}` span.
 fn extract_json(raw: &str) -> &str {
-    let mut t = raw.trim();
+    let original = raw.trim();
+    let mut t = original;
     if t.starts_with("```") {
         let body = t.split_once('\n').map_or("", |(_, rest)| rest);
         t = body.trim_end().strip_suffix("```").unwrap_or(body).trim();
+        if !t.starts_with('{') {
+            // Single-line fence such as ```{...}``` or ```json{...}```.
+            t = original;
+        }
     }
     if !t.starts_with('{') {
         if let (Some(a), Some(b)) = (t.find('{'), t.rfind('}')) {
@@ -220,6 +230,17 @@ mod tests {
             parse_judge_output(&wrapped, false, &[1, 2], &avail()).unwrap(),
             plain
         );
+    }
+
+    #[test]
+    fn parse_accepts_single_line_fence() {
+        let plain = parse_judge_output(VALID, false, &[1, 2], &avail()).unwrap();
+        for raw in [format!("```{VALID}```"), format!("```json{VALID}```")] {
+            assert_eq!(
+                parse_judge_output(&raw, false, &[1, 2], &avail()).unwrap(),
+                plain
+            );
+        }
     }
 
     #[test]

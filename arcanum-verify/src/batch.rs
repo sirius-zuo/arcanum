@@ -1,6 +1,6 @@
 //! Greedy batching of sentences under a token and count budget.
 
-use crate::judge::{user_message, JudgeSentence};
+use crate::judge::{sentence_fragment, user_message, JudgeSentence};
 use arcanum_core::traits::TokenCounter;
 use arcanum_core::types::Passage;
 
@@ -14,20 +14,27 @@ pub fn plan_batches(
     max_input_tokens: usize,
     max_sentences: usize,
 ) -> Result<Vec<Vec<JudgeSentence>>, PassagesOverBudget> {
-    if counter.count(&user_message(passages, &[])) > max_input_tokens {
+    let base = counter.count(&user_message(passages, &[]));
+    if base > max_input_tokens {
         return Err(PassagesOverBudget);
     }
+    // Token counts are treated as additive: the passages part is counted once
+    // and each sentence line once.
     let mut batches: Vec<Vec<JudgeSentence>> = Vec::new();
     let mut current: Vec<JudgeSentence> = Vec::new();
+    let mut total = base;
     for s in sentences {
         if current.len() >= max_sentences {
             batches.push(std::mem::take(&mut current));
+            total = base;
         }
+        let cost = counter.count(&sentence_fragment(&s));
         current.push(s);
-        if current.len() > 1 && counter.count(&user_message(passages, &current)) > max_input_tokens
-        {
+        total += cost;
+        if current.len() > 1 && total > max_input_tokens {
             let last = current.pop().expect("len > 1");
             batches.push(std::mem::replace(&mut current, vec![last]));
+            total = base + cost;
         }
     }
     if !current.is_empty() {
@@ -97,6 +104,15 @@ mod tests {
         let max = CharCounter.count(&user_message(&p, &s[..2]));
         let b = plan_batches(&p, s, &CharCounter, max, 10).unwrap();
         assert_eq!(ids(&b), vec![vec![1, 2], vec![3, 4]]);
+    }
+
+    #[test]
+    fn many_sentences_plan_correctly() {
+        let b = plan_batches(&passages(), sents(10_000, "x"), &CharCounter, 100_000, 40).unwrap();
+        assert_eq!(b.len(), 250);
+        assert!(b.iter().all(|x| x.len() == 40));
+        let flat: Vec<usize> = b.iter().flatten().map(|s| s.id).collect();
+        assert_eq!(flat, (1..=10_000).collect::<Vec<_>>());
     }
 
     #[test]

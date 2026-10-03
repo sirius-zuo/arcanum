@@ -26,6 +26,9 @@ pub const VERIFY_UNAVAILABLE: &str =
 /// Judge batches that run at once.
 const BATCH_CONCURRENCY: usize = 4;
 
+/// Most judge batches one request may need.
+const MAX_JUDGE_BATCHES: usize = 25;
+
 #[derive(Debug)]
 pub enum VerifyError {
     Invalid(String),
@@ -74,6 +77,10 @@ fn version_status(v: Option<&DocumentVersion>) -> &'static str {
     }
 }
 
+fn judge_unavailable(name: &str) -> VerifyError {
+    VerifyError::Unavailable(format!("circuit open: judge '{name}' unavailable"))
+}
+
 fn verdict_name(v: SentenceVerdict) -> &'static str {
     match v {
         SentenceVerdict::Supported => "supported",
@@ -85,11 +92,9 @@ fn verdict_name(v: SentenceVerdict) -> &'static str {
     }
 }
 
+/// A total is unknown as soon as any call did not report its count.
 fn add_tokens(a: Option<u32>, b: Option<u32>) -> Option<u32> {
-    match (a, b) {
-        (None, None) => None,
-        _ => Some(a.unwrap_or(0).saturating_add(b.unwrap_or(0))),
-    }
+    Some(a?.saturating_add(b?))
 }
 
 /// Result of judging one batch, retry included.
@@ -168,7 +173,7 @@ impl VerifyService {
                     OverallVerdict::Fail => "fail",
                 };
                 (
-                    "ok",
+                    verdict,
                     format!(
                         "{verdict} supported={} miscited={} uncited_supported={} partial={} \
                          unsupported={} no_claim={} judge={} calls={}",
@@ -255,22 +260,25 @@ impl VerifyService {
                 self.config.max_sentences_per_batch,
             )
             .map_err(|_| VerifyError::Invalid("passages exceed the judge input budget".into()))?;
+            if batches.len() > MAX_JUDGE_BATCHES {
+                return Err(VerifyError::Invalid(
+                    "answer needs too many judge batches".into(),
+                ));
+            }
             if !entry.breaker.allow_request() {
-                return Err(VerifyError::Unavailable(format!(
-                    "circuit open: judge '{name}' unavailable"
-                )));
+                return Err(judge_unavailable(&name));
             }
             let outcomes: Vec<BatchOutcome> = stream::iter(batches)
                 .map(|batch| {
                     let user = user_message(&prompt_passages, &batch);
                     let ids: Vec<usize> = batch.iter().map(|s| s.id).collect();
                     let available = &available;
-                    async move { self.judge_batch(entry, user, &ids, available).await }
+                    let name = name.as_str();
+                    async move { self.judge_batch(entry, name, user, &ids, available).await }
                 })
                 .buffered(BATCH_CONCURRENCY)
                 .try_collect()
                 .await?;
-            usage = GenerationUsage::default();
             for o in outcomes {
                 calls += o.calls;
                 usage.input_tokens = add_tokens(usage.input_tokens, o.usage.input_tokens);
@@ -375,6 +383,7 @@ impl VerifyService {
     async fn judge_batch(
         &self,
         entry: &GeneratorEntry,
+        name: &str,
         user: String,
         batch_ids: &[usize],
         available: &[String],
@@ -383,10 +392,13 @@ impl VerifyService {
             role: Role::User,
             content: user,
         }];
-        let mut usage = GenerationUsage::default();
+        let mut usage = GenerationUsage {
+            input_tokens: Some(0),
+            output_tokens: Some(0),
+        };
         let mut calls = 0;
         loop {
-            let reply = self.call_judge(entry, messages.clone()).await?;
+            let reply = self.call_judge(entry, name, messages.clone()).await?;
             calls += 1;
             usage.input_tokens = add_tokens(usage.input_tokens, reply.usage.input_tokens);
             usage.output_tokens = add_tokens(usage.output_tokens, reply.usage.output_tokens);
@@ -424,8 +436,12 @@ impl VerifyService {
     async fn call_judge(
         &self,
         entry: &GeneratorEntry,
+        name: &str,
         messages: Vec<Message>,
     ) -> Result<JudgeReply, VerifyError> {
+        if !entry.breaker.allow_request() {
+            return Err(judge_unavailable(name));
+        }
         let request = GenerationRequest {
             system: JUDGE_SYSTEM_PROMPT.to_string(),
             messages,
@@ -467,7 +483,7 @@ impl VerifyService {
             Ok(Err(detail)) => {
                 tracing::warn!(error = %detail, "judge request failed");
                 entry.breaker.record_failure();
-                metrics::counter!("arcanum_verify_judge_calls_total", "result" => "upstream")
+                metrics::counter!("arcanum_verify_judge_calls_total", "result" => "upstream_error")
                     .increment(1);
                 Err(VerifyError::Upstream)
             }
@@ -822,7 +838,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_twice_is_invalid_output() {
-        let f = fixture(vec![ok("not json")]);
+        let f = fixture_with(vec![ok("not json")], 1, VerifyConfig::default());
         for _ in 0..5 {
             let r = simple(&f, "Alpha.").await;
             let err = f.svc.verify(r, &f.claims).await.unwrap_err();
@@ -921,6 +937,90 @@ mod tests {
         let r = simple(&f, "Alpha one. Beta two.").await;
         let err = f.svc.verify(r, &f.claims).await.unwrap_err();
         assert!(matches!(err, VerifyError::Upstream), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn too_many_batches_is_400_without_call() {
+        let config = VerifyConfig {
+            max_sentences_per_batch: 1,
+            ..VerifyConfig::default()
+        };
+        let f = fixture_with(vec![ok("{}")], 5, config);
+        let answer = (1..=26)
+            .map(|i| format!("Sentence number {i}."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let r = simple(&f, &answer).await;
+        let err = f.svc.verify(r, &f.claims).await.unwrap_err();
+        assert!(
+            matches!(&err, VerifyError::Invalid(m) if m == "answer needs too many judge batches"),
+            "{err:?}"
+        );
+        assert_eq!(f.gen.calls(), 0);
+    }
+
+    #[test]
+    fn add_tokens_is_none_when_any_side_is_unreported() {
+        assert_eq!(add_tokens(Some(1), Some(2)), Some(3));
+        assert_eq!(add_tokens(Some(1), None), None);
+        assert_eq!(add_tokens(None, Some(1)), None);
+    }
+
+    #[tokio::test]
+    async fn usage_is_none_when_a_call_reports_none() {
+        struct NoUsage;
+        #[async_trait::async_trait]
+        impl arcanum_core::traits::Generator for NoUsage {
+            async fn stream(
+                &self,
+                _req: GenerationRequest,
+            ) -> arcanum_core::Result<
+                futures::stream::BoxStream<'static, arcanum_core::Result<GenerationEvent>>,
+            > {
+                let json = judge_json(vec![no_claim(1)]);
+                Ok(stream::iter(vec![
+                    Ok(GenerationEvent::TextDelta(json)),
+                    Ok(GenerationEvent::Done {
+                        usage: GenerationUsage {
+                            input_tokens: None,
+                            output_tokens: Some(3),
+                        },
+                        stop_reason: StopReason::EndTurn,
+                    }),
+                ])
+                .boxed())
+            }
+            fn model(&self) -> &str {
+                "m"
+            }
+        }
+        let f = fixture(vec![ok("{}")]);
+        let mut generators = HashMap::new();
+        generators.insert(
+            "fake".to_string(),
+            GeneratorEntry {
+                generator: Arc::new(NoUsage),
+                max_output_tokens: 100,
+                breaker: f.breaker.clone(),
+            },
+        );
+        let svc = VerifyService::new(
+            f.store.clone(),
+            Arc::new(NoOpDocumentVersionStore),
+            Arc::new(generators),
+            Arc::new(ApproxCl100kCounter::new()),
+            VerifyConfig {
+                judge: Some("fake".into()),
+                ..VerifyConfig::default()
+            },
+            f.auth.clone(),
+            f.audit.clone(),
+        );
+        let r = simple(&f, "Hello.").await;
+        let resp = svc.verify(r, &f.claims).await.unwrap();
+        assert_eq!(resp.usage.input_tokens, None);
+        assert_eq!(resp.usage.output_tokens, Some(3));
+        assert_eq!(resp.usage.judge_calls, 1);
     }
 
     #[tokio::test]
