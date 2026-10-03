@@ -48,6 +48,8 @@ Both are consumed by every other layer:
 - [Evaluation](evaluation.md): `arcanum-eval` implements `Evaluator`.
 - [Engine](engine.md): `arcanum-engine` composes every port above, plus
   `arcanum-models` providers, behind `ArcanumEngine`'s builder.
+  `arcanum-context` (documented on that page) consumes the context types,
+  `TokenCounter`, and `TextEnricher` from here.
 
 ## Architecture
 
@@ -57,6 +59,9 @@ classDiagram
     class GraphStore { <<trait>> upsert_entities() query() get_relation() }
     class TreeStore { <<trait>> insert_node() get_children() get_by_id() }
     class LexicalIndex { <<trait>> search() }
+    class TokenCounter { <<trait>> count() name() }
+    class ApproxCl100kCounter
+    ApproxCl100kCounter ..|> TokenCounter
     class GraphPlanner { <<trait>> plan_entities() }
     class DocumentLoader { <<trait>> load() supports() }
     class Chunker { <<trait>> chunk() }
@@ -137,6 +142,36 @@ structs, not trait implementations themselves: `CachingEmbedder` and
 `MonitoredEmbedder` are the `Embedder`-implementing decorators that wrap
 them, and both are wired into `ArcanumEngineBuilder::build` (see Runtime
 Flows and Key Decisions).
+
+### Context API types, `TokenCounter`, and `RewriteQuery`
+
+`types/context.rs` defines the Context API's wire shapes, shared by the
+REST route, the MCP tool, and `arcanum-context`. `ContextRequest`
+(`collection_id`, exactly one of `query` or `messages`, optional
+`token_budget`, `background_share`, `candidate_k`, `render`) carries
+`validate()`, which enforces: exactly one of `query`/`messages`, a
+non-empty last message that is from the user, non-blank text,
+`token_budget >= 200`, `candidate_k` in 1..=200, and `background_share`
+in 0.0..=1.0. `RenderFormat` is `numbered`, `xml`, or `markdown`.
+`ContextResponse` carries `resolved_query` plus its `ResolvedQuerySource`
+(`original`, `rewritten`, `fallback`), `Passage`s (citation
+`ref_id`, document id and version, source/snapshot/canonical URIs, byte
+offsets, chunk ids, contributing strategies, score), `BackgroundItem`s
+(RAPTOR summaries), `ContextUsage`, `RetrievalInfo`, and an optional
+`rendered` string. `Candidates`/`CandidateList` are the pre-fusion
+retrieval output; `strategy_name` gives the wire name of a
+`RetrievalStrategy`.
+
+`traits/token_counter.rs` defines `TokenCounter` (`count`, `name`) and
+`ApproxCl100kCounter`, which counts with the bundled `cl100k_base`
+encoding (`encode_ordinary`, so special-token text counts as plain text)
+and inflates the result by 10% to stay conservative for other tokenizers.
+`ContextConfig` (`[context]`: `default_token_budget` 4000,
+`default_candidate_k` 50, `rewrite_max_messages` 6) is part of
+`ArcanumConfig` and defaults when absent. `EnrichIntent::RewriteQuery`
+and `EnrichmentConfig::rewrite_query_provider` add a rewrite intent that
+`EnrichmentDispatcher` routes like the others (key `rewrite_query`);
+`OllamaProvider` builds a "standalone question" prompt for it.
 
 ## Runtime Flows
 
