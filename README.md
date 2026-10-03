@@ -632,7 +632,7 @@ judge_max_output_tokens = 8192
 judge_timeout_secs = 90
 ```
 
-Engine build fails with a config error when `judge` names no configured generator. `judge_timeout_secs` bounds each judge call including draining its stream, and each retry gets a fresh timeout. Upstream errors and timeouts count as circuit breaker failures; invalid judge output does not. The audit log records one `verify` entry per request (collection, judge, overall verdict, counts, judge calls) and never the answer text. Metrics: `arcanum_verify_requests_total{outcome}` (`pass`, `fail`, or an error code), `arcanum_verify_sentences_total{verdict}`, `arcanum_verify_judge_calls_total{result}`, and `arcanum_verify_duration_seconds`.
+Engine build fails with a config error when `judge` names no configured generator. `judge_timeout_secs` bounds each judge call including draining its stream, and each retry gets a fresh timeout. Upstream errors and timeouts count as circuit breaker failures; invalid judge output does not. The audit log records one `verify` entry per request (collection, judge, overall verdict, counts, judge calls) and never the answer text. Metrics: `arcanum_verify_requests_total{outcome}` (`ok` or an error code), `arcanum_verify_sentences_total{verdict}`, `arcanum_verify_judge_calls_total{result}`, and `arcanum_verify_duration_seconds`.
 
 Judge quality bounds verdict quality: a weak judge can mark support that is not there, which `quote_matched: false` helps surface. Sentence splitting is heuristic (an abbreviation such as "e.g." can split a sentence). Summarize-mode answers lean on RAPTOR background summaries, which are not evidence, so they may verify as `unsupported` more often.
 
