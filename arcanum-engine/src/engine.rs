@@ -7,6 +7,7 @@ use crate::{
     services::{
         admin::AdminService,
         collection::CollectionService,
+        context::ContextService,
         eval::EvalService,
         experiment::{ExperimentService, ExperimentStore, InMemoryExperimentStore},
         ingestion::IngestionService,
@@ -14,13 +15,15 @@ use crate::{
         source::IngestionSourceService,
     },
 };
+use arcanum_context::{ConversationRewriter, EnricherRewriter};
 use arcanum_core::{
     config::{ArcanumConfig, MetadataBackend, OrchestrationMode as CfgMode},
     traits::{
-        CacheInvalidationBroadcaster, ChunkMetadataStore, DocumentVersionStore, Embedder,
-        EvidenceResolver, GcWorker, GraphStore, IngestionDepsOverrideResolver, LexicalIndex,
-        OperationPayloadStore, OperationStore, Preprocessor, Reranker, SecretStore, SnapshotStore,
-        TextEnricher, TreeStore, VectorStore,
+        ApproxCl100kCounter, CacheInvalidationBroadcaster, ChunkMetadataStore,
+        DocumentVersionStore, Embedder, EvidenceResolver, GcWorker, GraphStore,
+        IngestionDepsOverrideResolver, LexicalIndex, OperationPayloadStore, OperationStore,
+        Preprocessor, Reranker, SecretStore, SnapshotStore, TextEnricher, TokenCounter, TreeStore,
+        VectorStore,
     },
     types::{EnrichIntent, RetrievalStrategy},
     ArcanumError, Result,
@@ -47,6 +50,8 @@ pub struct ArcanumEngine {
     pub config: ArcanumConfig,
     pub ingestion: Arc<IngestionService>,
     pub retrieval: Arc<RetrievalService>,
+    /// Context assembly; present only when a `ChunkMetadataStore` is configured.
+    pub context: Option<Arc<ContextService>>,
     pub collection: Arc<CollectionService>,
     pub experiment: Arc<ExperimentService>,
     pub audit: Arc<AuditLogger>,
@@ -169,6 +174,8 @@ pub struct ArcanumEngineBuilder {
     reranker: Option<Arc<dyn Reranker>>,
     dedup_threshold: Option<f32>,
     additional_embedders: Vec<Arc<dyn Embedder>>,
+    token_counter: Option<Arc<dyn TokenCounter>>,
+    conversation_rewriter: Option<Arc<dyn ConversationRewriter>>,
 }
 
 impl ArcanumEngineBuilder {
@@ -323,6 +330,19 @@ impl ArcanumEngineBuilder {
     /// at the given cosine similarity threshold. Not set by default.
     pub fn dedup_threshold(mut self, threshold: f32) -> Self {
         self.dedup_threshold = Some(threshold);
+        self
+    }
+
+    /// Token counter used by context assembly. Defaults to `ApproxCl100kCounter`.
+    pub fn token_counter(mut self, counter: Arc<dyn TokenCounter>) -> Self {
+        self.token_counter = Some(counter);
+        self
+    }
+
+    /// Conversation rewriter used by context assembly. Defaults to an
+    /// `EnricherRewriter` over the resolved enricher, when one is configured.
+    pub fn conversation_rewriter(mut self, rewriter: Arc<dyn ConversationRewriter>) -> Self {
+        self.conversation_rewriter = Some(rewriter);
         self
     }
 
@@ -798,8 +818,9 @@ impl ArcanumEngineBuilder {
             orchestrator = orchestrator.with_dedup_threshold(threshold);
         }
 
+        let orchestrator = Arc::new(orchestrator);
         let mut retrieval_svc = RetrievalService::new(
-            Arc::new(orchestrator),
+            orchestrator.clone(),
             auth.clone(),
             audit.clone(),
             vector_store_cb.clone(),
@@ -808,6 +829,36 @@ impl ArcanumEngineBuilder {
             retrieval_svc = retrieval_svc.with_cache(c.clone());
         }
         let retrieval = Arc::new(retrieval_svc);
+        let context = chunk_metadata_store.as_ref().map(|registry| {
+            let rewriter = self.conversation_rewriter.clone().or_else(|| {
+                let rewriter = enricher.as_ref().map(|e| {
+                    Arc::new(EnricherRewriter::new(
+                        e.clone(),
+                        self.config.context.rewrite_max_messages,
+                    )) as Arc<dyn ConversationRewriter>
+                });
+                if rewriter.is_none() {
+                    tracing::info!(
+                        "no enricher configured; get_context resolves conversations to the last user message"
+                    );
+                }
+                rewriter
+            });
+            let counter = self
+                .token_counter
+                .clone()
+                .unwrap_or_else(|| Arc::new(ApproxCl100kCounter::new()));
+            Arc::new(ContextService::new(
+                orchestrator.clone(),
+                registry.clone(),
+                rewriter,
+                counter,
+                self.config.context.clone(),
+                auth.clone(),
+                audit.clone(),
+                vector_store_cb.clone(),
+            ))
+        });
         let eval = Arc::new(EvalService::new());
         let source = Arc::new(IngestionSourceService::new());
         let admin = Arc::new(AdminService::new(audit.clone()));
@@ -860,6 +911,7 @@ impl ArcanumEngineBuilder {
             config: self.config,
             ingestion,
             retrieval,
+            context,
             collection,
             experiment,
             audit,
@@ -1116,6 +1168,24 @@ mod tests {
             .build()
             .await;
         assert!(r.is_ok(), "got {:?}", r.err());
+    }
+
+    #[tokio::test]
+    async fn context_service_absent_without_registry() {
+        let engine = base_builder().build().await.expect("build should succeed");
+        assert!(engine.context.is_none());
+    }
+
+    #[tokio::test]
+    async fn context_service_present_with_registry() {
+        let engine = base_builder()
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
+            .build()
+            .await
+            .expect("build should succeed");
+        assert!(engine.context.is_some());
     }
 
     #[tokio::test]
