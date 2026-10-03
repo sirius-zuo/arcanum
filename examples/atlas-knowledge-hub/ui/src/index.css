@@ -1,0 +1,120 @@
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/500.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * One token set, two themes. Values are space separated RGB channels so Tailwind
+ * can apply alpha (bg-accent/10). Contrast (WCAG): light text 16.9:1 on surface,
+ * muted 4.8:1; dark text 15.9:1 on surface, muted 7.0:1. Verdict colors are
+ * tuned to at least 4.5:1 on their own surface in each theme.
+ */
+:root {
+  --bg: 250 250 250;
+  --surface: 255 255 255;
+  --surface-2: 244 244 245;
+  --border: 228 228 231;
+  --text: 24 24 27;
+  --muted: 113 113 122;
+  --accent: 79 70 229;
+  --accent-fg: 255 255 255;
+
+  --v-supported: 21 128 61;
+  --v-partial: 161 98 7;
+  --v-unsupported: 220 38 38;
+  --v-miscited: 194 65 12;
+  --v-uncited: 15 118 110;
+  --v-noclaim: 113 113 122;
+
+  --shadow-soft: 0 1px 2px rgb(24 24 27 / 0.04), 0 4px 16px -6px rgb(24 24 27 / 0.08);
+  --shadow-lift: 0 2px 4px rgb(24 24 27 / 0.05), 0 12px 32px -10px rgb(24 24 27 / 0.16);
+  --glow: 79 70 229;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: 9 9 11;
+  --surface: 24 24 27;
+  --surface-2: 39 39 42;
+  --border: 46 46 52;
+  --text: 244 244 245;
+  --muted: 161 161 170;
+  --accent: 129 140 248;
+  --accent-fg: 9 9 11;
+
+  --v-supported: 74 222 128;
+  --v-partial: 251 191 36;
+  --v-unsupported: 248 113 113;
+  --v-miscited: 251 146 60;
+  --v-uncited: 45 212 191;
+  --v-noclaim: 161 161 170;
+
+  --shadow-soft: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 6px 20px -8px rgb(0 0 0 / 0.6);
+  --shadow-lift: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 16px 40px -12px rgb(0 0 0 / 0.7);
+  --glow: 129 140 248;
+  color-scheme: dark;
+}
+
+@layer base {
+  html {
+    font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+    font-feature-settings: 'cv11', 'ss03';
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    @apply bg-bg text-text;
+    background-image: radial-gradient(
+      900px 420px at 70% -120px,
+      rgb(var(--glow) / 0.08),
+      transparent 70%
+    );
+    background-repeat: no-repeat;
+  }
+  * {
+    @apply border-border;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(var(--accent));
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: rgb(var(--accent) / 0.25);
+  }
+  code,
+  kbd,
+  pre {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+  }
+}
+
+@layer components {
+  .atlas-dots {
+    background-image: radial-gradient(rgb(var(--muted) / 0.28) 1px, transparent 1px);
+    background-size: 18px 18px;
+    -webkit-mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+    mask-image: radial-gradient(ellipse at center, #000 30%, transparent 75%);
+  }
+  .skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, rgb(var(--text) / 0.06), transparent);
+    animation: shimmer 1.4s infinite;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
