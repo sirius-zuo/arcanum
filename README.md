@@ -469,7 +469,7 @@ data: {"status": "ok", "citations": [...], "unknown_refs": [], "stop_reason": "e
 |---|---|
 | `400` | Invalid request: any Context rule, an unknown `mode` or `generator`, `max_tokens` of 0 or above the generator's cap, `temperature` out of range, or `instructions` too long |
 | `403` | No access to the collection |
-| `502` | The generator returned an error or its stream ended early |
+| `502` | The generator returned an error or its stream ended early; the body is always `{"error": "generation failed"}` and the detail is logged server-side |
 | `503` | No chunk registry or no generator, all retrieval strategies failed, or the generator's circuit breaker is open |
 | `504` | No first token within `first_token_timeout_secs`, or the generation exceeded `total_timeout_secs` |
 

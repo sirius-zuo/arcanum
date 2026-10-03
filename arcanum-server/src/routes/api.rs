@@ -1103,12 +1103,12 @@ mod generate_tests {
     async fn sse_response_emits_error_event() {
         let resp = sse_response(stream_of(vec![
             GenerateEvent::Delta("a".into()),
-            GenerateEvent::Error(GenerateError::Upstream("boom".into())),
+            GenerateEvent::Error(GenerateError::Upstream("generation failed".into())),
         ]));
         let evs = events_of(resp).await;
         let (name, data) = evs.last().unwrap();
         assert_eq!(name, "error");
         let v: serde_json::Value = serde_json::from_str(data).unwrap();
-        assert!(v["error"].as_str().unwrap().contains("boom"), "{data}");
+        assert_eq!(v["error"], "generation failed", "{data}");
     }
 }

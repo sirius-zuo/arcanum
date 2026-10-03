@@ -486,6 +486,32 @@ impl ArcanumEngineBuilder {
                     Duration::from_secs(30),
                 )),
             };
+        let g = &self.config.generate;
+        for (key, v) in [
+            ("default_max_tokens", u64::from(g.default_max_tokens)),
+            ("first_token_timeout_secs", g.first_token_timeout_secs),
+            ("total_timeout_secs", g.total_timeout_secs),
+        ] {
+            if v == 0 {
+                return Err(ArcanumError::Config(format!(
+                    "generate.{key} must be greater than zero"
+                )));
+            }
+        }
+        for (name, _, max) in &self.generators {
+            if *max == 0 {
+                return Err(ArcanumError::Config(format!(
+                    "generator '{name}': max_output_tokens must be greater than zero"
+                )));
+            }
+        }
+        for (name, gc) in &self.config.generate.generators {
+            if gc.max_output_tokens == 0 {
+                return Err(ArcanumError::Config(format!(
+                    "generator '{name}': max_output_tokens must be greater than zero"
+                )));
+            }
+        }
         for (name, generator, max) in &self.generators {
             out.insert(name.clone(), entry(name, generator.clone(), *max));
         }
@@ -1326,6 +1352,54 @@ mod tests {
             Err(e) => e.to_string(),
             Ok(_) => panic!("expected build error"),
         }
+    }
+
+    #[tokio::test]
+    async fn zero_generate_limits_are_config_errors() {
+        type Tweak = fn(&mut ArcanumConfig);
+        let tweaks: [(&str, Tweak); 4] = [
+            ("max_output_tokens", |c| {
+                c.generate
+                    .generators
+                    .get_mut("smart")
+                    .unwrap()
+                    .max_output_tokens = 0
+            }),
+            ("first_token_timeout_secs", |c| {
+                c.generate.first_token_timeout_secs = 0
+            }),
+            ("total_timeout_secs", |c| c.generate.total_timeout_secs = 0),
+            ("default_max_tokens", |c| c.generate.default_max_tokens = 0),
+        ];
+        for (key, tweak) in tweaks {
+            let mut cfg = generate_config(
+                Some("smart"),
+                Some("PATH"),
+                arcanum_core::config::GeneratorProtocol::OpenaiCompatible,
+            );
+            tweak(&mut cfg);
+            let msg = build_err_msg(
+                base_builder()
+                    .config(cfg)
+                    .chunk_metadata_store(registry())
+                    .build()
+                    .await,
+            );
+            assert!(msg.contains(key), "{key}: {msg}");
+        }
+        let msg = build_err_msg(
+            base_builder()
+                .config({
+                    let mut c = ArcanumConfig::default();
+                    c.generate.default_generator = Some("fake".into());
+                    c
+                })
+                .generator("fake", fake(), 0)
+                .chunk_metadata_store(registry())
+                .build()
+                .await,
+        );
+        assert!(msg.contains("max_output_tokens"), "{msg}");
     }
 
     #[tokio::test]

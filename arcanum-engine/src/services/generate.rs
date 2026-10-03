@@ -227,9 +227,7 @@ impl GenerateService {
                 GenerateEvent::Error(e) => return Err(e),
             }
         }
-        Err(GenerateError::Upstream(
-            "stream ended before completion".into(),
-        ))
+        Err(GenerateError::Upstream(UPSTREAM_FAILED.into()))
     }
 }
 
@@ -290,6 +288,16 @@ enum Phase {
     Finished,
 }
 
+fn error_detail(e: arcanum_core::ArcanumError) -> String {
+    match e {
+        arcanum_core::ArcanumError::Generation(m) => m,
+        other => other.to_string(),
+    }
+}
+
+/// Fixed client-facing text for any upstream failure; the detail is logged.
+const UPSTREAM_FAILED: &str = "generation failed";
+
 /// State of one generation, driven by `stream::unfold` without a spawned
 /// task, so dropping the stream drops the upstream request.
 struct Run {
@@ -325,7 +333,7 @@ impl Run {
                     let generator = self.generator.clone();
                     match timeout_at(self.deadline(), generator.stream(req)).await {
                         Err(_) => return Some(self.timeout().await),
-                        Ok(Err(e)) => return Some(self.fail(e.to_string()).await),
+                        Ok(Err(e)) => return Some(self.fail(error_detail(e)).await),
                         Ok(Ok(s)) => self.phase = Phase::Streaming(s),
                     }
                 }
@@ -334,7 +342,7 @@ impl Run {
                     Ok(None) => {
                         return Some(self.fail("stream ended before completion".into()).await)
                     }
-                    Ok(Some(Err(e))) => return Some(self.fail(e.to_string()).await),
+                    Ok(Some(Err(e))) => return Some(self.fail(error_detail(e)).await),
                     Ok(Some(Ok(GenerationEvent::TextDelta(t)))) => {
                         self.got_first = true;
                         self.answer.push_str(&t);
@@ -362,11 +370,12 @@ impl Run {
     }
 
     async fn fail(&mut self, msg: String) -> GenerateEvent {
+        tracing::warn!(generator = %self.info.name, error = %msg, "generation failed");
         self.breaker.record_failure();
         self.recorder
             .finish("error", Some(self.started.elapsed()), None)
             .await;
-        GenerateEvent::Error(GenerateError::Upstream(msg))
+        GenerateEvent::Error(GenerateError::Upstream(UPSTREAM_FAILED.into()))
     }
 
     async fn timeout(&mut self) -> GenerateEvent {
@@ -616,13 +625,30 @@ mod tests {
         assert!(matches!(&events[0], GenerateEvent::Delta(t) if t == "a"));
         assert!(
             matches!(&events[1], GenerateEvent::Error(GenerateError::Upstream(m))
-                if m.contains("stream ended before completion")),
+                if m == "generation failed"),
             "{events:?}"
         );
         let err = f.svc.generate(req("fox"), &f.claims).await.unwrap_err();
         assert!(matches!(err, GenerateError::Upstream(_)), "{err:?}");
         let records = f.audit.query(1).await;
         assert_eq!(records[0].entry.result, "error");
+    }
+
+    #[tokio::test]
+    async fn upstream_detail_is_not_exposed_to_clients() {
+        let steps = vec![ScriptStep::Fail(
+            "openai_compatible returned 401: Incorrect API key sk-proj-ab****wxyz at http://10.0.3.17:8000"
+                .into(),
+        )];
+        let f = fixture(opts(steps)).await;
+        let err = f.svc.generate(req("fox"), &f.claims).await.unwrap_err();
+        assert_eq!(err.to_string(), "generation failed");
+        let s = f.svc.generate_stream(req("fox"), &f.claims).await.unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        match events.last().unwrap() {
+            GenerateEvent::Error(e) => assert_eq!(e.to_string(), "generation failed"),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 
     #[tokio::test]

@@ -259,7 +259,9 @@ recorder via `metrics_prometheus::try_install()`. It returns a
 2. With `stream: false` both call `GenerateService::generate`. REST maps
    `GenerateError` through `generate_error_status`: `Invalid` to 400,
    `Forbidden` to 403, `Unavailable` to 503, `Upstream` to 502, `Timeout`
-   to 504, `Internal` to 500, each with a `{"error": ...}` body. Success is
+   to 504, `Internal` to 500, each with a `{"error": ...}` body. The
+   `Upstream` text is always `generation failed`; the provider detail is
+   logged with `tracing::warn!` and never sent to clients. Success is
    the `GenerateResponse` as JSON.
 3. With `stream: true` REST calls `GenerateService::generate_stream`.
    Errors raised before the stream exists (validation, access, retrieval,

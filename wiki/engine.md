@@ -356,7 +356,8 @@ Newest first.
   retrieval into a 503); spawning a task to pump the generator (outlives a
   dropped stream).
 - **Consequences**: upstream failures surface as an `error` SSE event or
-  `Upstream` on the JSON path; cancelled streams record no metric, breaker
+  `Upstream` on the JSON path, both carrying only the fixed text
+  `generation failed` (the detail is logged server-side); cancelled streams record no metric, breaker
   result, or audit entry.
 - **Ref**: 2026-10-02, commit 816e913.
 

@@ -286,7 +286,8 @@ paths:
         one `done` (outcome without `answer` and `context`) or `error`
         (`{"error"}`). Failures before the first event are JSON `ErrorBody`.
         An upstream failure after the stream has started arrives as an
-        `error` event. When no context is found, `status` is `no_context` and
+        `error` event. Upstream failures (502) always carry the fixed text
+        `generation failed`; the detail is logged server-side. When no context is found, `status` is `no_context` and
         the generator is not called. Requires a configured generator and a
         chunk registry, otherwise 503.
       requestBody:

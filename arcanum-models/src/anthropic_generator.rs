@@ -44,8 +44,9 @@ struct State {
 
 fn map_stop(reason: Option<String>) -> StopReason {
     match reason.as_deref() {
-        Some("end_turn") | None => StopReason::EndTurn,
+        Some("end_turn") => StopReason::EndTurn,
         Some("max_tokens") => StopReason::MaxTokens,
+        None => StopReason::Other("unknown".into()),
         Some(other) => StopReason::Other(other.to_string()),
     }
 }
@@ -258,6 +259,25 @@ mod tests {
                 GenerationEvent::Done { stop_reason, .. } => assert_eq!(stop_reason, &want),
                 other => panic!("unexpected {other:?}"),
             }
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_missing_stop_reason_is_other_unknown() {
+        let mut server = mockito::Server::new_async().await;
+        let stop = "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let _m = server
+            .mock("POST", "/v1/messages")
+            .with_header("content-type", "text/event-stream")
+            .with_body(start() + &delta("x") + stop)
+            .create_async()
+            .await;
+        let got = collect(&server).await;
+        match got.last().unwrap().as_ref().unwrap() {
+            GenerationEvent::Done { stop_reason, .. } => {
+                assert_eq!(stop_reason, &StopReason::Other("unknown".into()))
+            }
+            other => panic!("unexpected {other:?}"),
         }
     }
 
