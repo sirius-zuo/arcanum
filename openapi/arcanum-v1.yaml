@@ -257,8 +257,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: Internal error during retrieval or source hydration.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
         '503':
-          description: Context assembly is unavailable (no chunk registry configured).
+          description: >-
+            Context assembly is unavailable: no chunk registry is configured
+            (`context requires a chunk registry`), the vector-store circuit
+            breaker is open (`circuit open: vector store unavailable`), or no
+            retrieval strategy returned candidates (`retrieval unavailable`).
           content:
             application/json:
               schema:

@@ -756,5 +756,17 @@ mod tests {
             call_get_context(engine, json!({ "collection_id": "col1", "query": "hi" })).await;
         assert_eq!(resp["result"]["structuredContent"]["usage"]["budget"], 4000);
         assert_eq!(resp["result"]["content"][0]["type"], "text");
+        // The xml default is applied: `rendered` is only serialized when a
+        // render format is set, and the text content is that rendering.
+        let rendered = resp["result"]["structuredContent"]["rendered"]
+            .as_str()
+            .expect("render defaults to xml, so rendered must be present");
+        assert_eq!(resp["result"]["content"][0]["text"], rendered);
+        if resp["result"]["structuredContent"]["passages"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty())
+        {
+            assert!(rendered.starts_with("<documents>"), "{rendered}");
+        }
     }
 }

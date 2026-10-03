@@ -105,8 +105,15 @@ impl ContextService {
                 self.vector_store_cb.record_success();
                 c
             }
-            Ok(_) => {
-                self.vector_store_cb.record_failure();
+            Ok(c) => {
+                // Only a vector-store-backed strategy failure counts against
+                // the shared breaker; an empty set with no active strategy or
+                // a non-vector failure must not trip it for `search`.
+                if c.failed.iter().any(|(s, _)| {
+                    matches!(s, RetrievalStrategy::Vector | RetrievalStrategy::ColBert)
+                }) {
+                    self.vector_store_cb.record_failure();
+                }
                 return Err(ContextError::Unavailable("retrieval unavailable".into()));
             }
             Err(e) => {
@@ -343,7 +350,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn all_strategies_failed_is_unavailable_and_records_failure() {
+    async fn failed_vector_strategy_is_unavailable_and_records_failure() {
         let cb = Arc::new(CircuitBreaker::new(
             "vector_store",
             1,
@@ -366,6 +373,57 @@ mod tests {
         assert!(
             !f.cb.allow_request(),
             "a failure must be recorded, opening a threshold-1 breaker"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_candidates_without_failures_leave_breaker_closed() {
+        let cb = Arc::new(CircuitBreaker::new(
+            "vector_store",
+            2,
+            Duration::from_secs(30),
+        ));
+        let f = fixture(|_| vec![], cb).await;
+        for _ in 0..5 {
+            let err = f
+                .svc
+                .assemble(req("fox"), &admin(&f.auth))
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, ContextError::Unavailable(m) if m == "retrieval unavailable"),
+                "{err:?}"
+            );
+        }
+        assert!(
+            f.cb.allow_request(),
+            "no active strategy must not record breaker failures"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_candidates_with_non_vector_failure_leave_breaker_closed() {
+        let cb = Arc::new(CircuitBreaker::new(
+            "vector_store",
+            1,
+            Duration::from_secs(30),
+        ));
+        let f = fixture(
+            |_| vec![Arc::new(FailingRetriever(RetrievalStrategy::Bm25)) as Arc<dyn Retriever>],
+            cb,
+        )
+        .await;
+        for _ in 0..3 {
+            let err = f
+                .svc
+                .assemble(req("fox"), &admin(&f.auth))
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ContextError::Unavailable(_)), "{err:?}");
+        }
+        assert!(
+            f.cb.allow_request(),
+            "a BM25-only failure must not trip the vector-store breaker"
         );
     }
 

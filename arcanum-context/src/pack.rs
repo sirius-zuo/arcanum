@@ -73,14 +73,20 @@ fn count_nonempty(counter: &dyn TokenCounter, s: &str) -> usize {
 }
 
 /// Merges `next` into `cur` when they overlap or touch (spec 5.4 step 3).
-/// Both texts are slices of one document, so `cur.offset_end` is a char
-/// boundary of `next.text` at the computed index.
-fn absorb(cur: &mut Selected, next: Selected) {
-    let (c, n) = (&mut cur.passage, next.passage);
-    if n.offset_end > c.offset_end {
-        c.text.push_str(&n.text[c.offset_end - n.offset_start..]);
-        c.offset_end = n.offset_end;
+/// Both texts should be slices of one document, so `cur.offset_end` is a
+/// char boundary of `next.text` at the computed index. When a bad registry
+/// row breaks that (text shorter than its span, or an index off a char
+/// boundary), `next` is returned unmerged instead of panicking.
+fn absorb(cur: &mut Selected, next: Selected) -> Option<Selected> {
+    if next.passage.offset_end > cur.passage.offset_end {
+        let idx = cur.passage.offset_end - next.passage.offset_start;
+        let Some(tail) = next.passage.text.get(idx..) else {
+            return Some(next);
+        };
+        cur.passage.text.push_str(tail);
+        cur.passage.offset_end = next.passage.offset_end;
     }
+    let (c, n) = (&mut cur.passage, next.passage);
     for id in n.chunk_ids {
         if !c.chunk_ids.contains(&id) {
             c.chunk_ids.push(id);
@@ -98,6 +104,7 @@ fn absorb(cur: &mut Selected, next: Selected) {
         cur.earliest_start = next.earliest_start;
     }
     cur.clusters += next.clusters;
+    None
 }
 
 fn merge(selected: Vec<Selected>) -> Vec<Selected> {
@@ -115,12 +122,16 @@ fn merge(selected: Vec<Selected>) -> Vec<Selected> {
         let mut iter = g.into_iter();
         let mut cur = iter.next().expect("groups are non-empty");
         for next in iter {
-            if next.passage.offset_start <= cur.passage.offset_end {
-                absorb(&mut cur, next);
+            let next = if next.passage.offset_start <= cur.passage.offset_end {
+                match absorb(&mut cur, next) {
+                    None => continue,
+                    Some(unmerged) => unmerged,
+                }
             } else {
-                out.push(cur);
-                cur = next;
-            }
+                next
+            };
+            out.push(cur);
+            cur = next;
         }
         out.push(cur);
     }
@@ -457,6 +468,33 @@ mod tests {
         assert_eq!(got, want);
         assert!((p.score - 1.0 / 61.0).abs() < 1e-12);
         assert_eq!(p.ref_id, "P1");
+    }
+
+    #[test]
+    fn degenerate_merge_keeps_passages_separate_without_panic() {
+        // Chunk text shorter than its span: the merge index is out of range.
+        let d = DocumentId::new();
+        let a = src(&d, 1, DOC, 0, 40);
+        let mut b = src(&d, 1, DOC, 30, 80);
+        b.text = "short".into();
+        let out = assemble(
+            &cands(vec![vector(vec![a, b])]),
+            &params(200, 0.0),
+            &WordCounter,
+        );
+        assert_eq!(out.passages.len(), 2);
+
+        // Merge index lands inside a multi-byte char of the next chunk.
+        let d = DocumentId::new();
+        let a = src(&d, 1, DOC, 0, 10);
+        let mut b = src(&d, 1, DOC, 9, 20);
+        b.text = "\u{e9}xxxxxxxxx".into();
+        let out = assemble(
+            &cands(vec![vector(vec![a, b])]),
+            &params(200, 0.0),
+            &WordCounter,
+        );
+        assert_eq!(out.passages.len(), 2);
     }
 
     #[test]

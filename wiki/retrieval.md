@@ -248,7 +248,11 @@ lexical, graph or tree is enabled without a chunk registry.)
    strategy that answered (in each strategy's own rank order), and
    `failed` (one `(RetrievalStrategy, reason)` per strategy, first
    failure kept, `"timeout"` for timeouts). It never errors on strategy
-   failure; an empty `lists` means every strategy failed.
+   failure. An empty `lists` means every strategy failed or no strategy
+   was active (for example `QueryClassified` selecting only RAPTOR with
+   no RAPTOR retriever). `ContextService` maps it to `Unavailable` and
+   records a vector-store breaker failure only when `Vector` or `ColBert`
+   is among `failed`.
 3. `hydrate::hydrate_sources(store, collection, candidates)` collects
    the unique `ChunkKind::Source` ids across all lists, calls
    `ChunkMetadataStore::get_many` once, and replaces each chunk with

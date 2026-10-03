@@ -271,9 +271,13 @@ unknown provider name fails `build()` with a config error. With neither,
    and a `ResolvedQuerySource`.
 4. `RetrievalOrchestrator::retrieve_candidates` returns pre-fusion
    `Candidates` (`top_k` is `candidate_k`, default
-   `context.default_candidate_k`). Empty `lists` (every strategy failed)
-   records a breaker failure and returns `Unavailable`; otherwise it
-   records success.
+   `context.default_candidate_k`). Empty `lists` returns `Unavailable`
+   (`retrieval unavailable`); it can mean every strategy failed or that no
+   strategy was active (for example a `QueryClassified` route to RAPTOR
+   with no RAPTOR retriever). A breaker failure is recorded only when a
+   `Vector` or `ColBert` strategy is among `failed`, so `get_context` does
+   not trip the breaker `search` shares for unrelated reasons. Non-empty
+   `lists` records success.
 5. `hydrate_sources` swaps each source chunk for its registry slice and
    drops chunks the registry no longer knows.
 6. `arcanum_context::assemble` packs passages and background within
