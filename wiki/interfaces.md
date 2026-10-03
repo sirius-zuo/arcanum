@@ -27,7 +27,7 @@ dependency DAG; nothing in the workspace depends on either.
   fields: `engine.auth` (`validate_api_key`, `validate_admin_jwt`,
   `can_access_collection`), `engine.retrieval`, `engine.ingestion`,
   `engine.experiment`, `engine.admin`, `engine.source`, `engine.audit`,
-  `engine.events` (`EventBus`), `engine.evidence`, `engine.gc_worker`,
+  `engine.events` (`EventBus`), `engine.context`, `engine.evidence`, `engine.gc_worker`,
   `engine.vector_store`/`graph_store`/`tree_store`/`version_store`.
   Neither crate constructs an `ArcanumEngine` itself.
 - [Core](core.md): `arcanum_core::types` (`Query`, `CollectionId`,
@@ -124,8 +124,8 @@ forwarding the JSON-RPC body to `McpJsonRpcHandler::handle`;
 `McpJsonRpcHandler` (`handlers.rs`) owns an `Arc<CapabilityRegistry>` and
 an `Arc<SessionManager>`, both built in `McpJsonRpcHandler::new`/
 `new_test`: the registry via `default_registry()`, which registers all
-four tools (`ingest`, `search`, `list_collections`, `eval_run`) with a
-JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
+five tools (`ingest`, `search`, `list_collections`, `eval_run`,
+`get_context`) with a JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
 field: `tools/list` returns `self.registry.list()` (sorted by name)
 directly, `initialize` calls `self.sessions.create(client_info)` and
 returns the new `McpSession`'s `id` in `_meta.sessionId`, and `tools/call`
@@ -187,7 +187,7 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    `validate_bearer`, this path does not consult `engine.rate_limiter`
    (see Implementation Notes).
 4. `dispatch_tool` then matches `request["params"]["name"]` against all
-   four registered tools. `"search"`/`"ingest"` build a `Query`/
+   five registered tools (`"get_context"` is Runtime Flow 4). `"search"`/`"ingest"` build a `Query`/
    `IngestRequest` and call `engine.retrieval.search`/
    `engine.ingestion.ingest`. `"list_collections"` calls
    `engine.version_store.list_collections()` and filters the result
@@ -226,9 +226,44 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    pushes metrics to the same OTLP endpoint via a 30-second
    `PeriodicReader`, independent of the `/metrics` pull path.
 
+**4. Context assembly through `POST /api/v1/context` and MCP `get_context`**
+1. REST: `build_app_with_config` routes to `routes::api::context`, which
+   calls `validate_bearer` (401), deserializes the body into
+   `ContextRequest` (400 on a malformed body), and answers 503 when
+   `engine.context` is `None` (no chunk registry). MCP: `dispatch_tool`'s
+   `"get_context"` arm deserializes the arguments the same way (JSON-RPC
+   error `-32602` on failure) and defaults `render` to `xml` when absent.
+2. Both call `ContextService::assemble(req, &claims)`; the handler does
+   not check collection access itself, the service does (see
+   [Engine](engine.md) for the flow and [Retrieval](retrieval.md) for
+   candidates).
+3. REST maps `ContextError` through `context_error_status`: `Invalid` to
+   400, `Forbidden` to 403, `Unavailable` to 503, `Internal` to 500, each
+   with a `{"error": ...}` body. Success returns the `ContextResponse`
+   as JSON (`rendered` appears only when a `render` format was
+   requested). The handler records `arcanum_requests_total` and
+   `arcanum_request_duration_seconds` with `endpoint="context"`.
+4. MCP maps `Invalid` to a JSON-RPC `-32602` error and every other
+   `ContextError` (and a missing registry) to a tool result with
+   `isError: true`. Success returns the `rendered` string as the text
+   content and the full `ContextResponse` as `structuredContent`.
+
 ## Key Decisions
 
 Newest first.
+
+### `get_context` returns rendered text plus `structuredContent`; REST has no default render
+- **Decision**: the MCP tool defaults `render` to `xml` and returns the
+  rendered string as text with the structured response alongside; the
+  REST route returns `rendered` only when the caller asks for a format.
+- **Context**: an MCP client hands tool text straight to a model, while a
+  REST caller usually formats passages itself from `passages`.
+- **Alternatives rejected**: always rendering on REST (spends tokens on
+  a field most callers ignore); text-only MCP output (loses citation
+  metadata).
+- **Consequences**: MCP callers always get a populated `usage` counted
+  against the rendered output.
+- **Ref**: 2026-10-02, commits d140f2b and cb7b295.
 
 ### `tools/list` becomes registry-driven; `eval_run` runs under the caller's own claims with hard caps
 - **Decision**: `McpJsonRpcHandler` builds a `CapabilityRegistry` in
@@ -354,9 +389,9 @@ Newest first.
   does for `arcanum-server`). No crate under `examples/` imports
   `arcanum_mcp` yet; the bin is the only production caller of
   `McpServer::new` so far.
-- **MCP tool list: all four advertised tools now dispatch (closed gap, PR
-  #57).** `tools/list` advertises `ingest`, `search`, `list_collections`,
-  and `eval_run`; `dispatch_tool` now has a real arm for each; see
+- **MCP tool list: all advertised tools now dispatch (closed gap, PR
+  #57; `get_context` added later).** `tools/list` advertises `ingest`,
+  `search`, `list_collections`, `eval_run`, and `get_context`; `dispatch_tool` now has a real arm for each; see
   Runtime Flow 2. A coverage test
   (`test_every_registered_tool_dispatches_without_unknown_tool_error`)
   iterates `registry.list()` and asserts none of them fall through to the

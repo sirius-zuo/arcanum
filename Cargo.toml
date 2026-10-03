@@ -16,6 +16,7 @@ members = [
     "arcanum-telemetry",
     "arcanum-chunk-eval",
     "arcanum-evidence",
+    "arcanum-context",
 ]
 exclude = ["examples"]
 resolver = "2"

@@ -155,15 +155,17 @@ opt-in, defaulting to pre-2.6 behavior.)
    `Err` warns and falls back to `vec![query.clone()]`. Unset by default;
    `retrieve` then runs the original query only, matching pre-2.6
    behavior.
-2. Each resulting query runs through `fan_out_and_fuse` (pre-2.6 logic,
-   unchanged, now extracted into its own method): `active_retrievers
+2. Each resulting query runs through `fan_out` (pre-2.6 logic, now split
+   out of the old fan-out-and-fuse method so `retrieve_candidates` can
+   share it; fusion happens afterwards): `active_retrievers
    (query)` selects wired `Retriever`s per `OrchestratorMode` (`Static` =
    fixed list, `ParallelFusion` = every wired retriever, `QueryClassified`
    = `classify_query`'s lexical heuristic: `[Raptor]` for summarization
    signals, `[Graph, Vector]` for quoted text/≥2 capitalized words, else
    `[Vector, Bm25]`); each runs in its own `tokio::spawn` under a 5s
    `strategy_timeout` and `info_span!`, warning and dropping on timeout/
-   `Err` rather than failing the call, always recording
+   `Err` rather than failing the call (`fan_out` also returns each
+   dropped strategy's reason for `retrieve_candidates`), always recording
    `arcanum_retrieval_total`/`_duration_seconds`. Surviving
    `(RetrievalStrategy, Vec<RetrievedChunk>)` pairs feed `RrfFusion::fuse
    (.., 60.0)`; `k` is still hardcoded here (Implementation Notes).
@@ -236,9 +238,47 @@ lexical, graph or tree is enabled without a chunk registry.)
    ::ColBert` and `Static`'s fixed list still never includes it, so only
    `ParallelFusion` selects it (Implementation Notes).
 
+**Candidates path for the Context API: `retrieve_candidates` and
+`hydrate_sources`**
+1. `RetrievalOrchestrator::retrieve_candidates` runs the same
+   `transform` (query transformer, with the same fallbacks) and `fan_out`
+   as `retrieve`, but skips fusion, reranking, dedup, and the cache.
+2. It returns `Candidates`: the transformed query strings, one
+   `CandidateList { query_index, strategy, chunks }` per query and
+   strategy that answered (in each strategy's own rank order), and
+   `failed` (one `(RetrievalStrategy, reason)` per strategy, first
+   failure kept, `"timeout"` for timeouts). It never errors on strategy
+   failure. An empty `lists` means every strategy failed or no strategy
+   was active (for example `QueryClassified` selecting only RAPTOR with
+   no RAPTOR retriever). `ContextService` maps it to `Unavailable` and
+   records a vector-store breaker failure only when `Vector` or `ColBert`
+   is among `failed`.
+3. `hydrate::hydrate_sources(store, collection, candidates)` collects
+   the unique `ChunkKind::Source` ids across all lists, calls
+   `ChunkMetadataStore::get_many` once, and replaces each chunk with
+   `ChunkMetadataRecord::to_chunk` (the exact source slice, dropping any
+   enrichment prefix). Source chunks missing from the registry are
+   removed and counted via `arcanum_retrieval_unresolved_chunks_total`;
+   `ChunkKind::Summary` chunks pass through untouched. Scores and
+   strategy tags are preserved. `ContextService` consumes the result
+   (see [Engine](engine.md)).
+
 ## Key Decisions
 
 Newest first.
+
+### Pre-fusion `Candidates` exposed beside `retrieve`, not through it
+- **Decision**: add `retrieve_candidates` returning per-query, per-strategy
+  `CandidateList`s, and share `transform`/`fan_out` with `retrieve`.
+- **Context**: context assembly clusters by byte range and applies its
+  own RRF over chunks, which the document-level fusion in `retrieve`
+  discards (it keeps one entry per document).
+- **Alternatives rejected**: fusing at chunk level inside `retrieve`
+  (changes `search` results); a second fan-out implementation (the two
+  paths would drift on timeouts and failure handling).
+- **Consequences**: `search` behavior is unchanged; both paths now
+  depend on `fan_out`'s `(results, failures)` return shape.
+- **Ref**: 2026-10-02, commit e93bcc1.
 
 ### `QueryCache` activated behind config; cache key made filter-aware
 - **Decision**: `RetrievalConfig.query_cache: Option<QueryCacheConfig>`
@@ -469,6 +509,7 @@ Newest first.
 
 - `arcanum-retrieval/src/lib.rs`
 - `arcanum-retrieval/src/orchestrator.rs`
+- `arcanum-retrieval/src/hydrate.rs`
 - `arcanum-retrieval/src/fusion.rs`
 - `arcanum-retrieval/src/reranker.rs`
 - `arcanum-retrieval/src/transformer.rs`

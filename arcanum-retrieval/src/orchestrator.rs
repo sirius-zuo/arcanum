@@ -66,26 +66,11 @@ impl RetrievalOrchestrator {
 
     #[instrument(skip(self), fields(mode = ?self.mode_name(), retriever_count = self.retrievers.len()), err)]
     pub async fn retrieve(&self, query: &Query) -> Result<RetrievalResult> {
-        let queries = match &self.query_transformer {
-            Some(t) => match t.transform(query.clone()).await {
-                Ok(qs) if !qs.is_empty() => qs,
-                Ok(_) => {
-                    tracing::warn!(
-                        "query transformer returned no queries; falling back to original"
-                    );
-                    vec![query.clone()]
-                }
-                Err(e) => {
-                    tracing::warn!(err = ?e, "query transformer failed; falling back to original query");
-                    vec![query.clone()]
-                }
-            },
-            None => vec![query.clone()],
-        };
+        let queries = self.transform(query).await;
 
         let mut per_query_fused = Vec::with_capacity(queries.len());
         for q in &queries {
-            let fused = self.fan_out_and_fuse(q).await;
+            let fused = RrfFusion::fuse(self.fan_out(q).await.0, 60.0);
             // The strategy tag here is unused by RrfFusion::fuse (it only
             // groups/scores by document_id) — it's a required tuple slot for
             // reusing the same fusion pass to merge per-query result sets.
@@ -135,10 +120,68 @@ impl RetrievalOrchestrator {
         })
     }
 
+    /// Pre-fusion retrieval: one `CandidateList` per (transformed query,
+    /// successful strategy), including successful empty lists. No fusion,
+    /// rerank or dedup. `failed` holds each failing strategy once with the
+    /// first reason seen.
+    pub async fn retrieve_candidates(&self, query: &Query) -> Result<Candidates> {
+        let queries = self.transform(query).await;
+        let mut lists = Vec::new();
+        let mut failed: Vec<(RetrievalStrategy, String)> = Vec::new();
+        for (query_index, q) in queries.iter().enumerate() {
+            let (results, fails) = self.fan_out(q).await;
+            for (strategy, chunks) in results {
+                lists.push(CandidateList {
+                    query_index,
+                    strategy,
+                    chunks,
+                });
+            }
+            for (strategy, reason) in fails {
+                if !failed.iter().any(|(s, _)| *s == strategy) {
+                    failed.push((strategy, reason));
+                }
+            }
+        }
+        Ok(Candidates {
+            queries: queries.into_iter().map(|q| q.text).collect(),
+            lists,
+            failed,
+        })
+    }
+
+    /// Applies the query transformer, falling back to the original query when
+    /// it is unset, fails, or returns nothing.
+    async fn transform(&self, query: &Query) -> Vec<Query> {
+        match &self.query_transformer {
+            Some(t) => match t.transform(query.clone()).await {
+                Ok(qs) if !qs.is_empty() => qs,
+                Ok(_) => {
+                    tracing::warn!(
+                        "query transformer returned no queries; falling back to original"
+                    );
+                    vec![query.clone()]
+                }
+                Err(e) => {
+                    tracing::warn!(err = ?e, "query transformer failed; falling back to original query");
+                    vec![query.clone()]
+                }
+            },
+            None => vec![query.clone()],
+        }
+    }
+
     /// Runs every active retriever for `query` in parallel (with per-strategy
-    /// timeout) and RRF-fuses the results. Individual strategy failures or
-    /// timeouts are logged and dropped, never fail the whole call.
-    async fn fan_out_and_fuse(&self, query: &Query) -> Vec<RetrievedChunk> {
+    /// timeout). Returns the per-strategy results plus the strategies that
+    /// failed or timed out (reason is "timeout" or the error text). Failures
+    /// are logged, never fail the whole call.
+    async fn fan_out(
+        &self,
+        query: &Query,
+    ) -> (
+        Vec<(RetrievalStrategy, Vec<RetrievedChunk>)>,
+        Vec<(RetrievalStrategy, String)>,
+    ) {
         let active = self.active_retrievers(query);
         let tasks: Vec<_> = active.iter().map(|r| {
             let r = r.clone();
@@ -168,28 +211,31 @@ impl RetrievalOrchestrator {
                 match result {
                     Ok(Ok(chunks)) => {
                         tracing::debug!(strategy = ?strategy, chunk_count = chunks.len(), "strategy succeeded");
-                        Some((strategy, chunks))
+                        Ok((strategy, chunks))
                     }
                     Ok(Err(e)) => {
                         tracing::warn!(strategy = ?strategy, err = ?e, "strategy failed");
-                        None
+                        Err((strategy, e.to_string()))
                     }
                     Err(_) => {
                         tracing::warn!(strategy = ?strategy, "strategy timed out");
-                        None
+                        Err((strategy, "timeout".to_string()))
                     }
                 }
             }.instrument(span))
         }).collect();
 
         let mut strategy_results = vec![];
+        let mut failed = vec![];
         for task in tasks {
-            if let Ok(Some(r)) = task.await {
-                strategy_results.push(r);
+            match task.await {
+                Ok(Ok(r)) => strategy_results.push(r),
+                Ok(Err(f)) => failed.push(f),
+                Err(_) => {}
             }
         }
 
-        RrfFusion::fuse(strategy_results, 60.0)
+        (strategy_results, failed)
     }
 
     fn mode_name(&self) -> &'static str {
@@ -307,5 +353,124 @@ mod tests {
     fn test_classify_overview_triggers_raptor() {
         let strategies = classify_query("give me an overview of all chapters");
         assert!(strategies.contains(&RetrievalStrategy::Raptor));
+    }
+
+    use crate::transformer::QueryTransformer;
+    use arcanum_core::types::{
+        Chunk, ChunkId, ChunkKind, ChunkMetadata, ChunkPosition, DocumentId, IndexedChunk, Vector,
+    };
+
+    fn stub_chunk(strategy: RetrievalStrategy) -> RetrievedChunk {
+        RetrievedChunk {
+            indexed_chunk: IndexedChunk {
+                chunk: Chunk {
+                    id: ChunkId::new(),
+                    text: "t".into(),
+                    document_id: DocumentId::new(),
+                    collection_id: CollectionId(String::new()),
+                    position: ChunkPosition {
+                        start: 0,
+                        end: 1,
+                        index: 0,
+                    },
+                    metadata: ChunkMetadata::default(),
+                    provenance: Default::default(),
+                },
+                vector: Vector(vec![]),
+                token_vectors: None,
+                store_id: "s".into(),
+            },
+            score: 1.0,
+            strategy,
+            kind: ChunkKind::Source,
+        }
+    }
+
+    enum Behavior {
+        Hits(usize),
+        Fail,
+        Hang,
+    }
+    struct StubRetriever(RetrievalStrategy, Behavior);
+    #[async_trait::async_trait]
+    impl Retriever for StubRetriever {
+        async fn retrieve(&self, _q: &Query) -> Result<Vec<RetrievedChunk>> {
+            match &self.1 {
+                Behavior::Hits(n) => Ok((0..*n).map(|_| stub_chunk(self.0.clone())).collect()),
+                Behavior::Fail => Err(arcanum_core::ArcanumError::Retrieval("boom".into())),
+                Behavior::Hang => {
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Ok(vec![])
+                }
+            }
+        }
+        fn strategy(&self) -> RetrievalStrategy {
+            self.0.clone()
+        }
+    }
+
+    struct TwoQueries;
+    #[async_trait::async_trait]
+    impl QueryTransformer for TwoQueries {
+        async fn transform(&self, q: Query) -> Result<Vec<Query>> {
+            Ok(vec![q.clone(), Query::new("second")])
+        }
+    }
+
+    fn orch(b: Vec<(RetrievalStrategy, Behavior)>) -> RetrievalOrchestrator {
+        let mut o = RetrievalOrchestrator::new(OrchestratorMode::ParallelFusion);
+        for (s, beh) in b {
+            o = o.add_retriever(Arc::new(StubRetriever(s, beh)));
+        }
+        o
+    }
+
+    #[tokio::test]
+    async fn retrieve_candidates_one_list_per_query_and_strategy() {
+        let o = orch(vec![
+            (RetrievalStrategy::Vector, Behavior::Hits(1)),
+            (RetrievalStrategy::Bm25, Behavior::Hits(1)),
+        ])
+        .with_query_transformer(Arc::new(TwoQueries));
+        let c = o.retrieve_candidates(&Query::new("first")).await.unwrap();
+        assert_eq!(c.queries, vec!["first".to_string(), "second".to_string()]);
+        let idx: Vec<_> = c.lists.iter().map(|l| l.query_index).collect();
+        assert_eq!(idx, vec![0, 0, 1, 1]);
+        assert!(c.failed.is_empty());
+    }
+
+    #[tokio::test]
+    async fn retrieve_candidates_reports_failures_once() {
+        let mut o = orch(vec![
+            (RetrievalStrategy::Vector, Behavior::Fail),
+            (RetrievalStrategy::Bm25, Behavior::Hang),
+            (RetrievalStrategy::Graph, Behavior::Hits(1)),
+        ])
+        .with_query_transformer(Arc::new(TwoQueries));
+        o.strategy_timeout = Duration::from_millis(50);
+        let c = o.retrieve_candidates(&Query::new("first")).await.unwrap();
+        assert_eq!(c.failed.len(), 2);
+        assert_eq!(c.lists.len(), 2);
+        let bm25 = c
+            .failed
+            .iter()
+            .find(|(s, _)| *s == RetrievalStrategy::Bm25)
+            .unwrap();
+        assert_eq!(bm25.1, "timeout");
+        let vec_reason = c
+            .failed
+            .iter()
+            .find(|(s, _)| *s == RetrievalStrategy::Vector)
+            .unwrap();
+        assert!(vec_reason.1.contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn retrieve_candidates_keeps_successful_empty_lists() {
+        let o = orch(vec![(RetrievalStrategy::Vector, Behavior::Hits(0))]);
+        let c = o.retrieve_candidates(&Query::new("q")).await.unwrap();
+        assert_eq!(c.lists.len(), 1);
+        assert!(c.lists[0].chunks.is_empty());
+        assert!(c.failed.is_empty());
     }
 }

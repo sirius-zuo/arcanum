@@ -1,10 +1,12 @@
 use crate::capability_registry::{CapabilityRegistry, ToolDefinition};
 use crate::session::SessionManager;
 use arcanum_core::{
-    types::{ChunkId, CollectionId, Query},
+    types::{ChunkId, CollectionId, ContextRequest, Query, RenderFormat},
     Result,
 };
-use arcanum_engine::{auth::ApiKeyClaims, ArcanumEngine, IngestRequest};
+use arcanum_engine::{
+    auth::ApiKeyClaims, services::context::ContextError, ArcanumEngine, IngestRequest,
+};
 use arcanum_eval::{EvalRunner, GoldenSample};
 use axum::http::HeaderMap;
 use metrics;
@@ -82,6 +84,24 @@ impl McpJsonRpcHandler {
                         }, "required": ["query", "relevant_chunk_ids"] } },
                     "k": { "type": "integer", "default": 5 }
                 }, "required": ["collection_id", "samples"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "get_context",
+            "Assemble token-budgeted, citation-mapped context for a query or conversation",
+            json!({ "type": "object",
+                "properties": {
+                    "collection_id": { "type": "string" },
+                    "query": { "type": "string" },
+                    "messages": { "type": "array", "items": { "type": "object",
+                        "properties": {
+                            "role": { "type": "string" },
+                            "content": { "type": "string" }
+                        }, "required": ["role", "content"] } },
+                    "token_budget": { "type": "integer" },
+                    "background_share": { "type": "number" },
+                    "candidate_k": { "type": "integer" },
+                    "render": { "type": "string", "enum": ["numbered", "xml", "markdown"] }
+                }, "required": ["collection_id"] }),
         ));
         Arc::new(registry)
     }
@@ -303,6 +323,47 @@ impl McpJsonRpcHandler {
                         "jsonrpc": "2.0", "id": id,
                         "error": { "code": -32001, "message": "engine not initialised" }
                     }))
+                }
+            }
+            "get_context" => {
+                let mut req: ContextRequest = match serde_json::from_value(args.clone()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("invalid arguments: {}", e) }
+                        }))
+                    }
+                };
+                if req.render.is_none() {
+                    req.render = Some(RenderFormat::Xml);
+                }
+                let tool_error = |text: String| {
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }], "isError": true }
+                    })
+                };
+                let Some(svc) = self.engine.as_ref().and_then(|e| e.context.as_ref()) else {
+                    return Ok(tool_error("context requires a chunk registry".into()));
+                };
+                match svc.assemble(req, claims).await {
+                    Ok(resp) => {
+                        let text = resp.rendered.clone().unwrap_or_default();
+                        Ok(json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "result": {
+                                "content": [{ "type": "text", "text": text }],
+                                "structuredContent": serde_json::to_value(&resp)
+                                    .unwrap_or(Value::Null)
+                            }
+                        }))
+                    }
+                    Err(ContextError::Invalid(m)) => Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": m }
+                    })),
+                    Err(e) => Ok(tool_error(e.to_string())),
                 }
             }
             _ => Ok(json!({
@@ -628,7 +689,13 @@ mod tests {
         // CapabilityRegistry::list() sorts by name.
         assert_eq!(
             names,
-            vec!["eval_run", "ingest", "list_collections", "search"]
+            vec![
+                "eval_run",
+                "get_context",
+                "ingest",
+                "list_collections",
+                "search"
+            ]
         );
         // Every tool must carry a schema — proves we serialized ToolDefinition, not a stub.
         for t in tools {
@@ -637,6 +704,69 @@ mod tests {
                 "tool {} missing inputSchema",
                 t["name"]
             );
+        }
+    }
+
+    async fn call_get_context(engine: Arc<ArcanumEngine>, args: Value) -> Value {
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "get_context", "arguments": args } });
+        handler.handle(req, make_headers(&token)).await.unwrap()
+    }
+
+    /// Registry plus an empty BM25 index, so one retriever answers (with no hits).
+    async fn engine_with_registry() -> (Arc<ArcanumEngine>, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let bm25 = Arc::new(arcanum_vector::Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
+        let engine = ArcanumEngine::builder()
+            .bm25_index(bm25)
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
+            .build()
+            .await
+            .expect("engine build should succeed");
+        (engine, dir)
+    }
+
+    #[tokio::test]
+    async fn get_context_without_query_or_messages_is_invalid_params() {
+        let (engine, _dir) = engine_with_registry().await;
+        let resp = call_get_context(engine, json!({ "collection_id": "col1" })).await;
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn get_context_without_registry_is_tool_error() {
+        let resp = call_get_context(
+            test_engine().await,
+            json!({ "collection_id": "col1", "query": "hi" }),
+        )
+        .await;
+        assert_eq!(resp["result"]["isError"], true);
+    }
+
+    #[tokio::test]
+    async fn get_context_returns_structured_content_and_xml_default() {
+        let (engine, _dir) = engine_with_registry().await;
+        let resp =
+            call_get_context(engine, json!({ "collection_id": "col1", "query": "hi" })).await;
+        assert_eq!(resp["result"]["structuredContent"]["usage"]["budget"], 4000);
+        assert_eq!(resp["result"]["content"][0]["type"], "text");
+        // The xml default is applied: `rendered` is only serialized when a
+        // render format is set, and the text content is that rendering.
+        let rendered = resp["result"]["structuredContent"]["rendered"]
+            .as_str()
+            .expect("render defaults to xml, so rendered must be present");
+        assert_eq!(resp["result"]["content"][0]["text"], rendered);
+        if resp["result"]["structuredContent"]["passages"]
+            .as_array()
+            .is_some_and(|p| !p.is_empty())
+        {
+            assert!(rendered.starts_with("<documents>"), "{rendered}");
         }
     }
 }

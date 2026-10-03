@@ -29,6 +29,7 @@ fn intent_key(intent: &EnrichIntent) -> String {
         EnrichIntent::ExtractEntities => "extract_entities".into(),
         EnrichIntent::Caption => "caption".into(),
         EnrichIntent::Rerank => "rerank".into(),
+        EnrichIntent::RewriteQuery => "rewrite_query".into(),
         EnrichIntent::Custom(s) => format!("custom:{}", s),
     }
 }
@@ -40,5 +41,38 @@ impl TextEnricher for EnrichmentDispatcher {
         let key = intent_key(&request.intent);
         let provider = self.overrides.get(&key).unwrap_or(&self.default);
         provider.enrich(request).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Fixed(&'static str);
+
+    #[async_trait]
+    impl TextEnricher for Fixed {
+        async fn enrich(&self, _request: EnrichRequest) -> Result<EnrichedText> {
+            Ok(EnrichedText(self.0.into()))
+        }
+    }
+
+    fn req(intent: EnrichIntent) -> EnrichRequest {
+        EnrichRequest {
+            text: "t".into(),
+            intent,
+            context: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn rewrite_query_routes_to_its_override() {
+        let d = EnrichmentDispatcher::new(Arc::new(Fixed("d")))
+            .with_override(EnrichIntent::RewriteQuery, Arc::new(Fixed("r")));
+        assert_eq!(
+            d.enrich(req(EnrichIntent::RewriteQuery)).await.unwrap().0,
+            "r"
+        );
+        assert_eq!(d.enrich(req(EnrichIntent::Summarize)).await.unwrap().0, "d");
     }
 }

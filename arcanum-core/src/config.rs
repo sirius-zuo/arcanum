@@ -187,6 +187,7 @@ pub struct EnrichmentConfig {
     pub entity_extraction_provider: Option<String>,
     pub summarize_provider: Option<String>,
     pub caption_provider: Option<String>,
+    pub rewrite_query_provider: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +228,23 @@ impl Default for AdminConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextConfig {
+    pub default_token_budget: usize,
+    pub default_candidate_k: usize,
+    pub rewrite_max_messages: usize,
+}
+
+impl Default for ContextConfig {
+    fn default() -> Self {
+        Self {
+            default_token_budget: 4000,
+            default_candidate_k: 50,
+            rewrite_max_messages: 6,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerConfig {
     /// Origins allowed for CORS. Empty = deny all cross-origin requests (fail-closed).
@@ -253,6 +271,8 @@ pub struct ArcanumConfig {
     pub admin: AdminConfig,
     #[serde(default)]
     pub server: ServerConfig,
+    #[serde(default)]
+    pub context: ContextConfig,
 }
 
 impl ArcanumConfig {

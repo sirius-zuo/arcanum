@@ -9,7 +9,7 @@ wiring `arcanum-middleware`'s circuit breakers and queue, assembling
 `arcanum-pipeline`'s `PipelineDeps` and spawning its `IngestionWorker`
 pool, building `arcanum-retrieval`'s `RetrievalOrchestrator`, and
 constructing every service (`IngestionService`, `RetrievalService`,
-`CollectionService`, `ExperimentService`, `EvalService`,
+`ContextService`, `CollectionService`, `ExperimentService`, `EvalService`,
 `IngestionSourceService`, `AdminService`) plus the cross-cutting
 concerns (`AuthMiddleware`, `AuditLogger`, `EventBus`, `SecretStore`)
 that those services and the HTTP/MCP layer share. It exists as its own
@@ -69,6 +69,10 @@ composes:
   an `Option<Arc<ArcanumEngine>>` and call through its public fields
   (`engine.auth`, `engine.retrieval`, `engine.ingestion`, ...); no code
   in this crate depends on either.
+- `arcanum-context` (no separate wiki page; documented here): the pure
+  context-packing crate (`cluster_sources`, `assemble`, `render`,
+  `resolve_query`, `ConversationRewriter`/`EnricherRewriter`). It depends
+  only on `arcanum-core`; `ContextService` is its sole consumer.
 
 ## Architecture
 
@@ -134,6 +138,33 @@ spawned `IngestionWorker` via `.with_resolver(...)`.
 The builder also carries `named_enrichers`/`additional_embedders`
 (`.named_enricher(...)`/`.additional_embedder(...)`) and
 `experiment_store`, all no-ops/absent by default (see Runtime Flows).
+
+### ContextService
+
+`ContextService` (`services/context.rs`) backs `POST /api/v1/context` and
+the MCP `get_context` tool. It holds the shared `RetrievalOrchestrator`,
+an `Arc<dyn ChunkMetadataStore>` registry, an optional
+`Arc<dyn ConversationRewriter>`, an `Arc<dyn TokenCounter>`, the
+`[context]` `ContextConfig`, and the same `AuthMiddleware`, `AuditLogger`
+and vector-store `CircuitBreaker` that `RetrievalService` uses.
+`ArcanumEngine.context` is an `Option<Arc<ContextService>>`: `build()`
+constructs it only when a `ChunkMetadataStore` is present, because
+passages are re-hydrated from the registry. `ContextService::assemble`
+returns `ContextError`, whose variants (`Invalid`, `Forbidden`,
+`Unavailable`, `Internal`) the REST and MCP layers map to their own
+status or error codes.
+
+`ArcanumEngineBuilder` gains two optional inputs,
+`token_counter(...)` (default `ApproxCl100kCounter`) and
+`conversation_rewriter(...)`. When no rewriter is supplied and an
+enricher is configured, `build()` wraps that enricher in an
+`EnricherRewriter` limited to `context.rewrite_max_messages`. The
+enricher passed there is the resolved one, so
+`enrichment.rewrite_query_provider` (routed through
+`EnrichmentDispatcher` as `EnrichIntent::RewriteQuery`) takes effect; an
+unknown provider name fails `build()` with a config error. With neither,
+`rewriter` is `None` and conversations fall back to the last user message
+(logged once at startup).
 
 ## Runtime Flows
 
@@ -230,9 +261,49 @@ The builder also carries `named_enrichers`/`additional_embedders`
    yields `None`, silently skipping shadow chunking. Lifecycle detail
    for `start`/`promote`/`abandon` belongs to [Evaluation](evaluation.md).
 
+### Assembling context (`ContextService::assemble`)
+
+1. `ContextRequest::validate` rejects a bad request (`ContextError::Invalid`).
+2. `AuthMiddleware::can_access_collection` guards the collection
+   (`Forbidden`); `vector_store_cb.allow_request()` guards the backend
+   (`Unavailable`).
+3. `resolve_query` turns `query` or `messages` into the retrieval query
+   and a `ResolvedQuerySource`.
+4. `RetrievalOrchestrator::retrieve_candidates` returns pre-fusion
+   `Candidates` (`top_k` is `candidate_k`, default
+   `context.default_candidate_k`). Empty `lists` returns `Unavailable`
+   (`retrieval unavailable`); it can mean every strategy failed or that no
+   strategy was active (for example a `QueryClassified` route to RAPTOR
+   with no RAPTOR retriever). A breaker failure is recorded only when a
+   `Vector` or `ColBert` strategy is among `failed`, so `get_context` does
+   not trip the breaker `search` shares for unrelated reasons. Non-empty
+   `lists` records success.
+5. `hydrate_sources` swaps each source chunk for its registry slice and
+   drops chunks the registry no longer knows.
+6. `arcanum_context::assemble` packs passages and background within
+   `token_budget` (default `context.default_token_budget`) and
+   `background_share` (default 0.2) using the `TokenCounter`.
+7. The service builds `RetrievalInfo` (queries, strategies that
+   returned, strategies that failed with reasons), writes a `context`
+   audit entry, and returns the `ContextResponse`.
+
 ## Key Decisions
 
 Newest first.
+
+### `ContextService` requires the chunk registry and is absent without one
+- **Decision**: `ArcanumEngine.context` is `Some` only when a
+  `ChunkMetadataStore` is configured; the REST route answers 503 and the
+  MCP tool returns an `isError` result when it is `None`.
+- **Context**: vector stores hold chunk text that may include an
+  enrichment prefix, while passages must be exact source slices with
+  byte offsets and document versions for citation.
+- **Alternatives rejected**: falling back to store text without offsets
+  (uncitable passages, no overlap merging); failing `build()` (the
+  registry is optional for search-only deployments).
+- **Consequences**: context is unavailable on deployments with no
+  `storage.database_url` and no builder-supplied registry.
+- **Ref**: 2026-10-02, commit 1ba0dd3.
 
 ### Enrichment routing and embedding parallelism/health wired into `build()`; `MonitoredEmbedder` sits inside the cache wrap
 - **Decision**: `.named_enricher(...)` plus `EnrichmentConfig`'s
@@ -496,6 +567,8 @@ Newest first.
 - `arcanum-engine/src/secret_store.rs`
 - `arcanum-engine/src/event_bus.rs`
 - `arcanum-engine/src/services/`
+- `arcanum-engine/src/services/context.rs`
+- `arcanum-context/` (crate)
 
 <!-- The drift contract: a PR changing files under these anchors updates this page
      or says why not in the PR body. -->

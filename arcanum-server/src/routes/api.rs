@@ -1,7 +1,8 @@
 use crate::routes::auth::validate_bearer;
 use arcanum_chunk_eval::{inspect, run_benchmark, BenchmarkJob, InspectRequest};
-use arcanum_core::types::{CollectionId, IngestionSubmission, OperationId, Query};
+use arcanum_core::types::{CollectionId, ContextRequest, IngestionSubmission, OperationId, Query};
 use arcanum_core::ArcanumError;
+use arcanum_engine::services::context::ContextError;
 use arcanum_engine::ArcanumEngine;
 use axum::{
     extract::{Json, Multipart, Path, Query as UrlQuery, State},
@@ -79,6 +80,62 @@ pub async fn search(
     };
     counter!("arcanum_requests_total", "endpoint" => "search", "status" => status).increment(1);
     histogram!("arcanum_request_duration_seconds", "endpoint" => "search").record(elapsed);
+    response
+}
+
+fn context_error_status(e: &ContextError) -> StatusCode {
+    match e {
+        ContextError::Invalid(_) => StatusCode::BAD_REQUEST,
+        ContextError::Forbidden(_) => StatusCode::FORBIDDEN,
+        ContextError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        ContextError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn context(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        match serde_json::from_value::<ContextRequest>(body) {
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response(),
+            Ok(req) => match eng.context.as_ref() {
+                None => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(serde_json::json!({ "error": "context requires a chunk registry" })),
+                )
+                    .into_response(),
+                Some(svc) => match svc.assemble(req, &claims).await {
+                    Ok(resp) => (StatusCode::OK, axum::Json(resp)).into_response(),
+                    Err(e) => (
+                        context_error_status(&e),
+                        axum::Json(serde_json::json!({ "error": e.to_string() })),
+                    )
+                        .into_response(),
+                },
+            },
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK {
+        "ok"
+    } else {
+        "error"
+    };
+    counter!("arcanum_requests_total", "endpoint" => "context", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "context").record(elapsed);
     response
 }
 
@@ -805,5 +862,31 @@ mod rate_limit_tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+}
+
+#[cfg(test)]
+mod context_status_tests {
+    use super::*;
+    use arcanum_engine::services::context::ContextError;
+
+    #[test]
+    fn context_error_status_maps_each_variant() {
+        assert_eq!(
+            context_error_status(&ContextError::Invalid("x".into())),
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            context_error_status(&ContextError::Forbidden("x".into())),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            context_error_status(&ContextError::Unavailable("x".into())),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(
+            context_error_status(&ContextError::Internal(ArcanumError::Storage("x".into()))),
+            StatusCode::INTERNAL_SERVER_ERROR
+        );
     }
 }

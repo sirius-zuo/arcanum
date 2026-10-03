@@ -14,6 +14,7 @@ pub enum EnrichIntent {
     ExtractEntities,
     Caption,
     Rerank,
+    RewriteQuery,
     Custom(String),
 }
 

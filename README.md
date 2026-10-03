@@ -16,7 +16,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Hexagonal architecture enforced at the type level**: every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer**: every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
 - **Compiled, not interpreted**: the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
-- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, and `eval_run` over JSON-RPC 2.0 directly; all four tools are implemented (see [MCP Integration](#mcp-integration)).
+- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, `eval_run`, and `get_context` over JSON-RPC 2.0 directly; all five tools are implemented (see [MCP Integration](#mcp-integration)).
 - **Three runtime modes**: `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
 
 ---
@@ -279,6 +279,110 @@ let engine = ArcanumEngine::builder()
 
 ---
 
+## Context API
+
+`POST /api/v1/context` (and the MCP `get_context` tool) turns a query or a conversation into prompt-ready context for your own LLM: passages that fit a token budget, each tagged with a citation id you can map back to a document version and byte range. Arcanum does not call a generator; you place the context in your prompt.
+
+Context needs the chunk registry (`storage.database_url`, or a `ChunkMetadataStore` supplied to the builder). Without one the endpoint returns `503`.
+
+### Request
+
+```bash
+curl -X POST /api/v1/context \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_id": "legal",
+    "query": "What is the notice period for termination?",
+    "token_budget": 3000,
+    "render": "xml"
+  }'
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `collection_id` | required | Collection to search; the caller must have access |
+| `query` | | A single question. Exactly one of `query` or `messages` is required |
+| `messages` | | Conversation as `[{"role": "user" \| "assistant", "content": "..."}]`; the last message must be from the user |
+| `token_budget` | `context.default_token_budget` (4000) | Upper bound on the tokens of the assembled context, minimum 200 |
+| `background_share` | `0.2` | Fraction of the budget reserved for background summaries, 0.0 to 1.0 |
+| `candidate_k` | `context.default_candidate_k` (50) | Candidates fetched per strategy, 1 to 200 |
+| `render` | none (MCP: `xml`) | `numbered`, `xml`, or `markdown`; omit to receive structured data only |
+
+With `messages`, a configured enricher rewrites the conversation into one standalone question. If there is no enricher, the rewrite fails, or the result is empty or over 1000 characters, Arcanum uses the last user message and reports `resolved_query_source: "fallback"`.
+
+### Response
+
+```json
+{
+  "resolved_query": "What is the notice period for termination?",
+  "resolved_query_source": "original",
+  "passages": [{
+    "ref_id": "P1",
+    "document_id": "...", "version_num": 2,
+    "source_uri": "file:///contracts/msa.pdf",
+    "snapshot_uri": "...", "canonical_uri": null,
+    "section": "14. Termination", "page": 9,
+    "offset_start": 40213, "offset_end": 40871,
+    "text": "Either party may terminate on 60 days' written notice ...",
+    "chunk_ids": ["..."], "strategies": ["vector", "bm25"],
+    "score": 0.031
+  }],
+  "background": [{ "ref_id": "S1", "text": "...", "level": 1, "document_id": "...", "covers": ["..."], "score": 0.016 }],
+  "usage": { "budget": 3000, "used": 912, "passages": 640, "background": 210, "dropped_passages": 3, "counter": "approx_cl100k" },
+  "retrieval": { "queries": ["..."], "strategies_ok": ["vector", "bm25"], "strategies_failed": [] },
+  "rendered": "<documents>...</documents>"
+}
+```
+
+- Passages are exact source slices (re-read from the chunk registry, without any enrichment prefix). Hits from different strategies that cover the same text are clustered, scored with reciprocal rank fusion, and packed best-first until the budget is spent. Overlapping or touching passages from one document are merged, then ordered by document and offset.
+- `ref_id` values (`P1`, `P2`, ... for passages and `S1`, `S2`, ... for RAPTOR background summaries) are stable within one response and appear in the rendered text, so a model can cite them and you can resolve them to `source_uri`, `version_num`, and the byte range.
+- `usage.used` counts the rendered output when `render` is set, using an approximate cl100k counter with a 10% safety margin. Treat it as an estimate for other tokenizers.
+- A strategy that fails or times out is listed in `retrieval.strategies_failed` and does not fail the request. The call returns `503` only if every strategy fails.
+- Errors: `400` invalid request, `403` no access to the collection, `503` circuit open, all strategies failed, or no chunk registry.
+
+### Render formats
+
+| `render` | Shape |
+|---|---|
+| `numbered` | `[P1] source_uri (v2)` header line, then the passage text; a `Background:` block with `[S1] ...` lines |
+| `xml` | `<documents><document source="..." version="2"><passage ref="P1">...</passage></document></documents>`, then `<background><summary ref="S1">...</summary></background>`; text is XML-escaped |
+| `markdown` | `### source_uri (v2)` per document with `[P1] text` paragraphs; a `#### Background` section |
+
+### Use it with your own LLM
+
+```python
+ctx = requests.post(f"{BASE}/api/v1/context", headers=auth, json={
+    "collection_id": "legal",
+    "messages": history,          # the conversation so far, last turn from the user
+    "token_budget": 3000,
+    "render": "xml",
+}).json()
+
+prompt = (
+    "Answer using only the context below and cite passages by ref, e.g. [P1].\n\n"
+    f"{ctx['rendered']}\n\nQuestion: {history[-1]['content']}"
+)
+answer = my_llm(prompt)
+# Map [P1] in the answer back to ctx["passages"][0]["source_uri"] and its offsets.
+```
+
+Pick `token_budget` as the room your prompt has left after the system prompt, the conversation, and the answer you want back.
+
+### Configuration
+
+```toml
+[context]
+default_token_budget = 4000   # used when a request omits token_budget
+default_candidate_k  = 50     # candidates per strategy when a request omits candidate_k
+rewrite_max_messages = 6      # most recent messages sent to the query rewriter
+
+[enrichment]
+rewrite_query_provider = "ollama-small"   # optional: route rewriting to a named enricher
+```
+
+---
+
 ## Chunk Strategy Evaluation (`arcanum-chunk-eval`)
 
 Three tools for measuring and improving chunking quality before committing to a strategy in production.
@@ -503,6 +607,7 @@ Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`) plus a minimal standal
 | `ingest` | `source_uri`, `collection_id`, `pipeline` | Implemented; returns an `operation_id` for tracking |
 | `list_collections` | — | Implemented; returns collections visible to the caller, ACL-filtered |
 | `eval_run` | `collection_id` | Implemented; params: `collection_id`, `samples[{query, relevant_chunk_ids}]`, `k` (default 5, max 100) |
+| `get_context` | `collection_id`, `query` or `messages`, optional `token_budget`, `background_share`, `candidate_k`, `render` | Implemented; returns the rendered context (default `xml`) as text plus the full response as `structuredContent`; needs a chunk registry (see [Context API](#context-api)) |
 
 Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request: no shared session, no bypass.
 
@@ -565,6 +670,11 @@ vector_backend   = "lancedb"
 graph_enabled    = true
 tree_enabled     = true
 
+[context]
+default_token_budget = 4000
+default_candidate_k  = 50
+rewrite_max_messages = 6
+
 [admin]
 portal_enabled                    = true
 audit_retention_days              = 90
@@ -593,6 +703,7 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 | `arcanum-pipeline` | DAG stage runner and built-in pipeline templates |
 | `arcanum-evidence` | `DefaultEvidenceResolver`: resolves chunks/tree nodes/entities/relations back to source documents |
 | `arcanum-retrieval` | Multi-strategy orchestrator and all Retriever impls |
+| `arcanum-context` | Context API packing: span-level clustering, token-budgeted selection, numbered/xml/markdown rendering, conversation rewriting |
 | `arcanum-eval` | Quality metrics, golden datasets, scheduled evaluation |
 | `arcanum-chunk-eval` | Chunk inspect API, offline benchmark harness, shadow experiment evaluation |
 | `arcanum-engine` | `ArcanumEngine` builder: wires the full system |

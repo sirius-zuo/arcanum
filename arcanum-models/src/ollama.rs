@@ -129,6 +129,29 @@ pub fn build_prompt_for_enricher(req: &EnrichRequest) -> String {
              Return only the number. Passage: {}",
             req.text
         ),
+        EnrichIntent::RewriteQuery => format!(
+            "Rewrite the final user message in the conversation below as a single standalone question. \
+Resolve pronouns and references using the earlier messages. Return only the question as plain text, with no preamble.\n\n\
+Conversation:\n{}\n\nStandalone question:",
+            req.text
+        ),
         EnrichIntent::Custom(prompt_prefix) => format!("{}\n{}", prompt_prefix, req.text),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewrite_query_prompt_wraps_conversation() {
+        let p = build_prompt_for_enricher(&EnrichRequest {
+            text: "User: hi".into(),
+            intent: EnrichIntent::RewriteQuery,
+            context: None,
+        });
+        assert_eq!(p, "Rewrite the final user message in the conversation below as a single standalone question. \
+Resolve pronouns and references using the earlier messages. Return only the question as plain text, with no preamble.\n\n\
+Conversation:\nUser: hi\n\nStandalone question:");
     }
 }
