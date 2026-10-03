@@ -8,6 +8,8 @@ info:
     (`POST /api/v1/ingestion-operations`), durable query by id and by
     idempotency key, and idempotent collection/source removal. The legacy
     `/ingest` and `/upload` routes are preserved for a deprecation window.
+    `POST /api/v1/context` assembles a token-budgeted, citable context
+    package (passages plus background summaries) for a query or conversation.
 
     All routes require a Bearer API key (`Authorization: Bearer <token>`).
     Durable operation state is the system of record; WebSocket events are a
@@ -218,6 +220,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorBody'
 
+  /api/v1/context:
+    post:
+      summary: Assemble a token-budgeted context package
+      description: |
+        Retrieves candidates for the query (or the last user message of a
+        conversation, rewritten into a standalone query), then packs, merges
+        and numbers passages and background summaries within the token budget.
+        Exactly one of `query` or `messages` is required. `ref_id` values are
+        valid only within one response; verify traces through `chunk_ids`.
+        Requires a chunk registry, otherwise 503.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ContextRequest'
+      responses:
+        '200':
+          description: The assembled context.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContextResponse'
+        '400':
+          description: Malformed body or failed validation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller cannot access the collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: Context assembly is unavailable (no chunk registry configured).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
   # ── Legacy routes preserved during the deprecation window ────────────────
   /api/v1/ingest:
     post:
@@ -369,6 +415,173 @@ components:
           description: Link to the durable operation resource.
           example: /api/v1/ingestion-operations/3fa85f64-5717-4562-b3fc-2c963f66afa6
       required: [operation_id, status, resource]
+    ContextMessage:
+      type: object
+      properties:
+        role:
+          type: string
+          enum: [user, assistant]
+        content:
+          type: string
+      required: [role, content]
+    ContextRequest:
+      type: object
+      properties:
+        collection_id:
+          type: string
+        query:
+          type: string
+          description: Exactly one of query or messages.
+        messages:
+          type: array
+          minItems: 1
+          description: Conversation history. The last message must have role user.
+          items:
+            $ref: '#/components/schemas/ContextMessage'
+        token_budget:
+          type: integer
+          minimum: 200
+          description: Total token budget. Defaults from config (4000).
+        background_share:
+          type: number
+          minimum: 0.0
+          maximum: 1.0
+          default: 0.2
+          description: Share of the budget for background summaries. 0 disables them.
+        candidate_k:
+          type: integer
+          minimum: 1
+          maximum: 200
+          description: Candidates per strategy. Defaults from config (50).
+        render:
+          type: string
+          enum: [numbered, xml, markdown]
+          description: When set, the response includes a rendered string.
+      required: [collection_id]
+    ContextPassage:
+      type: object
+      properties:
+        ref_id:
+          type: string
+          example: P1
+        document_id:
+          type: string
+        version_num:
+          type: integer
+        source_uri:
+          type: string
+        snapshot_uri:
+          type: string
+        canonical_uri:
+          type: string
+          nullable: true
+        section:
+          type: string
+          nullable: true
+        page:
+          type: integer
+          nullable: true
+        offset_start:
+          type: integer
+        offset_end:
+          type: integer
+        text:
+          type: string
+        chunk_ids:
+          type: array
+          items:
+            type: string
+        strategies:
+          type: array
+          items:
+            type: string
+            example: vector
+        score:
+          type: number
+      required: [ref_id, document_id, version_num, source_uri, offset_start, offset_end, text, chunk_ids, strategies, score]
+    ContextBackground:
+      type: object
+      description: A background summary. Not citable.
+      properties:
+        ref_id:
+          type: string
+          example: S1
+        text:
+          type: string
+        level:
+          type: integer
+        document_id:
+          type: string
+        covers:
+          type: array
+          items:
+            type: string
+        score:
+          type: number
+      required: [ref_id, text, level, document_id, covers, score]
+    ContextUsage:
+      type: object
+      properties:
+        budget:
+          type: integer
+        used:
+          type: integer
+        passages:
+          type: integer
+        background:
+          type: integer
+        dropped_passages:
+          type: integer
+        counter:
+          type: string
+          example: approx_cl100k
+      required: [budget, used, passages, background, dropped_passages, counter]
+    ContextRetrieval:
+      type: object
+      properties:
+        queries:
+          type: array
+          items:
+            type: string
+        strategies_ok:
+          type: array
+          items:
+            type: string
+        strategies_failed:
+          type: array
+          items:
+            type: object
+            properties:
+              strategy:
+                type: string
+              reason:
+                type: string
+            required: [strategy, reason]
+      required: [queries, strategies_ok, strategies_failed]
+    ContextResponse:
+      type: object
+      properties:
+        resolved_query:
+          type: string
+        resolved_query_source:
+          type: string
+          enum: [original, rewritten, fallback]
+        passages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextPassage'
+        background:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContextBackground'
+        usage:
+          $ref: '#/components/schemas/ContextUsage'
+        retrieval:
+          $ref: '#/components/schemas/ContextRetrieval'
+        rendered:
+          type: string
+          description: Present only when render was requested.
+      required: [resolved_query, resolved_query_source, passages, background, usage, retrieval]
     ErrorBody:
       type: object
       properties:

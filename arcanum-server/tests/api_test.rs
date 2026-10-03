@@ -41,6 +41,16 @@ async fn test_search_requires_auth() {
 }
 
 #[tokio::test]
+async fn test_context_requires_auth() {
+    let status = post_json(
+        "/api/v1/context",
+        serde_json::json!({ "collection_id": "docs", "query": "test" }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
 async fn test_ws_route_exists() {
     // Without upgrade headers → 400, not 404.
     let status = get("/ws/events").await;

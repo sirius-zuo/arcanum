@@ -41,6 +41,7 @@ pub fn build_app_with_config(engine: Option<Arc<ArcanumEngine>>, config: Arcanum
         .route("/ready", get(health::readiness))
         .route("/metrics", get(route_metrics::get_metrics))
         .route("/api/v1/search", post(api::search))
+        .route("/api/v1/context", post(api::context))
         .route("/api/v1/ingest", post(api::ingest))
         .route("/api/v1/graph", get(graph::get_graph))
         // Durable ingestion operations (Plan 05 Task 4). The multipart body
