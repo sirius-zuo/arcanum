@@ -8,7 +8,20 @@ use arcanum_core::types::{
 use atlas::engine_setup::COLLECTION;
 use atlas::{build_state, AtlasState, ModelDeps, Settings};
 use std::sync::Arc;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
+
+/// All integration tests share one process, so they share one environment.
+/// `build_state` calls `std::env::set_var("ARCANUM_METRICS_TOKEN", ..)` and
+/// `settings_from_env_defaults` calls `remove_var` on the variables `Settings::from_env`
+/// reads. No test asserts on `ARCANUM_METRICS_TOKEN`, but concurrent setenv/unsetenv is
+/// unsound, so every env-touching test (and `test_state`) holds this lock around it.
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Takes `ENV_LOCK`, ignoring poisoning (a panicking test must not fail the others).
+pub fn env_guard() -> MutexGuard<'static, ()> {
+    ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// Deterministic, offline embedder: a byte-sum histogram over 8 dimensions.
 pub struct FakeEmbedder;
@@ -52,11 +65,15 @@ pub fn models() -> ModelDeps {
 }
 
 /// An offline state over a fresh temp data dir. Keep the `TempDir` alive for the test.
+#[allow(clippy::await_holding_lock)]
 pub async fn test_state() -> (Arc<AtlasState>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let state = build_state(Settings::for_tests(dir.path().join("data")), models())
-        .await
-        .unwrap();
+    let state = {
+        let _env = env_guard();
+        build_state(Settings::for_tests(dir.path().join("data")), models())
+            .await
+            .unwrap()
+    };
     (Arc::new(state), dir)
 }
 

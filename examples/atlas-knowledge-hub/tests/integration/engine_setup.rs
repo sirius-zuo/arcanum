@@ -1,10 +1,10 @@
-mod common;
-
+use crate::common::{env_guard, models};
 use atlas::{build_state, Settings};
-use common::models;
 
+#[allow(clippy::await_holding_lock)]
 #[tokio::test]
 async fn build_state_wires_every_service() {
+    let _env = env_guard();
     let dir = tempfile::tempdir().unwrap();
     let data = dir.path().join("data");
     let state = build_state(Settings::for_tests(data.clone()), models())
@@ -57,6 +57,7 @@ async fn build_state_wires_every_service() {
 
 #[test]
 fn settings_from_env_defaults() {
+    let _env = env_guard();
     for k in [
         "PORT",
         "MCP_PORT",

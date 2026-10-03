@@ -1,5 +1,3 @@
-mod common;
-
 use atlas::demo::{demo_router, OllamaProbe};
 use atlas::samples::load_manifest;
 use axum::body::Body;
@@ -20,7 +18,7 @@ impl OllamaProbe for FakeProbe {
 }
 
 async fn app(probe: Result<Vec<String>, String>) -> (Router, tempfile::TempDir) {
-    let (state, dir) = common::test_state().await;
+    let (state, dir) = crate::common::test_state().await;
     let manifest = load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("samples")).unwrap();
     let router = demo_router(state, Arc::new(manifest), Arc::new(FakeProbe(probe)));
     (router, dir)

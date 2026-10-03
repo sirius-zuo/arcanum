@@ -1,12 +1,10 @@
-mod common;
-
+use crate::common::{ingest_and_wait, test_state};
 use arcanum_core::types::ChunkBackend;
 use atlas::demo::{demo_router, OllamaProbe};
 use atlas::samples::load_manifest;
 use atlas::AtlasState;
 use axum::body::Body;
 use axum::Router;
-use common::{ingest_and_wait, test_state};
 use http::{Request, StatusCode};
 use serde_json::Value;
 use std::path::Path;
