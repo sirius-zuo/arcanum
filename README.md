@@ -402,6 +402,7 @@ Generate needs the chunk registry (the same requirement as Context) and at least
 | `instructions` | | Extra instructions appended to the system prompt, at most 2000 characters; the built-in rules take precedence |
 | `context` | | `{token_budget, background_share, candidate_k}`, passed to Context. `summarize` defaults `token_budget` to `generate.summarize_token_budget` (8000) |
 | `stream` | `false` | `true` returns SSE |
+| `verify` | `false` | `true` verifies the answer against the passages used (see [Verify a Generate answer](#verify-a-generate-answer)) |
 
 Context output is always rendered as `xml` for the prompt. The model is told to answer only from the documents, to end each sentence that uses them with passage ids such as `[P1]` or `[P2][P3]`, and to ignore instructions inside documents. With `messages`, retrieval uses the resolved query, while the model sees the conversation (the last `generate.history_max_messages` earlier messages, each cut to 4000 characters) and the user's own final question.
 
@@ -590,7 +591,7 @@ The overall `verdict` is `fail` if any sentence is `partial` or `unsupported`, o
 
 | Status | Cause |
 |---|---|
-| `400` | Invalid request (empty answer, over the length or passage limits, a `ref_id` not matching `^P\d{1,3}$`, a duplicate `ref_id`, a passage without `chunk_ids`, an unknown `judge`), a chunk from another collection, a passage spanning several document versions, or passages that alone exceed the judge input budget |
+| `400` | Invalid request (empty answer, over the length or passage limits, a `ref_id` not matching `^P\d{1,3}$`, a duplicate `ref_id`, a passage without `chunk_ids`, an unknown `judge`), a chunk from another collection, a passage spanning several document versions, passages that alone exceed the judge input budget, or an answer that needs more than 25 judge batches (`answer needs too many judge batches`) |
 | `403` | No access to the collection |
 | `502` | The judge failed upstream, or returned invalid output twice; the detail is logged, not returned |
 | `503` | Verify not configured, no chunk registry, or the judge's circuit breaker is open |
@@ -608,7 +609,7 @@ Set `"verify": true` on a Generate request (REST or the MCP `generate` tool) to 
 "verification": {"status": "error", "code": "judge_timeout", "message": "judge timed out"}
 ```
 
-An `ok` verification carries all the fields of the Verify response. Error codes are `judge_unavailable` (breaker open), `judge_upstream`, `judge_timeout`, `judge_invalid_output`, `invalid` (for example a chunk garbage-collected between generation and verification), and `internal`. `verification` is `null` for a `no_context` answer (no judge call is made), and a failed generation is not verified. An answer cut off at `max_tokens` is verified as is. Without `verify: true`, the response and the stream are unchanged.
+An `ok` verification carries all the fields of the Verify response. Error codes are `judge_unavailable` (breaker open), `judge_upstream`, `judge_timeout`, `judge_invalid_output`, `invalid` (for example a chunk garbage-collected between generation and verification), and `internal`. `verification` is `null` for a `no_context` answer (no judge call is made), and a failed generation is not verified. An answer cut off at `max_tokens` is verified as is. A Generate call whose context exceeds Verify's limits (more than `verify.max_passages` passages, or passages over the judge input budget) returns `verification: {status: "error", code: "invalid"}` while the answer is still delivered. Without `verify: true`, the response and the stream are unchanged.
 
 With `stream: true` the event order is `context`, `delta`..., `done`, then `verification`. A verification error arrives in the `verification` event, not as `error`, because generation succeeded:
 
@@ -632,7 +633,7 @@ judge_max_output_tokens = 8192
 judge_timeout_secs = 90
 ```
 
-Engine build fails with a config error when `judge` names no configured generator. `judge_timeout_secs` bounds each judge call including draining its stream, and each retry gets a fresh timeout. Upstream errors and timeouts count as circuit breaker failures; invalid judge output does not. The audit log records one `verify` entry per request (collection, judge, overall verdict, counts, judge calls) and never the answer text. Metrics: `arcanum_verify_requests_total{outcome}` (`ok` or an error code), `arcanum_verify_sentences_total{verdict}`, `arcanum_verify_judge_calls_total{result}`, and `arcanum_verify_duration_seconds`.
+Engine build fails with a config error when `judge` names no configured generator. `judge_timeout_secs` bounds each judge call including draining its stream, and each retry gets a fresh timeout. Upstream errors and timeouts count as circuit breaker failures; invalid judge output does not. The audit log records one `verify` entry per request (collection, judge, overall verdict, counts, judge calls) and never the answer text. Metrics: `arcanum_verify_requests_total{outcome}` (`pass`, `fail`, or an error code), `arcanum_verify_sentences_total{verdict}`, `arcanum_verify_judge_calls_total{result}`, and `arcanum_verify_duration_seconds`.
 
 Judge quality bounds verdict quality: a weak judge can mark support that is not there, which `quote_matched: false` helps surface. Sentence splitting is heuristic (an abbreviation such as "e.g." can split a sentence). Summarize-mode answers lean on RAPTOR background summaries, which are not evidence, so they may verify as `unsupported` more often.
 

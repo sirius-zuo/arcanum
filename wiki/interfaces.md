@@ -187,7 +187,7 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    `validate_bearer`, this path does not consult `engine.rate_limiter`
    (see Implementation Notes).
 4. `dispatch_tool` then matches `request["params"]["name"]` against all
-   seven registered tools (`"get_context"` is Runtime Flow 4, `"generate"` and `"verify"` Runtime Flow 5). `"search"`/`"ingest"` build a `Query`/
+   seven registered tools (`"get_context"` is Runtime Flow 4, `"generate"` Runtime Flow 5, `"verify"` Runtime Flow 6). `"search"`/`"ingest"` build a `Query`/
    `IngestRequest` and call `engine.retrieval.search`/
    `engine.ingestion.ingest`. `"list_collections"` calls
    `engine.version_store.list_collections()` and filters the result

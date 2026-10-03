@@ -75,7 +75,8 @@ composes:
   only on `arcanum-core`; `ContextService` is its sole consumer.
 - `arcanum-verify` (no separate wiki page; documented here): the pure
   Verify logic crate (see Architecture). It depends on `arcanum-core`,
-  `arcanum-context` (the `xml` passage rendering and `TokenCounter` use)
+  `arcanum-context` (the `xml` passage rendering; `TokenCounter` is in
+  `arcanum-core`)
   and `arcanum-generate` (`scan_markers`); `VerifyService` is its sole
   consumer.
 
@@ -214,7 +215,7 @@ MCP `verify` tool, and Generate's `verify` option. It holds the
 `Arc<HashMap<String, GeneratorEntry>>`, a `TokenCounter`, the `[verify]`
 `VerifyConfig`, `AuthMiddleware` and `AuditLogger`. `ArcanumEngine.verify`
 is an `Option<Arc<VerifyService>>`, built only when `verify.judge` is set
-and a chunk registry exists (a judge without a registry logs a warning and
+and a chunk registry exists (a judge without a registry logs at info level and
 disables Verify). `build()` fails with a config error when `verify.judge`
 names no generator or a numeric limit is zero. `VerifyError` (`Invalid`,
 `Forbidden`, `Unavailable`, `Upstream`, `InvalidOutput`, `Timeout`,
@@ -405,7 +406,7 @@ reports usage, and writes a `generate` audit entry.
    computes `pass` or `fail` from the counts and `strict_citations`.
 7. The service records `arcanum_verify_requests_total{outcome}`,
    `arcanum_verify_sentences_total{verdict}`,
-   `arcanum_verify_judge_calls_total{result}` (`ok`, `invalid`, `upstream`,
+   `arcanum_verify_judge_calls_total{result}` (`ok`, `invalid`, `upstream_error`,
    `timeout`) and `arcanum_verify_duration_seconds`, and writes one
    `verify` audit entry (collection, judge, verdict, counts, judge calls;
    never the answer text).
