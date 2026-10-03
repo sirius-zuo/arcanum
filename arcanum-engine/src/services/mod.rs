@@ -9,3 +9,4 @@ pub mod retrieval;
 pub mod source;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod verify;
