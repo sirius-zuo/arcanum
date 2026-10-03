@@ -9,7 +9,7 @@ wiring `arcanum-middleware`'s circuit breakers and queue, assembling
 `arcanum-pipeline`'s `PipelineDeps` and spawning its `IngestionWorker`
 pool, building `arcanum-retrieval`'s `RetrievalOrchestrator`, and
 constructing every service (`IngestionService`, `RetrievalService`,
-`ContextService`, `GenerateService`, `CollectionService`, `ExperimentService`, `EvalService`,
+`ContextService`, `GenerateService`, `VerifyService`, `CollectionService`, `ExperimentService`, `EvalService`,
 `IngestionSourceService`, `AdminService`) plus the cross-cutting
 concerns (`AuthMiddleware`, `AuditLogger`, `EventBus`, `SecretStore`)
 that those services and the HTTP/MCP layer share. It exists as its own
@@ -73,6 +73,12 @@ composes:
   context-packing crate (`cluster_sources`, `assemble`, `render`,
   `resolve_query`, `ConversationRewriter`/`EnricherRewriter`). It depends
   only on `arcanum-core`; `ContextService` is its sole consumer.
+- `arcanum-verify` (no separate wiki page; documented here): the pure
+  Verify logic crate (see Architecture). It depends on `arcanum-core`,
+  `arcanum-context` (the `xml` passage rendering; `TokenCounter` is in
+  `arcanum-core`)
+  and `arcanum-generate` (`scan_markers`); `VerifyService` is its sole
+  consumer.
 
 ## Architecture
 
@@ -184,6 +190,39 @@ names none of them. Prompt building and citation parsing live in the pure
 `arcanum-generate` crate (`build_prompt`, `parse_citations`), which depends
 only on `arcanum-core`. `GenerateError` (`Invalid`, `Forbidden`,
 `Unavailable`, `Upstream`, `Timeout`, `Internal`) mirrors `ContextError`.
+
+### VerifyService
+
+`arcanum-verify` holds the pure logic, one module per step: `segment`
+(`segment` splits an answer into `Unit`s on Unicode sentence boundaries
+and newlines, attaches trailing marker groups, and keeps fenced code
+blocks as single `no_claim` units), `attribute` (`attribute` assigns the
+marker groups found by `arcanum_generate::scan_markers` to sentences and
+splits ids into `cited` and `invalid_refs`), `hydrate` (`join_chunks`
+orders a passage's chunks by offset and joins them without double
+counting overlap, rejecting mixed document versions), `judge` (the system
+prompt, `user_message`, `retry_message`, and `parse_judge_output`, which
+strips one code fence and enforces the validity rules), `batch`
+(`plan_batches`, token- and count-limited, with `PassagesOverBudget`),
+`quote` (`locate`: exact, then whitespace-collapsed match, mapped back to
+byte offsets), `verdict` (`sentence_verdict`, `overall`) and `response`
+(`build_sentences`, which turns judged claims into `SentenceResult`s with
+located `Evidence`).
+
+`VerifyService` (`services/verify.rs`) backs `POST /api/v1/verify`, the
+MCP `verify` tool, and Generate's `verify` option. It holds the
+`ChunkMetadataStore` registry, the `DocumentVersionStore`, the shared
+`Arc<HashMap<String, GeneratorEntry>>`, a `TokenCounter`, the `[verify]`
+`VerifyConfig`, `AuthMiddleware` and `AuditLogger`. `ArcanumEngine.verify`
+is an `Option<Arc<VerifyService>>`, built only when `verify.judge` is set
+and a chunk registry exists (a judge without a registry logs at info level and
+disables Verify). `build()` fails with a config error when `verify.judge`
+names no generator or a numeric limit is zero. `VerifyError` (`Invalid`,
+`Forbidden`, `Unavailable`, `Upstream`, `InvalidOutput`, `Timeout`,
+`Internal`) maps to the REST statuses 400, 403, 503, 502, 502, 504, 500,
+and `VerifyError::code()` gives the wire codes (`invalid`, `forbidden`,
+`judge_unavailable`, `judge_upstream`, `judge_invalid_output`,
+`judge_timeout`, `internal`) that Generate puts in a `verification` error.
 
 ## Runtime Flows
 
@@ -340,9 +379,83 @@ status}` (`ok`, `no_context`, `error`, `timeout`), records
 `arcanum_generation_tokens_total{generator, kind}` when the provider
 reports usage, and writes a `generate` audit entry.
 
+### Verifying an answer (`VerifyService::verify`)
+
+1. `VerifyRequest::validate` against the config limits (`Invalid`), then
+   `can_access_collection` (`Forbidden`), then the judge is resolved
+   (`request.judge`, else `verify.judge`; an unknown name is `Invalid`).
+2. Each passage's chunks are read from the registry. A chunk of another
+   collection or a passage over several document versions is `Invalid`; a
+   missing chunk makes the whole passage unavailable. `join_chunks` builds
+   the passage text and `version_status` comes from `DocumentVersionStore`.
+   With no available passage (or no claim unit) the judge is skipped and
+   every non-code unit is `unsupported`.
+3. `segment` and `attribute` produce the units and their `cited` and
+   `invalid_refs`; `plan_batches` splits the claim units (`Invalid` when
+   the passages alone exceed `max_judge_input_tokens`).
+4. The judge breaker is checked once (`Unavailable` when open). Batches run
+   concurrently, four at a time, each as a `Generator::stream` call at
+   temperature 0 under `judge_timeout_secs`, with the stream drained into
+   a string.
+5. `parse_judge_output` validates each reply. An invalid one is retried
+   once with the validation error and previous output appended; a second
+   failure is `InvalidOutput`. Upstream errors and timeouts record breaker
+   failures and become `Upstream` and `Timeout`; invalid output does not
+   touch the breaker. Any failed batch fails the request.
+6. `build_sentences` derives verdicts, locates quotes, and `overall`
+   computes `pass` or `fail` from the counts and `strict_citations`.
+7. The service records `arcanum_verify_requests_total{outcome}`,
+   `arcanum_verify_sentences_total{verdict}`,
+   `arcanum_verify_judge_calls_total{result}` (`ok`, `invalid`, `upstream_error`,
+   `timeout`) and `arcanum_verify_duration_seconds`, and writes one
+   `verify` audit entry (collection, judge, verdict, counts, judge calls;
+   never the answer text).
+
+**Generate integration.** `GenerateService` holds the `Option<Arc<
+VerifyService>>`. With `verify: true` and none configured, `generate_stream`
+returns `Unavailable` with `VERIFY_UNAVAILABLE` before Context runs. After
+`Done` of a real generation the `Run` state machine enters a `Verify`
+phase: it builds a `VerifyRequest` from the response's own passages
+(`ref_id` and `chunk_ids`), the default judge and non-strict citations,
+calls `VerifyService::verify` under the caller's claims, and emits
+`GenerateEvent::Verification` carrying `Verification::Ok` or
+`Verification::Error { code, message }`. A `no_context` run emits
+`Verification(None)` without a judge call; a generation error ends the
+stream without verifying.
+
 ## Key Decisions
 
 Newest first.
+
+### Verify reuses Generate's generators and breakers through one shared map
+- **Decision**: `build()` resolves the generators once into an
+  `Arc<HashMap<String, GeneratorEntry>>` handed to both `GenerateService`
+  and `VerifyService`; the judge is a named generator, not a separate
+  provider config.
+- **Context**: Verify needs an LLM client with timeouts and a circuit
+  breaker, and Generate already had both behind a private map.
+- **Alternatives rejected**: a separate `[verify]` provider block
+  (duplicates credentials and breakers); a Verify-owned breaker (a downed
+  upstream would trip one service but not the other).
+- **Consequences**: Generate and Verify trip together when their upstream
+  is down, and `verify.judge` must name a `[generate.generators.*]` entry
+  or `build()` fails.
+- **Ref**: 2026-10-03, commit c2042d3.
+
+### A verification failure never fails the generation
+- **Decision**: Generate runs Verify after the answer is complete and
+  reports its failure inside `verification` (`status: "error"` with a code)
+  rather than as a Generate error; in SSE it is one more event after
+  `done`.
+- **Context**: the answer is already produced and paid for, and a judge
+  outage should not discard it.
+- **Alternatives rejected**: failing the request (loses a good answer);
+  holding streamed text until the verdict (adds latency and server
+  buffering).
+- **Consequences**: in SSE the text reaches the client before the verdict,
+  so a gating caller must buffer it and treat `status: "error"` as a
+  failure; this is documented in the README's Verify API section.
+- **Ref**: 2026-10-03, commit 68378bf.
 
 ### `GenerateService` serves `no_context` before the generator breaker, and calls the generator lazily
 - **Decision**: validation, then Context, then the `no_context`
@@ -639,7 +752,9 @@ Newest first.
 - `arcanum-engine/src/services/`
 - `arcanum-engine/src/services/context.rs`
 - `arcanum-engine/src/services/generate.rs`
+- `arcanum-engine/src/services/verify.rs`
 - `arcanum-generate/` (crate)
+- `arcanum-verify/` (crate)
 - `arcanum-context/` (crate)
 
 <!-- The drift contract: a PR changing files under these anchors updates this page

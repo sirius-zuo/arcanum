@@ -18,6 +18,7 @@ members = [
     "arcanum-evidence",
     "arcanum-context",
     "arcanum-generate",
+    "arcanum-verify",
 ]
 exclude = ["examples"]
 resolver = "2"

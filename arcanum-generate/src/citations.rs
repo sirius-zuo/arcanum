@@ -21,15 +21,31 @@ fn id_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"[PS]\d{1,3}").expect("valid regex"))
 }
 
+/// Scans for citation markers in the answer string and returns the byte span
+/// and IDs for each marker group. Duplicates are preserved in the ID list.
+pub fn scan_markers(answer: &str) -> Vec<((usize, usize), Vec<String>)> {
+    let mut result = Vec::new();
+
+    for group in group_re().find_iter(answer) {
+        let span = (group.start(), group.end());
+        let ids: Vec<String> = id_re()
+            .find_iter(group.as_str())
+            .map(|m| m.as_str().into())
+            .collect();
+        result.push((span, ids));
+    }
+
+    result
+}
+
 /// Maps inline `[P1]` / `[P2, P3]` markers back to passages. Spans are byte
 /// ranges of the whole marker group; the answer is never modified.
 pub fn parse_citations(answer: &str, passages: &[Passage]) -> ParsedCitations {
     let mut citations: Vec<Citation> = Vec::new();
     let mut unknown_refs: Vec<String> = Vec::new();
 
-    for group in group_re().find_iter(answer) {
-        let span = (group.start(), group.end());
-        for id in id_re().find_iter(group.as_str()).map(|m| m.as_str()) {
+    for (span, ids) in scan_markers(answer) {
+        for id in ids {
             if let Some(existing) = citations.iter_mut().find(|c| c.ref_id == id) {
                 existing.answer_spans.push(span);
             } else if let Some(p) = passages.iter().find(|p| p.ref_id == id) {
@@ -43,8 +59,8 @@ pub fn parse_citations(answer: &str, passages: &[Passage]) -> ParsedCitations {
                     offset_end: p.offset_end,
                     answer_spans: vec![span],
                 });
-            } else if !unknown_refs.iter().any(|r| r == id) {
-                unknown_refs.push(id.to_string());
+            } else if !unknown_refs.iter().any(|r| r == &id) {
+                unknown_refs.push(id);
             }
         }
     }
@@ -133,5 +149,18 @@ mod tests {
         let p = parse_citations("[p1] [P1-P3] [Source 1] [P1234]", &[passage("P1", 1)]);
         assert!(p.citations.is_empty());
         assert!(p.unknown_refs.is_empty());
+    }
+
+    #[test]
+    fn scan_markers_returns_group_spans_and_ids() {
+        assert_eq!(
+            scan_markers("a [P1, S2] b [P3] [P1,P1]"),
+            vec![
+                ((2, 10), vec!["P1".into(), "S2".into()]),
+                ((13, 17), vec!["P3".into()]),
+                ((18, 25), vec!["P1".into(), "P1".into()])
+            ]
+        );
+        assert!(scan_markers("no markers [X1]").is_empty());
     }
 }

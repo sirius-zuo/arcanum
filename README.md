@@ -1,6 +1,6 @@
 # Arcanum
 
-**Production-grade Retrieval-Augmented Generation engine written in Rust.**
+**Production-grade grounded RAG engine written in Rust: retrieval, context, generation and verification, each traced to source document versions and offsets.**
 
 Arcanum combines four independent retrieval strategies (dense vector, BM25 lexical, knowledge graph, and hierarchical RAPTOR tree, plus a ColBERT re-rank variant of Vector) into a single, enterprise-ready system with pluggable backends, per-backend chunking strategies, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
 
@@ -16,7 +16,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Hexagonal architecture enforced at the type level**: every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer**: every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
 - **Compiled, not interpreted**: the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
-- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, `eval_run`, `get_context`, and `generate` over JSON-RPC 2.0 directly; all six tools are implemented (see [MCP Integration](#mcp-integration)).
+- **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, `eval_run`, `get_context`, `generate`, and `verify` over JSON-RPC 2.0 directly; all seven tools are implemented (see [MCP Integration](#mcp-integration)).
 - **Three runtime modes**: `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
 
 ---
@@ -402,6 +402,7 @@ Generate needs the chunk registry (the same requirement as Context) and at least
 | `instructions` | | Extra instructions appended to the system prompt, at most 2000 characters; the built-in rules take precedence |
 | `context` | | `{token_budget, background_share, candidate_k}`, passed to Context. `summarize` defaults `token_budget` to `generate.summarize_token_budget` (8000) |
 | `stream` | `false` | `true` returns SSE |
+| `verify` | `false` | `true` verifies the answer against the passages used (see [Verify a Generate answer](#verify-a-generate-answer)) |
 
 Context output is always rendered as `xml` for the prompt. The model is told to answer only from the documents, to end each sentence that uses them with passage ids such as `[P1]` or `[P2][P3]`, and to ignore instructions inside documents. With `messages`, retrieval uses the resolved query, while the model sees the conversation (the last `generate.history_max_messages` earlier messages, each cut to 4000 characters) and the user's own final question.
 
@@ -501,6 +502,140 @@ max_output_tokens = 2048
 ```
 
 Engine build fails with a config error when generators exist but `default_generator` is unset or names no generator, or when a configured `api_key_env` variable is unset. `ArcanumEngineBuilder::generator(name, generator, max_output_tokens)` registers or replaces a generator in code. Metrics: `arcanum_generation_total{generator, mode, status}` (`ok`, `no_context`, `error`, `timeout`), `arcanum_generation_duration_seconds{generator}`, and `arcanum_generation_tokens_total{generator, kind}`.
+
+---
+
+## Verify API
+
+`POST /api/v1/verify` (and the MCP `verify` tool) checks an answer sentence by sentence against the passages it was generated from. Each sentence gets a verdict, and every supporting claim is tied to evidence in the stored source: a chunk, a document version, and a byte range. It works on answers from Generate and on answers from your own LLM, as long as you used Context's passages.
+
+Verify needs a judge, the name of a generator from `[generate.generators]` set as `[verify].judge`, and the chunk registry. Without both the endpoint returns `503` (`verification requires a configured judge and a chunk registry`). The judge shares that generator's HTTP client and circuit breaker, so Generate and Verify trip together when one upstream is down. Passage text is always re-read from the registry by `chunk_ids`; text you send is never trusted. Verification costs at least one extra LLM call per answer.
+
+### Request
+
+```bash
+curl -X POST /api/v1/verify \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "collection_id": "docs",
+    "answer": "Acme was founded in 1998 [P1]. Its headquarters are in Berlin [P2].",
+    "passages": [
+      {"ref_id": "P1", "chunk_ids": ["..."]},
+      {"ref_id": "P2", "chunk_ids": ["...", "..."]}
+    ]
+  }'
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `collection_id` | required | Collection the passages belong to; the caller must have access |
+| `answer` | required | The answer text, at most `verify.max_answer_chars` characters |
+| `passages` | required | `[{ref_id, chunk_ids}]`, at most `verify.max_passages`. Extra fields are ignored, so Context's `passages` array can be forwarded unchanged |
+| `judge` | `verify.judge` | Name of a configured generator to use as the judge |
+| `strict_citations` | `false` | Also fail the overall verdict on `miscited` and `uncited_supported` sentences |
+
+### Response
+
+```json
+{
+  "verdict": "fail",
+  "strict_citations": false,
+  "counts": {"supported": 1, "miscited": 0, "uncited_supported": 0,
+             "partial": 0, "unsupported": 1, "no_claim": 0},
+  "sentences": [{
+    "span": [0, 30],
+    "text": "Acme was founded in 1998 [P1].",
+    "verdict": "supported",
+    "cited": ["P1"],
+    "invalid_refs": [],
+    "claims": [{
+      "text": "Acme was founded in 1998", "supported": true,
+      "evidence": [{
+        "ref_id": "P1", "chunk_id": "...", "document_id": "...",
+        "version_num": 3, "version_status": "active", "source_uri": "...",
+        "offset_start": 1204, "offset_end": 1219,
+        "quote": "founded in 1998", "quote_matched": true
+      }]
+    }]
+  }],
+  "passages_unavailable": [],
+  "judge": {"name": "cheap", "model": "..."},
+  "usage": {"input_tokens": 1830, "output_tokens": 412, "judge_calls": 1}
+}
+```
+
+- `span` is a UTF-8 byte range into `answer`, and `text` is `answer[span]`.
+- `cited` lists the passage ids the sentence cites that name an available passage. Any other id (unknown, unavailable, or an `[S1]`-style background id) goes to `invalid_refs`.
+- `evidence` lists every passage that supports a claim, wherever the sentence cites. The judge copies the shortest verbatim quote; when Verify finds it in the stored text (exact, then whitespace-collapsed), `offset_start` and `offset_end` are the quote's byte range in the source, `chunk_id` is the chunk containing it, and `quote_matched` is `true`. Otherwise the range is the whole passage, `chunk_id` is the passage's first chunk, and `quote_matched` is `false`, which flags a paraphrased or invented quote.
+- `version_status` is `active`, `superseded`, `deleted`, or `unknown`. It is reported, not enforced.
+- `passages_unavailable` lists passages with a missing chunk (for example garbage-collected). They are not sent to the judge and cannot support a claim. When none is available the judge is not called, and every sentence except code blocks is `unsupported`.
+- `usage` sums all judge calls, including retries; a token count is `null` when any call did not report it.
+
+### Verdicts
+
+The judge reports facts and Verify computes the verdicts, in this order:
+
+| Verdict | Condition |
+|---|---|
+| `no_claim` | The sentence makes no factual claim (greetings, hedges, "nothing found"), or is a fenced code block |
+| `unsupported` | No claim of the sentence has a supporting passage |
+| `partial` | Some claims are supported and some are not; the unsupported claims have `supported: false` |
+| `supported` | Every claim is supported by a passage the sentence cites |
+| `uncited_supported` | Every claim is supported, but the sentence cites nothing valid |
+| `miscited` | Every claim is supported and the sentence cites something, but some claim has no supporting passage among its citations |
+
+The overall `verdict` is `fail` if any sentence is `partial` or `unsupported`, otherwise `pass`. With `strict_citations: true` it also fails on `miscited` and `uncited_supported`. An answer whose sentences are all `no_claim` passes. Sentences are split with Unicode sentence boundaries and at every newline, and a citation marker group right after a sentence attaches to it, so `foo. [P1]` and `foo [P1].` behave the same.
+
+### Errors
+
+| Status | Cause |
+|---|---|
+| `400` | Invalid request (empty answer, over the length or passage limits, a `ref_id` not matching `^P\d{1,3}$`, a duplicate `ref_id`, a passage without `chunk_ids`, an unknown `judge`), a chunk from another collection, a passage spanning several document versions, passages that alone exceed the judge input budget, or an answer that needs more than 25 judge batches (`answer needs too many judge batches`) |
+| `403` | No access to the collection |
+| `502` | The judge failed upstream, or returned invalid output twice; the detail is logged, not returned |
+| `503` | Verify not configured, no chunk registry, or the judge's circuit breaker is open |
+| `504` | A judge call exceeded `judge_timeout_secs` |
+| `500` | Registry or version store failure |
+
+A judge reply that fails validation (bad JSON, a missing or unknown sentence id, a `claim` without claims, a `ref` outside the request's passages, or truncation at `max_tokens`) is retried once with the validation error appended. Any batch that still fails fails the whole request; no partial result is returned. Long answers are split into batches that run up to four at a time.
+
+### Verify a Generate answer
+
+Set `"verify": true` on a Generate request (REST or the MCP `generate` tool) to verify the answer against the passages Generate used, with the default judge and non-strict citations. If Verify is not configured the request fails with `503` before Context or the generator is called. A verification failure never fails the generation; the outcome is in `verification`:
+
+```json
+"verification": {"status": "ok", "verdict": "pass", "counts": {"...": 0}, "sentences": ["..."]}
+"verification": {"status": "error", "code": "judge_timeout", "message": "judge timed out"}
+```
+
+An `ok` verification carries all the fields of the Verify response. Error codes are `judge_unavailable` (breaker open), `judge_upstream`, `judge_timeout`, `judge_invalid_output`, `invalid` (for example a chunk garbage-collected between generation and verification), and `internal`. `verification` is `null` for a `no_context` answer (no judge call is made), and a failed generation is not verified. An answer cut off at `max_tokens` is verified as is. A Generate call whose context exceeds Verify's limits (more than `verify.max_passages` passages, or passages over the judge input budget) returns `verification: {status: "error", code: "invalid"}` while the answer is still delivered. Without `verify: true`, the response and the stream are unchanged.
+
+With `stream: true` the event order is `context`, `delta`..., `done`, then `verification`. A verification error arrives in the `verification` event, not as `error`, because generation succeeded:
+
+```text
+event: verification
+data: {"status": "ok", "verdict": "pass", ...}
+```
+
+**Gating caveat.** In SSE mode the answer text reaches the client before the verdict. A caller that gates on the verdict must buffer the text until `verification` arrives, or use JSON mode. Treat `status: "error"` as a failure.
+
+### Configuration
+
+```toml
+[verify]
+judge = "cheap"                 # a name from [generate.generators.*]; absent = Verify disabled
+max_answer_chars = 20000
+max_passages = 50
+max_judge_input_tokens = 24000
+max_sentences_per_batch = 40
+judge_max_output_tokens = 8192
+judge_timeout_secs = 90
+```
+
+Engine build fails with a config error when `judge` names no configured generator. `judge_timeout_secs` bounds each judge call including draining its stream, and each retry gets a fresh timeout. Upstream errors and timeouts count as circuit breaker failures; invalid judge output does not. The audit log records one `verify` entry per request (collection, judge, overall verdict, counts, judge calls) and never the answer text. Metrics: `arcanum_verify_requests_total{outcome}` (`pass`, `fail`, or an error code), `arcanum_verify_sentences_total{verdict}`, `arcanum_verify_judge_calls_total{result}`, and `arcanum_verify_duration_seconds`.
+
+Judge quality bounds verdict quality: a weak judge can mark support that is not there, which `quote_matched: false` helps surface. Sentence splitting is heuristic (an abbreviation such as "e.g." can split a sentence). Summarize-mode answers lean on RAPTOR background summaries, which are not evidence, so they may verify as `unsupported` more often.
 
 ---
 
@@ -729,7 +864,8 @@ Arcanum ships an MCP JSON-RPC 2.0 handler (`arcanum-mcp`) plus a minimal standal
 | `list_collections` | — | Implemented; returns collections visible to the caller, ACL-filtered |
 | `eval_run` | `collection_id` | Implemented; params: `collection_id`, `samples[{query, relevant_chunk_ids}]`, `k` (default 5, max 100) |
 | `get_context` | `collection_id`, `query` or `messages`, optional `token_budget`, `background_share`, `candidate_k`, `render` | Implemented; returns the rendered context (default `xml`) as text plus the full response as `structuredContent`; needs a chunk registry (see [Context API](#context-api)) |
-| `generate` | `collection_id`, `query` or `messages`, optional `mode`, `generator`, `max_tokens`, `temperature`, `instructions`, `context` | Implemented; returns the answer as text plus the full JSON response as `structuredContent`; always non-streaming; needs a chunk registry and a generator (see [Generate API](#generate-api)) |
+| `generate` | `collection_id`, `query` or `messages`, optional `mode`, `generator`, `max_tokens`, `temperature`, `instructions`, `context`, `verify` | Implemented; returns the answer as text plus the full JSON response as `structuredContent`; always non-streaming; needs a chunk registry and a generator (see [Generate API](#generate-api)) |
+| `verify` | `collection_id`, `answer`, `passages[{ref_id, chunk_ids}]`, optional `judge`, `strict_citations` | Implemented; returns the response as JSON text plus `structuredContent`; needs a judge and a chunk registry (see [Verify API](#verify-api)) |
 
 Every tool call requires a valid Bearer token. The MCP server validates the token against `engine.auth` on each request: no shared session, no bypass.
 
@@ -806,6 +942,9 @@ model             = "claude-sonnet-5-5"
 api_key_env       = "ANTHROPIC_API_KEY"
 max_output_tokens = 4096
 
+[verify]
+judge = "cheap"   # a name from [generate.generators.*]; absent = Verify disabled
+
 [admin]
 portal_enabled                    = true
 audit_retention_days              = 90
@@ -836,6 +975,7 @@ All values are overridable via environment variables prefixed with `ARCANUM_`.
 | `arcanum-retrieval` | Multi-strategy orchestrator and all Retriever impls |
 | `arcanum-context` | Context API packing: span-level clustering, token-budgeted selection, numbered/xml/markdown rendering, conversation rewriting |
 | `arcanum-generate` | Generate API logic: prompt building per mode and inline `[P1]` citation parsing, with no I/O |
+| `arcanum-verify` | Verify API logic: sentence segmentation, citation attribution, judge prompt and output validation, verdicts, and quote location, with no I/O |
 | `arcanum-eval` | Quality metrics, golden datasets, scheduled evaluation |
 | `arcanum-chunk-eval` | Chunk inspect API, offline benchmark harness, shadow experiment evaluation |
 | `arcanum-engine` | `ArcanumEngine` builder: wires the full system |

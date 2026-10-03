@@ -1,10 +1,12 @@
 use crate::routes::auth::validate_bearer;
 use arcanum_chunk_eval::{inspect, run_benchmark, BenchmarkJob, InspectRequest};
 use arcanum_core::types::generate::GenerateRequest;
+use arcanum_core::types::verify::VerifyRequest;
 use arcanum_core::types::{CollectionId, ContextRequest, IngestionSubmission, OperationId, Query};
 use arcanum_core::ArcanumError;
 use arcanum_engine::services::context::ContextError;
 use arcanum_engine::services::generate::{GenerateError, GenerateEvent, GenerateStream};
+use arcanum_engine::services::verify::{VerifyError, VERIFY_UNAVAILABLE};
 use arcanum_engine::ArcanumEngine;
 use axum::{
     extract::{Json, Multipart, Path, Query as UrlQuery, State},
@@ -145,6 +147,64 @@ pub async fn context(
     response
 }
 
+fn verify_error_status(e: &VerifyError) -> StatusCode {
+    match e {
+        VerifyError::Invalid(_) => StatusCode::BAD_REQUEST,
+        VerifyError::Forbidden(_) => StatusCode::FORBIDDEN,
+        VerifyError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        VerifyError::Upstream | VerifyError::InvalidOutput => StatusCode::BAD_GATEWAY,
+        VerifyError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+        VerifyError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn verify(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        match serde_json::from_value::<VerifyRequest>(body) {
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response(),
+            Ok(req) => match eng.verify.as_ref() {
+                None => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(serde_json::json!({ "error": VERIFY_UNAVAILABLE })),
+                )
+                    .into_response(),
+                Some(svc) => match svc.verify(req, &claims).await {
+                    Ok(resp) => (StatusCode::OK, axum::Json(resp)).into_response(),
+                    Err(e) => (
+                        verify_error_status(&e),
+                        axum::Json(serde_json::json!({ "error": e.to_string() })),
+                    )
+                        .into_response(),
+                },
+            },
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK {
+        "ok"
+    } else {
+        "error"
+    };
+    counter!("arcanum_requests_total", "endpoint" => "verify", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "verify").record(elapsed);
+    response
+}
+
 fn generate_error_status(e: &GenerateError) -> StatusCode {
     match e {
         GenerateError::Invalid(_) => StatusCode::BAD_REQUEST,
@@ -209,6 +269,7 @@ fn sse_response(s: GenerateStream, start: std::time::Instant) -> Response {
             metrics.set("ok");
             sse_event("done", &outcome)
         }
+        GenerateEvent::Verification(v) => sse_event("verification", &v),
         GenerateEvent::Error(e) => {
             metrics.set("error");
             sse_event("error", &serde_json::json!({ "error": e.to_string() }))
@@ -1244,6 +1305,22 @@ mod generate_tests {
         out
     }
 
+    #[tokio::test]
+    async fn sse_response_emits_verification_after_done() {
+        let resp = sse_response(
+            stream_of(vec![
+                GenerateEvent::Delta("a".into()),
+                GenerateEvent::Done(outcome()),
+                GenerateEvent::Verification(None),
+            ]),
+            std::time::Instant::now(),
+        );
+        let evs = events_of(resp).await;
+        let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["context", "delta", "done", "verification"]);
+        assert_eq!(evs[3].1, "null");
+    }
+
     #[test]
     fn sse_metrics_ok_after_done() {
         let got = sse_statuses(
@@ -1278,5 +1355,30 @@ mod generate_tests {
             Some(2),
         );
         assert_eq!(got, ["error"]);
+    }
+}
+
+#[cfg(test)]
+mod verify_status_tests {
+    use super::*;
+    use arcanum_engine::services::verify::VerifyError;
+
+    #[test]
+    fn verify_error_status_maps_each_variant() {
+        let cases = [
+            (VerifyError::Invalid("x".into()), 400),
+            (VerifyError::Forbidden("x".into()), 403),
+            (VerifyError::Unavailable("x".into()), 503),
+            (VerifyError::Upstream, 502),
+            (VerifyError::InvalidOutput, 502),
+            (VerifyError::Timeout, 504),
+            (
+                VerifyError::Internal(ArcanumError::Storage("x".into())),
+                500,
+            ),
+        ];
+        for (e, code) in cases {
+            assert_eq!(verify_error_status(&e).as_u16(), code, "{e}");
+        }
     }
 }

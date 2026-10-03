@@ -27,7 +27,7 @@ dependency DAG; nothing in the workspace depends on either.
   fields: `engine.auth` (`validate_api_key`, `validate_admin_jwt`,
   `can_access_collection`), `engine.retrieval`, `engine.ingestion`,
   `engine.experiment`, `engine.admin`, `engine.source`, `engine.audit`,
-  `engine.events` (`EventBus`), `engine.context`, `engine.evidence`, `engine.gc_worker`,
+  `engine.events` (`EventBus`), `engine.context`, `engine.generate`, `engine.verify`, `engine.evidence`, `engine.gc_worker`,
   `engine.vector_store`/`graph_store`/`tree_store`/`version_store`.
   Neither crate constructs an `ArcanumEngine` itself.
 - [Core](core.md): `arcanum_core::types` (`Query`, `CollectionId`,
@@ -124,8 +124,8 @@ forwarding the JSON-RPC body to `McpJsonRpcHandler::handle`;
 `McpJsonRpcHandler` (`handlers.rs`) owns an `Arc<CapabilityRegistry>` and
 an `Arc<SessionManager>`, both built in `McpJsonRpcHandler::new`/
 `new_test`: the registry via `default_registry()`, which registers all
-six tools (`ingest`, `search`, `list_collections`, `eval_run`,
-`get_context`, `generate`) with a JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
+seven tools (`ingest`, `search`, `list_collections`, `eval_run`,
+`get_context`, `generate`, `verify`) with a JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
 field: `tools/list` returns `self.registry.list()` (sorted by name)
 directly, `initialize` calls `self.sessions.create(client_info)` and
 returns the new `McpSession`'s `id` in `_meta.sessionId`, and `tools/call`
@@ -187,7 +187,7 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    `validate_bearer`, this path does not consult `engine.rate_limiter`
    (see Implementation Notes).
 4. `dispatch_tool` then matches `request["params"]["name"]` against all
-   six registered tools (`"get_context"` is Runtime Flow 4, `"generate"` Runtime Flow 5). `"search"`/`"ingest"` build a `Query`/
+   seven registered tools (`"get_context"` is Runtime Flow 4, `"generate"` Runtime Flow 5, `"verify"` Runtime Flow 6). `"search"`/`"ingest"` build a `Query`/
    `IngestRequest` and call `engine.retrieval.search`/
    `engine.ingestion.ingest`. `"list_collections"` calls
    `engine.version_store.list_collections()` and filters the result
@@ -279,6 +279,36 @@ recorder via `metrics_prometheus::try_install()`. It returns a
 5. MCP maps `Invalid` to a JSON-RPC `-32602` error and every other
    `GenerateError` to an `isError` result. Success returns the answer as
    the text content and the full response as `structuredContent`.
+6. With `verify: true`, `generate_stream` first rejects an engine with
+   no `VerifyService` (503 with `verification requires a configured judge
+   and a chunk registry`, before Context runs). `sse_response` then maps
+   `GenerateEvent::Verification` to a fourth event, `verification`, sent
+   after `done`: its data is the `Verification` JSON (`status` `ok` with
+   the Verify response fields, or `status` `error` with `code` and
+   `message`), or `null` for a `no_context` answer. A verification error
+   is carried in this event rather than as an `error` event, so it does not
+   change the request's `ok` status. The JSON path puts the same value in
+   `GenerateResponse.verification`. The answer text reaches the client
+   before the verdict, so a gating caller must buffer it.
+
+**6. Verification through `POST /api/v1/verify` and MCP `verify`**
+1. REST: `routes::api::verify` calls `validate_bearer` (401), parses the
+   body into `VerifyRequest` (400 on a malformed body), and answers 503
+   with `VERIFY_UNAVAILABLE` when `engine.verify` is `None`. MCP: the
+   `"verify"` arm deserializes the arguments the same way (`-32602` on
+   failure) and returns an `isError` result with that message when the
+   service is absent.
+2. Both call `VerifyService::verify`. REST maps `VerifyError` through
+   `verify_error_status`: `Invalid` to 400, `Forbidden` to 403,
+   `Unavailable` to 503, `Upstream` and `InvalidOutput` to 502, `Timeout`
+   to 504, `Internal` to 500, each with a `{"error": ...}` body; the judge
+   detail is logged, never returned.
+3. The handler records `arcanum_requests_total` and
+   `arcanum_request_duration_seconds` with `endpoint="verify"`; verdict
+   metrics are recorded by the service (see [Engine](engine.md)).
+4. MCP maps `Invalid` to `-32602` and every other `VerifyError` to an
+   `isError` result. Success returns the response as JSON text and as
+   `structuredContent`.
 
 ## Key Decisions
 
@@ -423,7 +453,7 @@ Newest first.
   `McpServer::new` so far.
 - **MCP tool list: all advertised tools now dispatch (closed gap, PR
   #57; `get_context` added later).** `tools/list` advertises `ingest`,
-  `search`, `list_collections`, `eval_run`, `get_context`, and `generate`; `dispatch_tool` now has a real arm for each; see
+  `search`, `list_collections`, `eval_run`, `get_context`, `generate`, and `verify`; `dispatch_tool` now has a real arm for each; see
   Runtime Flow 2. A coverage test
   (`test_every_registered_tool_dispatches_without_unknown_tool_error`)
   iterates `registry.list()` and asserts none of them fall through to the

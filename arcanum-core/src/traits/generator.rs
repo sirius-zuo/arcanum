@@ -66,16 +66,22 @@ pub enum ScriptStep {
 /// Test double that replays a fixed script of steps.
 pub struct ScriptedGenerator {
     model: String,
-    steps: Vec<ScriptStep>,
+    scripts: Vec<Vec<ScriptStep>>,
     calls: Mutex<usize>,
     last_request: Mutex<Option<GenerationRequest>>,
 }
 
 impl ScriptedGenerator {
     pub fn new(model: &str, steps: Vec<ScriptStep>) -> Self {
+        Self::with_scripts(model, vec![steps])
+    }
+
+    /// Call `n` (0-based) replays `scripts[min(n, len - 1)]`.
+    pub fn with_scripts(model: &str, scripts: Vec<Vec<ScriptStep>>) -> Self {
+        assert!(!scripts.is_empty(), "at least one script is required");
         Self {
             model: model.to_string(),
-            steps,
+            scripts,
             calls: Mutex::new(0),
             last_request: Mutex::new(None),
         }
@@ -96,11 +102,16 @@ impl Generator for ScriptedGenerator {
         &self,
         req: GenerationRequest,
     ) -> Result<BoxStream<'static, Result<GenerationEvent>>> {
-        *self.calls.lock().unwrap() += 1;
+        let n = {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            *c - 1
+        };
+        let steps = &self.scripts[n.min(self.scripts.len() - 1)];
         *self.last_request.lock().unwrap() = Some(req);
         let mut items: Vec<Result<GenerationEvent>> = Vec::new();
         let mut hang = false;
-        for step in &self.steps {
+        for step in steps {
             match step {
                 ScriptStep::Delta(t) => items.push(Ok(GenerationEvent::TextDelta(t.clone()))),
                 ScriptStep::Done(r) => items.push(Ok(GenerationEvent::Done {
@@ -176,5 +187,38 @@ mod tests {
         assert_eq!(g.calls(), 1);
         assert_eq!(g.last_request(), Some(req));
         assert_eq!(g.model(), "m");
+    }
+
+    #[tokio::test]
+    async fn with_scripts_advances_per_call() {
+        let g = ScriptedGenerator::with_scripts(
+            "m",
+            vec![
+                vec![
+                    ScriptStep::Delta("a".into()),
+                    ScriptStep::Done(StopReason::EndTurn),
+                ],
+                vec![
+                    ScriptStep::Delta("b".into()),
+                    ScriptStep::Done(StopReason::EndTurn),
+                ],
+            ],
+        );
+        let mut got = Vec::new();
+        for _ in 0..3 {
+            let req = GenerationRequest {
+                system: "s".into(),
+                messages: vec![],
+                max_tokens: 10,
+                temperature: None,
+            };
+            let events: Vec<_> = g.stream(req).await.unwrap().collect().await;
+            match events[0].as_ref().unwrap() {
+                GenerationEvent::TextDelta(t) => got.push(t.clone()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(got, vec!["a", "b", "b"]);
+        assert_eq!(g.calls(), 3);
     }
 }

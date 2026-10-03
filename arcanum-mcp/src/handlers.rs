@@ -3,12 +3,17 @@ use crate::session::SessionManager;
 use arcanum_core::{
     types::{
         generate::GenerateRequest, ChunkId, CollectionId, ContextRequest, Query, RenderFormat,
+        VerifyRequest,
     },
     Result,
 };
 use arcanum_engine::{
     auth::ApiKeyClaims,
-    services::{context::ContextError, generate::GenerateError},
+    services::{
+        context::ContextError,
+        generate::GenerateError,
+        verify::{VerifyError, VERIFY_UNAVAILABLE},
+    },
     ArcanumEngine, IngestRequest,
 };
 use arcanum_eval::{EvalRunner, GoldenSample};
@@ -124,6 +129,7 @@ impl McpJsonRpcHandler {
                     "max_tokens": { "type": "integer" },
                     "temperature": { "type": "number" },
                     "instructions": { "type": "string" },
+                    "verify": { "type": "boolean" },
                     "context": { "type": "object",
                         "properties": {
                             "token_budget": { "type": "integer" },
@@ -131,6 +137,22 @@ impl McpJsonRpcHandler {
                             "candidate_k": { "type": "integer" }
                         } }
                 }, "required": ["collection_id"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "verify",
+            "Check an answer sentence by sentence against the passages it cites, with evidence traced to source offsets",
+            json!({ "type": "object",
+                "properties": {
+                    "collection_id": { "type": "string" },
+                    "answer": { "type": "string" },
+                    "passages": { "type": "array", "items": { "type": "object",
+                        "properties": {
+                            "ref_id": { "type": "string" },
+                            "chunk_ids": { "type": "array", "items": { "type": "string" } }
+                        }, "required": ["ref_id", "chunk_ids"] } },
+                    "judge": { "type": "string" },
+                    "strict_citations": { "type": "boolean" }
+                }, "required": ["collection_id", "answer", "passages"] }),
         ));
         Arc::new(registry)
     }
@@ -427,6 +449,42 @@ impl McpJsonRpcHandler {
                         }
                     })),
                     Err(GenerateError::Invalid(m)) => Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": m }
+                    })),
+                    Err(e) => Ok(tool_error(e.to_string())),
+                }
+            }
+            "verify" => {
+                let req: VerifyRequest = match serde_json::from_value(args.clone()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("invalid arguments: {}", e) }
+                        }))
+                    }
+                };
+                let tool_error = |text: String| {
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }], "isError": true }
+                    })
+                };
+                let Some(svc) = self.engine.as_ref().and_then(|e| e.verify.as_ref()) else {
+                    return Ok(tool_error(VERIFY_UNAVAILABLE.into()));
+                };
+                match svc.verify(req, claims).await {
+                    Ok(resp) => Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": {
+                            "content": [{ "type": "text",
+                                "text": serde_json::to_string(&resp).unwrap_or_default() }],
+                            "structuredContent": serde_json::to_value(&resp)
+                                .unwrap_or(Value::Null)
+                        }
+                    })),
+                    Err(VerifyError::Invalid(m)) => Ok(json!({
                         "jsonrpc": "2.0", "id": id,
                         "error": { "code": -32602, "message": m }
                     })),
@@ -762,7 +820,8 @@ mod tests {
                 "get_context",
                 "ingest",
                 "list_collections",
-                "search"
+                "search",
+                "verify"
             ]
         );
         let generate = tools.iter().find(|t| t["name"] == "generate").unwrap();
@@ -770,6 +829,15 @@ mod tests {
             generate["inputSchema"]["properties"]["messages"]["items"]["properties"]["role"]
                 ["enum"],
             json!(["user", "assistant"])
+        );
+        assert_eq!(
+            generate["inputSchema"]["properties"]["verify"]["type"],
+            "boolean"
+        );
+        let verify = tools.iter().find(|t| t["name"] == "verify").unwrap();
+        assert_eq!(
+            verify["inputSchema"]["required"],
+            json!(["collection_id", "answer", "passages"])
         );
         // Every tool must carry a schema — proves we serialized ToolDefinition, not a stub.
         for t in tools {
@@ -910,5 +978,39 @@ mod tests {
             result["content"][0]["text"],
             result["structuredContent"]["answer"]
         );
+    }
+
+    async fn call_verify(engine: Arc<ArcanumEngine>, args: Value) -> Value {
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "verify", "arguments": args } });
+        handler.handle(req, make_headers(&token)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn verify_unconfigured_is_tool_error() {
+        let resp = call_verify(
+            test_engine().await,
+            json!({ "collection_id": "col1", "answer": "Cats purr [P1].",
+                "passages": [{ "ref_id": "P1", "chunk_ids": [] }] }),
+        )
+        .await;
+        assert_eq!(resp["result"]["isError"], true, "{resp}");
+        assert_eq!(
+            resp["result"]["content"][0]["text"],
+            arcanum_engine::services::verify::VERIFY_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn verify_missing_answer_is_invalid_params() {
+        let resp = call_verify(
+            test_engine().await,
+            json!({ "collection_id": "col1",
+                "passages": [{ "ref_id": "P1", "chunk_ids": [] }] }),
+        )
+        .await;
+        assert_eq!(resp["error"]["code"], -32602, "{resp}");
     }
 }

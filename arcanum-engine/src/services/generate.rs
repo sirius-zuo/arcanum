@@ -1,6 +1,7 @@
 use crate::audit::{AuditEntry, AuditLogger};
 use crate::auth::ApiKeyClaims;
 use crate::services::context::{ContextError, ContextService};
+use crate::services::verify::{VerifyService, VERIFY_UNAVAILABLE};
 use arcanum_core::{
     config::GenerateConfig,
     traits::{GenerationEvent, GenerationRequest, GenerationUsage, Generator, StopReason},
@@ -59,6 +60,8 @@ pub struct GeneratorEntry {
 pub enum GenerateEvent {
     Delta(String),
     Done(GenerateOutcome),
+    /// After `Done` when `verify` was requested; `None` for `no_context`.
+    Verification(Option<Verification>),
     Error(GenerateError),
 }
 
@@ -69,7 +72,8 @@ pub struct GenerateStream {
 
 pub struct GenerateService {
     context: Arc<ContextService>,
-    generators: HashMap<String, GeneratorEntry>,
+    generators: Arc<HashMap<String, GeneratorEntry>>,
+    verify: Option<Arc<VerifyService>>,
     config: GenerateConfig,
     audit: Arc<AuditLogger>,
 }
@@ -83,13 +87,15 @@ impl std::fmt::Debug for GenerateService {
 impl GenerateService {
     pub fn new(
         context: Arc<ContextService>,
-        generators: HashMap<String, GeneratorEntry>,
+        generators: Arc<HashMap<String, GeneratorEntry>>,
+        verify: Option<Arc<VerifyService>>,
         config: GenerateConfig,
         audit: Arc<AuditLogger>,
     ) -> Self {
         Self {
             context,
             generators,
+            verify,
             config,
             audit,
         }
@@ -103,6 +109,15 @@ impl GenerateService {
         claims: &ApiKeyClaims,
     ) -> Result<GenerateStream, GenerateError> {
         req.validate().map_err(GenerateError::Invalid)?;
+        let verify = if req.verify {
+            Some(
+                self.verify
+                    .clone()
+                    .ok_or_else(|| GenerateError::Unavailable(VERIFY_UNAVAILABLE.to_string()))?,
+            )
+        } else {
+            None
+        };
         let name = req
             .generator
             .clone()
@@ -153,11 +168,15 @@ impl GenerateService {
                 generator: info,
             };
             let answer = self.config.no_context_answer.clone();
+            let wants_verification = verify.is_some();
             let events = stream::once(async move { GenerateEvent::Delta(answer) })
                 .chain(stream::once(async move {
                     recorder.finish("no_context", None, None).await;
                     GenerateEvent::Done(outcome)
                 }))
+                .chain(stream::iter(
+                    wants_verification.then_some(GenerateEvent::Verification(None)),
+                ))
                 .boxed();
             return Ok(GenerateStream { context, events });
         }
@@ -187,6 +206,11 @@ impl GenerateService {
             generator: entry.generator.clone(),
             breaker: entry.breaker.clone(),
             passages: context.passages.clone(),
+            verify: verify.map(|service| VerifyJob {
+                service,
+                collection_id: req.collection_id.clone(),
+                claims: claims.clone(),
+            }),
             info,
             answer: String::new(),
             got_first: false,
@@ -209,20 +233,36 @@ impl GenerateService {
         req: GenerateRequest,
         claims: &ApiKeyClaims,
     ) -> Result<GenerateResponse, GenerateError> {
+        let wants_verification = req.verify;
         let GenerateStream {
             context,
             mut events,
         } = self.generate_stream(req, claims).await?;
         let mut answer = String::new();
+        let mut outcome = None;
         while let Some(event) = events.next().await {
             match event {
                 GenerateEvent::Delta(t) => answer.push_str(&t),
-                GenerateEvent::Done(outcome) => {
-                    return Ok(GenerateResponse {
-                        answer,
-                        outcome,
-                        context,
-                    })
+                GenerateEvent::Done(o) => {
+                    if !wants_verification {
+                        return Ok(GenerateResponse {
+                            answer,
+                            outcome: o,
+                            context,
+                            verification: None,
+                        });
+                    }
+                    outcome = Some(o);
+                }
+                GenerateEvent::Verification(v) => {
+                    if let Some(outcome) = outcome {
+                        return Ok(GenerateResponse {
+                            answer,
+                            outcome,
+                            context,
+                            verification: Some(v),
+                        });
+                    }
                 }
                 GenerateEvent::Error(e) => return Err(e),
             }
@@ -285,6 +325,8 @@ impl Recorder {
 enum Phase {
     Start(GenerationRequest),
     Streaming(BoxStream<'static, arcanum_core::Result<GenerationEvent>>),
+    /// After `Done`: judge the finished answer, then end.
+    Verify,
     Finished,
 }
 
@@ -298,6 +340,13 @@ fn error_detail(e: arcanum_core::ArcanumError) -> String {
 /// Fixed client-facing text for any upstream failure; the detail is logged.
 const UPSTREAM_FAILED: &str = "generation failed";
 
+/// What the verification phase needs once the answer is complete.
+struct VerifyJob {
+    service: Arc<VerifyService>,
+    collection_id: String,
+    claims: ApiKeyClaims,
+}
+
 /// State of one generation, driven by `stream::unfold` without a spawned
 /// task, so dropping the stream drops the upstream request.
 struct Run {
@@ -305,6 +354,7 @@ struct Run {
     generator: Arc<dyn Generator>,
     breaker: Arc<CircuitBreaker>,
     passages: Vec<Passage>,
+    verify: Option<VerifyJob>,
     info: GeneratorInfo,
     answer: String,
     got_first: bool,
@@ -328,6 +378,31 @@ impl Run {
         loop {
             match std::mem::replace(&mut self.phase, Phase::Finished) {
                 Phase::Finished => return None,
+                Phase::Verify => {
+                    let job = self.verify.take()?;
+                    let req = VerifyRequest {
+                        collection_id: job.collection_id,
+                        answer: std::mem::take(&mut self.answer),
+                        passages: self
+                            .passages
+                            .iter()
+                            .map(|p| PassageRef {
+                                ref_id: p.ref_id.clone(),
+                                chunk_ids: p.chunk_ids.clone(),
+                            })
+                            .collect(),
+                        judge: None,
+                        strict_citations: false,
+                    };
+                    let verification = match job.service.verify(req, &job.claims).await {
+                        Ok(v) => Verification::Ok(v),
+                        Err(e) => Verification::Error {
+                            code: e.code().to_string(),
+                            message: e.to_string(),
+                        },
+                    };
+                    return Some(GenerateEvent::Verification(Some(verification)));
+                }
                 Phase::Start(req) => {
                     self.started = Instant::now();
                     let generator = self.generator.clone();
@@ -355,6 +430,9 @@ impl Run {
                         self.recorder
                             .finish("ok", Some(self.started.elapsed()), Some(&usage))
                             .await;
+                        if self.verify.is_some() {
+                            self.phase = Phase::Verify;
+                        }
                         return Some(GenerateEvent::Done(GenerateOutcome {
                             status: GenerateStatus::Ok,
                             citations: parsed.citations,
@@ -392,9 +470,12 @@ mod tests {
     use super::*;
     use crate::auth::AuthMiddleware;
     use crate::services::test_support::{seeded_registry, RegistryRetriever};
+    use crate::services::verify::VERIFY_UNAVAILABLE;
     use arcanum_core::config::ContextConfig;
+    use arcanum_core::config::VerifyConfig;
     use arcanum_core::traits::{
-        ApproxCl100kCounter, GenerationUsage, Retriever, ScriptStep, ScriptedGenerator, StopReason,
+        ApproxCl100kCounter, GenerationUsage, NoOpDocumentVersionStore, Retriever, ScriptStep,
+        ScriptedGenerator, StopReason,
     };
     use arcanum_retrieval::{OrchestratorMode, RetrievalOrchestrator};
     use futures::StreamExt;
@@ -414,6 +495,7 @@ mod tests {
     struct Fixture {
         svc: GenerateService,
         gen: Arc<ScriptedGenerator>,
+        judge: Option<Arc<ScriptedGenerator>>,
         breaker: Arc<CircuitBreaker>,
         audit: Arc<AuditLogger>,
         claims: ApiKeyClaims,
@@ -422,6 +504,7 @@ mod tests {
 
     struct Opts {
         steps: Vec<ScriptStep>,
+        judge: Option<Vec<ScriptStep>>,
         empty: bool,
         threshold: u32,
         config: GenerateConfig,
@@ -430,6 +513,7 @@ mod tests {
     fn opts(steps: Vec<ScriptStep>) -> Opts {
         Opts {
             steps,
+            judge: None,
             empty: false,
             threshold: 5,
             config: GenerateConfig {
@@ -448,7 +532,8 @@ mod tests {
     }
 
     async fn fixture(o: Opts) -> Fixture {
-        let (registry, chunk) = seeded_registry().await;
+        let (store, chunk) = seeded_registry().await;
+        let registry = store.clone();
         let retriever: Arc<dyn Retriever> = if o.empty {
             Arc::new(EmptyRetriever)
         } else {
@@ -490,13 +575,52 @@ mod tests {
                 breaker: breaker.clone(),
             },
         );
-        let svc = GenerateService::new(context, generators, o.config.clone(), audit.clone());
+        let (verify, judge) = match o.judge {
+            Some(steps) => {
+                let judge = Arc::new(ScriptedGenerator::new("judge-model", steps));
+                let mut judges = HashMap::new();
+                judges.insert(
+                    "fake".to_string(),
+                    GeneratorEntry {
+                        generator: judge.clone(),
+                        max_output_tokens: 100,
+                        breaker: Arc::new(CircuitBreaker::new(
+                            "judge:fake",
+                            5,
+                            Duration::from_secs(30),
+                        )),
+                    },
+                );
+                let svc = VerifyService::new(
+                    store,
+                    Arc::new(NoOpDocumentVersionStore),
+                    Arc::new(judges),
+                    Arc::new(ApproxCl100kCounter::new()),
+                    VerifyConfig {
+                        judge: Some("fake".into()),
+                        ..VerifyConfig::default()
+                    },
+                    auth.clone(),
+                    audit.clone(),
+                );
+                (Some(Arc::new(svc)), Some(judge))
+            }
+            None => (None, None),
+        };
+        let svc = GenerateService::new(
+            context,
+            Arc::new(generators),
+            verify,
+            o.config.clone(),
+            audit.clone(),
+        );
         let claims = auth
             .validate_api_key(&auth.generate_admin_key("tester"))
             .unwrap();
         Fixture {
             svc,
             gen,
+            judge,
             breaker,
             audit,
             claims,
@@ -516,6 +640,7 @@ mod tests {
             instructions: None,
             context: Default::default(),
             stream: false,
+            verify: false,
         }
     }
 
@@ -704,6 +829,7 @@ mod tests {
                 GenerateEvent::Delta(t) => streamed.push_str(&t),
                 GenerateEvent::Done(o) => done = Some(o),
                 GenerateEvent::Error(e) => panic!("unexpected error {e:?}"),
+                GenerateEvent::Verification(_) => panic!("unexpected verification"),
             }
         }
         let stream_outcome = done.expect("done event");
@@ -751,5 +877,175 @@ mod tests {
         assert_eq!(g.entry.result, "ok");
         assert_eq!(g.entry.user_id, "tester");
         assert_eq!(g.entry.collection_id, "col1");
+    }
+
+    const JUDGE_OK: &str = r#"{"sentences":[{"id":1,"kind":"claim","claims":[{"text":"Acme builds rockets","support":[{"ref":"P1","quote":"quick brown fox"}]}]}]}"#;
+
+    fn judge_ok() -> Vec<ScriptStep> {
+        vec![
+            ScriptStep::Delta(JUDGE_OK.into()),
+            ScriptStep::Done(StopReason::EndTurn),
+        ]
+    }
+
+    fn verify_req(query: &str) -> GenerateRequest {
+        let mut r = req(query);
+        r.verify = true;
+        r
+    }
+
+    fn kinds(events: &[GenerateEvent]) -> Vec<&'static str> {
+        events
+            .iter()
+            .map(|e| match e {
+                GenerateEvent::Delta(_) => "delta",
+                GenerateEvent::Done(_) => "done",
+                GenerateEvent::Error(_) => "error",
+                GenerateEvent::Verification(_) => "verification",
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn verify_json_has_verification_ok() {
+        let mut o = opts(ok_steps());
+        o.judge = Some(judge_ok());
+        let f = fixture(o).await;
+        let resp = f.svc.generate(verify_req("fox"), &f.claims).await.unwrap();
+        match resp.verification {
+            Some(Some(Verification::Ok(v))) => {
+                assert_eq!(v.verdict, OverallVerdict::Pass);
+                assert_eq!(v.judge.model, "judge-model");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        assert_eq!(resp.answer, "Acme builds rockets [P1].");
+        assert_eq!(resp.outcome.status, GenerateStatus::Ok);
+        assert_eq!(f.judge.unwrap().calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn verify_stream_order_ends_with_verification() {
+        let mut o = opts(ok_steps());
+        o.judge = Some(judge_ok());
+        let f = fixture(o).await;
+        let s = f
+            .svc
+            .generate_stream(verify_req("fox"), &f.claims)
+            .await
+            .unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        assert_eq!(
+            kinds(&events),
+            vec!["delta", "delta", "done", "verification"]
+        );
+        assert!(matches!(
+            events.last().unwrap(),
+            GenerateEvent::Verification(Some(Verification::Ok(_)))
+        ));
+    }
+
+    #[tokio::test]
+    async fn judge_failure_keeps_answer() {
+        let mut o = opts(ok_steps());
+        o.judge = Some(vec![ScriptStep::Fail("boom".into())]);
+        let f = fixture(o).await;
+        let resp = f.svc.generate(verify_req("fox"), &f.claims).await.unwrap();
+        assert_eq!(resp.answer, "Acme builds rockets [P1].");
+        assert_eq!(resp.outcome.status, GenerateStatus::Ok);
+        assert_eq!(resp.outcome.citations.len(), 1);
+        match resp.verification {
+            Some(Some(Verification::Error { code, .. })) => assert_eq!(code, "judge_upstream"),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn no_context_verification_is_null() {
+        let mut o = opts(ok_steps());
+        o.empty = true;
+        o.judge = Some(judge_ok());
+        let f = fixture(o).await;
+        let resp = f.svc.generate(verify_req("fox"), &f.claims).await.unwrap();
+        assert_eq!(resp.verification, Some(None));
+        let s = f
+            .svc
+            .generate_stream(verify_req("fox"), &f.claims)
+            .await
+            .unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        assert_eq!(kinds(&events), vec!["delta", "done", "verification"]);
+        assert!(matches!(
+            events.last().unwrap(),
+            GenerateEvent::Verification(None)
+        ));
+        assert_eq!(f.judge.unwrap().calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn verify_without_service_is_503_before_generation() {
+        let f = fixture(opts(ok_steps())).await;
+        let err = f
+            .svc
+            .generate_stream(verify_req("fox"), &f.claims)
+            .await
+            .err()
+            .expect("must fail");
+        assert!(
+            matches!(&err, GenerateError::Unavailable(m) if m == VERIFY_UNAVAILABLE),
+            "{err:?}"
+        );
+        assert_eq!(f.gen.calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn without_verify_stream_is_unchanged() {
+        let mut o = opts(ok_steps());
+        o.judge = Some(judge_ok());
+        let f = fixture(o).await;
+        let s = f.svc.generate_stream(req("fox"), &f.claims).await.unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        assert_eq!(kinds(&events), vec!["delta", "delta", "done"]);
+        let resp = f.svc.generate(req("fox"), &f.claims).await.unwrap();
+        assert_eq!(resp.verification, None);
+        assert_eq!(f.judge.unwrap().calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn generation_error_has_no_verification() {
+        let mut o = opts(vec![
+            ScriptStep::Delta("a".into()),
+            ScriptStep::Fail("boom".into()),
+        ]);
+        o.judge = Some(judge_ok());
+        let f = fixture(o).await;
+        let s = f
+            .svc
+            .generate_stream(verify_req("fox"), &f.claims)
+            .await
+            .unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        assert_eq!(kinds(&events), vec!["delta", "error"]);
+        let err = f
+            .svc
+            .generate(verify_req("fox"), &f.claims)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GenerateError::Upstream(_)), "{err:?}");
+        assert_eq!(f.judge.unwrap().calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn truncated_generation_is_verified() {
+        let mut o = opts(vec![
+            ScriptStep::Delta("Acme builds rockets ".into()),
+            ScriptStep::Delta("[P1].".into()),
+            ScriptStep::Done(StopReason::MaxTokens),
+        ]);
+        o.judge = Some(judge_ok());
+        let f = fixture(o).await;
+        let resp = f.svc.generate(verify_req("fox"), &f.claims).await.unwrap();
+        assert_eq!(resp.outcome.stop_reason, StopReason::MaxTokens);
+        assert!(matches!(resp.verification, Some(Some(Verification::Ok(_)))));
     }
 }

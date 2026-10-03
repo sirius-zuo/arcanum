@@ -14,6 +14,7 @@ use crate::{
         ingestion::IngestionService,
         retrieval::RetrievalService,
         source::IngestionSourceService,
+        verify::VerifyService,
     },
 };
 use arcanum_context::{ConversationRewriter, EnricherRewriter};
@@ -55,6 +56,8 @@ pub struct ArcanumEngine {
     pub context: Option<Arc<ContextService>>,
     /// Grounded generation; present only with a chunk registry and at least one generator.
     pub generate: Option<Arc<GenerateService>>,
+    /// Sentence-level answer verification; present only with a chunk registry and a configured judge.
+    pub verify: Option<Arc<VerifyService>>,
     pub collection: Arc<CollectionService>,
     pub experiment: Arc<ExperimentService>,
     pub audit: Arc<AuditLogger>,
@@ -474,7 +477,7 @@ impl ArcanumEngineBuilder {
 
     /// Builds the generator map: builder-registered generators first, then
     /// config entries not replaced by one. Checks `default_generator`.
-    fn resolve_generators(&self) -> Result<HashMap<String, GeneratorEntry>> {
+    fn resolve_generators(&self) -> Result<Arc<HashMap<String, GeneratorEntry>>> {
         let mut out: HashMap<String, GeneratorEntry> = HashMap::new();
         let entry =
             |name: &str, generator: Arc<dyn Generator>, max_output_tokens: u32| GeneratorEntry {
@@ -567,7 +570,32 @@ impl ArcanumEngineBuilder {
                 Some(_) => {}
             }
         }
-        Ok(out)
+        if let Some(j) = self.config.verify.judge.as_deref() {
+            if !out.contains_key(j) {
+                return Err(ArcanumError::Config(format!(
+                    "verify.judge '{j}' does not name a configured generator"
+                )));
+            }
+            let v = &self.config.verify;
+            for (key, n) in [
+                ("max_answer_chars", v.max_answer_chars as u64),
+                ("max_passages", v.max_passages as u64),
+                ("max_judge_input_tokens", v.max_judge_input_tokens as u64),
+                ("max_sentences_per_batch", v.max_sentences_per_batch as u64),
+                (
+                    "judge_max_output_tokens",
+                    u64::from(v.judge_max_output_tokens),
+                ),
+                ("judge_timeout_secs", v.judge_timeout_secs),
+            ] {
+                if n == 0 {
+                    return Err(ArcanumError::Config(format!(
+                        "verify.{key} must be greater than zero"
+                    )));
+                }
+            }
+        }
+        Ok(Arc::new(out))
     }
 
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
@@ -945,6 +973,10 @@ impl ArcanumEngineBuilder {
             retrieval_svc = retrieval_svc.with_cache(c.clone());
         }
         let retrieval = Arc::new(retrieval_svc);
+        let counter: Arc<dyn TokenCounter> = self
+            .token_counter
+            .clone()
+            .unwrap_or_else(|| Arc::new(ApproxCl100kCounter::new()));
         let context = chunk_metadata_store.as_ref().map(|registry| {
             let rewriter = self.conversation_rewriter.clone().or_else(|| {
                 let rewriter = enricher.as_ref().map(|e| {
@@ -960,25 +992,40 @@ impl ArcanumEngineBuilder {
                 }
                 rewriter
             });
-            let counter = self
-                .token_counter
-                .clone()
-                .unwrap_or_else(|| Arc::new(ApproxCl100kCounter::new()));
             Arc::new(ContextService::new(
                 orchestrator.clone(),
                 registry.clone(),
                 rewriter,
-                counter,
+                counter.clone(),
                 self.config.context.clone(),
                 auth.clone(),
                 audit.clone(),
                 vector_store_cb.clone(),
             ))
         });
+        let verify = match (&chunk_metadata_store, self.config.verify.judge.is_some()) {
+            (Some(registry), true) => Some(Arc::new(VerifyService::new(
+                registry.clone(),
+                version_store.clone(),
+                generators.clone(),
+                counter.clone(),
+                self.config.verify.clone(),
+                auth.clone(),
+                audit.clone(),
+            ))),
+            (None, true) => {
+                tracing::info!(
+                    "verify.judge configured but no chunk registry; verification is disabled"
+                );
+                None
+            }
+            _ => None,
+        };
         let generate = match (&context, generators.is_empty()) {
             (Some(ctx), false) => Some(Arc::new(GenerateService::new(
                 ctx.clone(),
                 generators,
+                verify.clone(),
                 self.config.generate.clone(),
                 audit.clone(),
             ))),
@@ -1044,6 +1091,7 @@ impl ArcanumEngineBuilder {
             retrieval,
             context,
             generate,
+            verify,
             collection,
             experiment,
             audit,
@@ -1441,6 +1489,96 @@ mod tests {
             .await
             .unwrap();
         assert!(engine.generate.is_some());
+    }
+
+    fn verify_config(judge: Option<&str>) -> ArcanumConfig {
+        let mut cfg = ArcanumConfig::default();
+        cfg.generate.default_generator = Some("fake".into());
+        cfg.verify.judge = judge.map(String::from);
+        cfg
+    }
+
+    #[tokio::test]
+    async fn verify_absent_without_judge() {
+        let engine = base_builder()
+            .config(verify_config(None))
+            .chunk_metadata_store(registry())
+            .generator("fake", fake(), 100)
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.verify.is_none());
+    }
+
+    #[tokio::test]
+    async fn verify_present_with_judge_and_registry() {
+        let engine = base_builder()
+            .config(verify_config(Some("fake")))
+            .chunk_metadata_store(registry())
+            .generator("fake", fake(), 100)
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.verify.is_some());
+        assert!(engine.generate.is_some());
+    }
+
+    #[tokio::test]
+    async fn verify_absent_without_registry() {
+        let engine = base_builder()
+            .config(verify_config(Some("fake")))
+            .generator("fake", fake(), 100)
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.verify.is_none());
+    }
+
+    #[tokio::test]
+    async fn unknown_judge_is_config_error() {
+        let r = base_builder()
+            .config(verify_config(Some("nope")))
+            .chunk_metadata_store(registry())
+            .generator("fake", fake(), 100)
+            .build()
+            .await;
+        assert_eq!(
+            build_err_msg(r),
+            "configuration error: verify.judge 'nope' does not name a configured generator"
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_verify_limits_are_config_errors() {
+        type Tweak = fn(&mut ArcanumConfig);
+        let tweaks: [(&str, Tweak); 6] = [
+            ("max_answer_chars", |c| c.verify.max_answer_chars = 0),
+            ("max_passages", |c| c.verify.max_passages = 0),
+            ("max_judge_input_tokens", |c| {
+                c.verify.max_judge_input_tokens = 0
+            }),
+            ("max_sentences_per_batch", |c| {
+                c.verify.max_sentences_per_batch = 0
+            }),
+            ("judge_max_output_tokens", |c| {
+                c.verify.judge_max_output_tokens = 0
+            }),
+            ("judge_timeout_secs", |c| c.verify.judge_timeout_secs = 0),
+        ];
+        for (key, tweak) in tweaks {
+            let mut cfg = verify_config(Some("fake"));
+            tweak(&mut cfg);
+            let r = base_builder()
+                .config(cfg)
+                .chunk_metadata_store(registry())
+                .generator("fake", fake(), 100)
+                .build()
+                .await;
+            assert_eq!(
+                build_err_msg(r),
+                format!("configuration error: verify.{key} must be greater than zero")
+            );
+        }
     }
 
     #[tokio::test]

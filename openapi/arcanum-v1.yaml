@@ -290,6 +290,19 @@ paths:
         `generation failed`; the detail is logged server-side. When no context is found, `status` is `no_context` and
         the generator is not called. Requires a configured generator and a
         chunk registry, otherwise 503.
+
+        With `verify: true` the finished answer is also checked as
+        `/api/v1/verify` does, using the default judge and non-strict
+        citations. Without a configured judge the request fails with 503
+        (`verification requires a configured judge and a chunk registry`)
+        before any generation. The JSON response gains `verification`:
+        absent when `verify` is false, `null` when there was no context, a
+        `Verification` object otherwise. A judge failure never changes the
+        answer; it surfaces as `{"status": "error", "code", "message"}`. In
+        the stream a `verification` event follows `done` (data `null` when
+        there was no context). Verification limits apply: a context with
+        more passages than `verify.max_passages`, or passages over the judge
+        input budget, yields an `invalid` verification error.
       requestBody:
         required: true
         content:
@@ -310,6 +323,9 @@ paths:
                   Server-sent events in order: `context` (ContextResponse JSON),
                   zero or more `delta` (`{"text": string}`), then one `done`
                   (GenerateOutcome JSON) or one `error` (`{"error": string}`).
+                  When the request set `verify: true` and generation succeeded,
+                  one final `verification` event follows `done` (Verification
+                  JSON, or `null` when there was no context).
         '400':
           description: Malformed body, failed validation or unknown generator.
           content:
@@ -348,6 +364,85 @@ paths:
                 $ref: '#/components/schemas/ErrorBody'
         '504':
           description: The generator exceeded its first-token or total timeout.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+
+  /api/v1/verify:
+    post:
+      summary: Verify an answer sentence by sentence against passages
+      description: |
+        Splits the answer into sentences, attributes `[P1]` style citations to
+        each sentence, hydrates the named passages from the chunk registry
+        (joining each passage's chunks into one source slice) and asks a judge
+        model to check every sentence against all passages. Each supporting
+        quote is located in the source and reported with its chunk, document
+        version and byte range. `passages` accepts the passage objects returned
+        by `/api/v1/context` unchanged; only `ref_id` and `chunk_ids` are read.
+        A passage with a chunk that no longer exists is listed in
+        `passages_unavailable` and is not shown to the judge. The overall
+        `verdict` is `fail` when any sentence is `partial` or `unsupported`;
+        with `strict_citations` it also fails on `miscited` and
+        `uncited_supported`. Requires a configured judge and a chunk registry,
+        otherwise 503.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+      responses:
+        '200':
+          description: The verification result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyResponse'
+        '400':
+          description: >-
+            Malformed body, failed validation, unknown judge, a chunk outside
+            the collection, a passage spanning several document versions or
+            with non-contiguous chunks, passages over the judge input budget
+            (`passages exceed the judge input budget`), or an answer needing
+            more than 25 judge batches (`answer needs too many judge batches`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: The caller cannot access the collection.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '500':
+          description: Internal error, for example registry text that does not match its recorded byte range.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '502':
+          description: >-
+            The judge request failed (`judge request failed`) or returned
+            invalid output after one retry (`judge returned invalid output`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '503':
+          description: >-
+            No judge or chunk registry is configured
+            (`verification requires a configured judge and a chunk registry`)
+            or the judge circuit breaker is open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorBody'
+        '504':
+          description: The judge exceeded its timeout (`judge timed out`).
           content:
             application/json:
               schema:
@@ -720,6 +815,12 @@ components:
           type: boolean
           default: false
           description: When true, respond with text/event-stream.
+        verify:
+          type: boolean
+          default: false
+          description: >-
+            When true, verify the finished answer against the context passages
+            (see `verification` on the response). Requires a configured judge.
       required: [collection_id]
     GenerateCitation:
       type: object
@@ -794,7 +895,204 @@ components:
               type: string
             context:
               $ref: '#/components/schemas/ContextResponse'
+            verification:
+              nullable: true
+              description: >-
+                Present only when the request set `verify: true`. `null` when
+                there was no context to verify against.
+              allOf:
+                - $ref: '#/components/schemas/Verification'
           required: [answer, context]
+    VerifyRequest:
+      type: object
+      properties:
+        collection_id:
+          type: string
+        answer:
+          type: string
+          description: The answer to check, with `[P1]` style citations. At most `verify.max_answer_chars` (default 20000) characters.
+        passages:
+          type: array
+          minItems: 1
+          maxItems: 50
+          description: >-
+            Passages the answer may rely on. Context passage objects are
+            accepted unchanged; unknown fields are ignored.
+          items:
+            type: object
+            properties:
+              ref_id:
+                type: string
+                pattern: '^P[0-9]{1,3}$'
+                description: Unique within the request.
+              chunk_ids:
+                type: array
+                minItems: 1
+                items:
+                  type: string
+                description: Chunks of one document version that join contiguously.
+            required: [ref_id, chunk_ids]
+        judge:
+          type: string
+          description: Judge generator name. Defaults to `verify.judge`.
+        strict_citations:
+          type: boolean
+          default: false
+          description: Also fail the overall verdict on `miscited` and `uncited_supported` sentences.
+      required: [collection_id, answer, passages]
+    VerifyEvidence:
+      type: object
+      properties:
+        ref_id:
+          type: string
+        chunk_id:
+          type: string
+        document_id:
+          type: string
+        version_num:
+          type: integer
+        version_status:
+          type: string
+          enum: [active, superseded, deleted, unknown]
+        source_uri:
+          type: string
+        offset_start:
+          type: integer
+          description: Byte offset into the source document version.
+        offset_end:
+          type: integer
+        quote:
+          type: string
+        quote_matched:
+          type: boolean
+          description: >-
+            False when the judge's quote was not found in the passage; the
+            range then covers the whole passage.
+      required: [ref_id, chunk_id, document_id, version_num, version_status, source_uri, offset_start, offset_end, quote, quote_matched]
+    VerifyClaim:
+      type: object
+      properties:
+        text:
+          type: string
+        supported:
+          type: boolean
+        evidence:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerifyEvidence'
+      required: [text, supported, evidence]
+    VerifySentence:
+      type: object
+      properties:
+        span:
+          type: array
+          minItems: 2
+          maxItems: 2
+          description: Byte offsets (start, end) of the sentence in the answer.
+          items:
+            type: integer
+        text:
+          type: string
+        verdict:
+          type: string
+          enum: [supported, miscited, uncited_supported, partial, unsupported, no_claim]
+        cited:
+          type: array
+          description: Valid passage refs cited by the sentence.
+          items:
+            type: string
+        invalid_refs:
+          type: array
+          description: Cited refs that name no available passage.
+          items:
+            type: string
+        claims:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerifyClaim'
+      required: [span, text, verdict, cited, invalid_refs, claims]
+    VerifyResponse:
+      type: object
+      properties:
+        verdict:
+          type: string
+          enum: [pass, fail]
+        strict_citations:
+          type: boolean
+        counts:
+          type: object
+          properties:
+            supported:
+              type: integer
+            miscited:
+              type: integer
+            uncited_supported:
+              type: integer
+            partial:
+              type: integer
+            unsupported:
+              type: integer
+            no_claim:
+              type: integer
+          required: [supported, miscited, uncited_supported, partial, unsupported, no_claim]
+        sentences:
+          type: array
+          items:
+            $ref: '#/components/schemas/VerifySentence'
+        passages_unavailable:
+          type: array
+          description: Refs of passages with a missing chunk; they were not shown to the judge.
+          items:
+            type: string
+        judge:
+          type: object
+          properties:
+            name:
+              type: string
+            model:
+              type: string
+          required: [name, model]
+        usage:
+          type: object
+          description: Token counts are null when any judge call did not report them.
+          properties:
+            input_tokens:
+              type: integer
+              nullable: true
+            output_tokens:
+              type: integer
+              nullable: true
+            judge_calls:
+              type: integer
+          required: [input_tokens, output_tokens, judge_calls]
+      required: [verdict, strict_citations, counts, sentences, passages_unavailable, judge, usage]
+    Verification:
+      description: >-
+        Outcome of verifying a Generate answer, discriminated by `status`.
+        `ok` carries a full VerifyResponse; `error` reports a judge or limit
+        failure without affecting the answer.
+      oneOf:
+        - allOf:
+            - type: object
+              properties:
+                status:
+                  type: string
+                  enum: [ok]
+              required: [status]
+            - $ref: '#/components/schemas/VerifyResponse'
+        - type: object
+          properties:
+            status:
+              type: string
+              enum: [error]
+            code:
+              type: string
+              enum: [invalid, forbidden, judge_unavailable, judge_upstream, judge_timeout, judge_invalid_output, internal]
+            message:
+              type: string
+          required: [status, code, message]
+      discriminator:
+        propertyName: status
     ErrorBody:
       type: object
       properties:

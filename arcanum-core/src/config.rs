@@ -291,6 +291,32 @@ pub enum GeneratorProtocol {
     OpenaiCompatible,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct VerifyConfig {
+    pub judge: Option<String>,
+    pub max_answer_chars: usize,
+    pub max_passages: usize,
+    pub max_judge_input_tokens: usize,
+    pub max_sentences_per_batch: usize,
+    pub judge_max_output_tokens: u32,
+    pub judge_timeout_secs: u64,
+}
+
+impl Default for VerifyConfig {
+    fn default() -> Self {
+        Self {
+            judge: None,
+            max_answer_chars: 20_000,
+            max_passages: 50,
+            max_judge_input_tokens: 24_000,
+            max_sentences_per_batch: 40,
+            judge_max_output_tokens: 8192,
+            judge_timeout_secs: 90,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ServerConfig {
     /// Origins allowed for CORS. Empty = deny all cross-origin requests (fail-closed).
@@ -321,6 +347,8 @@ pub struct ArcanumConfig {
     pub context: ContextConfig,
     #[serde(default)]
     pub generate: GenerateConfig,
+    #[serde(default)]
+    pub verify: VerifyConfig,
 }
 
 impl ArcanumConfig {
@@ -887,5 +915,25 @@ model = "m"
 max_output_tokens = 1
 "#;
         assert!(toml::from_str::<ArcanumConfig>(toml).is_err());
+    }
+
+    #[test]
+    fn verify_config_defaults() {
+        let v = ArcanumConfig::default().verify;
+        assert_eq!(v.judge, None);
+        assert_eq!(v.max_answer_chars, 20_000);
+        assert_eq!(v.max_passages, 50);
+        assert_eq!(v.max_judge_input_tokens, 24_000);
+        assert_eq!(v.max_sentences_per_batch, 40);
+        assert_eq!(v.judge_max_output_tokens, 8192);
+        assert_eq!(v.judge_timeout_secs, 90);
+    }
+
+    #[test]
+    fn verify_config_parses_judge_and_keeps_defaults() {
+        let cfg: ArcanumConfig = toml::from_str("[verify]\njudge = \"cheap\"\n").unwrap();
+        assert_eq!(cfg.verify.judge.as_deref(), Some("cheap"));
+        assert_eq!(cfg.verify.max_passages, 50);
+        assert_eq!(cfg.verify.judge_timeout_secs, 90);
     }
 }

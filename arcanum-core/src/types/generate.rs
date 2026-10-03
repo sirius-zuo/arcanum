@@ -1,5 +1,6 @@
 use super::context::{ContextRequest, ContextResponse, Message, RenderFormat};
 use super::document::{ChunkId, DocumentId};
+use super::verify::Verification;
 use crate::traits::{GenerationUsage, StopReason};
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +34,8 @@ pub struct GenerateRequest {
     pub context: GenerateContextOptions,
     #[serde(default)]
     pub stream: bool,
+    #[serde(default)]
+    pub verify: bool,
 }
 
 impl GenerateRequest {
@@ -106,6 +109,9 @@ pub struct GenerateResponse {
     #[serde(flatten)]
     pub outcome: GenerateOutcome,
     pub context: ContextResponse,
+    /// Absent: verification not requested. `null`: requested but not run.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verification: Option<Option<Verification>>,
 }
 
 #[cfg(test)]
@@ -126,6 +132,7 @@ mod tests {
             instructions: None,
             context: Default::default(),
             stream: false,
+            verify: false,
         }
     }
 
@@ -220,6 +227,7 @@ mod tests {
                 },
             },
             context,
+            verification: None,
         };
         let mut v = serde_json::to_value(&resp).unwrap();
         assert_eq!(v["status"], "no_context");
@@ -242,5 +250,62 @@ mod tests {
         };
         v = serde_json::to_value(&c).unwrap();
         assert_eq!(v["answer_spans"], json!([[25, 29]]));
+    }
+
+    #[test]
+    fn verify_defaults_false() {
+        let r: GenerateRequest =
+            serde_json::from_value(json!({"collection_id":"d","query":"q"})).unwrap();
+        assert!(!r.verify);
+    }
+
+    #[test]
+    fn verification_absent_null_or_object() {
+        let mut resp = GenerateResponse {
+            answer: "x".into(),
+            outcome: GenerateOutcome {
+                status: GenerateStatus::Ok,
+                citations: vec![],
+                unknown_refs: vec![],
+                stop_reason: StopReason::EndTurn,
+                usage: GenerationUsage::default(),
+                generator: GeneratorInfo {
+                    name: "smart".into(),
+                    model: "m".into(),
+                },
+            },
+            context: ContextResponse {
+                resolved_query: "q".into(),
+                resolved_query_source: ResolvedQuerySource::Original,
+                passages: vec![],
+                background: vec![],
+                usage: ContextUsage {
+                    budget: 0,
+                    used: 0,
+                    passages: 0,
+                    background: 0,
+                    dropped_passages: 0,
+                    counter: "c".into(),
+                },
+                retrieval: RetrievalInfo {
+                    queries: vec![],
+                    strategies_ok: vec![],
+                    strategies_failed: vec![],
+                },
+                rendered: None,
+            },
+            verification: None,
+        };
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v.get("verification").is_none());
+        resp.verification = Some(None);
+        let v = serde_json::to_value(&resp).unwrap();
+        assert!(v["verification"].is_null());
+        resp.verification = Some(Some(Verification::Error {
+            code: "c".into(),
+            message: "m".into(),
+        }));
+        let v = serde_json::to_value(&resp).unwrap();
+        assert_eq!(v["verification"]["status"], "error");
     }
 }

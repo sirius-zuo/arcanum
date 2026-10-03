@@ -182,7 +182,9 @@ model. A stream ends with exactly one `Done` or one `Err`, and there is no
 non-streaming method; the JSON path drains the stream. `StopReason`
 (`EndTurn`, `MaxTokens`, `Other`) serializes to `end_turn`, `max_tokens`,
 `other`. `ScriptedGenerator` replays a list of `ScriptStep`s and serves
-engine, server, and MCP tests.
+engine, server, and MCP tests; `ScriptedGenerator::with_scripts` takes one
+script per call, so a retry test can return a different reply each time
+(the last script repeats once the list is exhausted).
 
 `types/generate.rs` holds the wire shapes. `GenerateRequest` adds `mode`
 (`GenerateMode`: `answer`, `summarize`), `generator`, `max_tokens`,
@@ -203,6 +205,28 @@ document id and version, source URI, byte offsets, and `answer_spans`.
 `GeneratorConfig`s (`protocol` of `anthropic` or `openai_compatible`,
 `model`, `api_key_env`, `base_url`, `max_output_tokens`). It defaults when
 absent. `ArcanumError::Generation` carries generator-side failures.
+
+### Verify types and `VerifyConfig`
+
+`types/verify.rs` holds the Verify wire shapes. `VerifyRequest`
+(`collection_id`, `answer`, `passages` as `PassageRef`s of `ref_id` and
+`chunk_ids`, optional `judge`, `strict_citations`) has a `validate()` that
+checks the answer and passage limits and the `^P\d{1,3}$` ref-id shape and
+returns the 400 message. `VerifyResponse` carries the `OverallVerdict`
+(`pass`, `fail`), `VerdictCounts`, a `SentenceResult` per sentence
+(`span`, `text`, `SentenceVerdict`, `cited`, `invalid_refs`, `ClaimResult`s
+with `Evidence`), `passages_unavailable`, the judge's `GeneratorInfo`, and
+`VerifyUsage`. `SentenceVerdict` serializes to `supported`, `miscited`,
+`uncited_supported`, `partial`, `unsupported`, `no_claim`. `Verification`
+is the internally tagged `status` enum Generate embeds: `ok` (the
+`VerifyResponse` flattened) or `error` (`code`, `message`).
+
+`VerifyConfig` (`[verify]`) holds `judge` (an `Option<String>`; absent
+disables Verify), `max_answer_chars` 20000, `max_passages` 50,
+`max_judge_input_tokens` 24000, `max_sentences_per_batch` 40,
+`judge_max_output_tokens` 8192, and `judge_timeout_secs` 90. It defaults
+when absent. `GenerateRequest` gains `verify`, and `GenerateResponse`
+gains an optional `verification`.
 
 On the `arcanum-models` side, `sse.rs` is a byte-buffering SSE line parser
 (a multibyte character split across network chunks decodes whole), and
@@ -525,6 +549,7 @@ over it with a streaming `reqwest` call.
 - `arcanum-core/src/traits/` (module)
 - `arcanum-core/src/traits/generator.rs`
 - `arcanum-core/src/types/generate.rs`
+- `arcanum-core/src/types/verify.rs`
 - `arcanum-models/src/` (crate)
 
 ## Related Pages

@@ -9,6 +9,7 @@ pub mod operation;
 pub mod provenance;
 pub mod query;
 pub mod tree;
+pub mod verify;
 pub use chunk_config::{
     ChunkStrategyConfig, ExperimentId, PerBackendChunkConfig, PerBackendChunkers, ShadowContext,
 };
@@ -32,6 +33,7 @@ pub use provenance::{
 };
 pub use query::*;
 pub use tree::*;
+pub use verify::*;
 
 use serde::{Deserialize, Serialize};
 
