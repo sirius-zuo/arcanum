@@ -1,45 +1,7 @@
-use arcanum_core::traits::{Embedder, Generator, ScriptStep, ScriptedGenerator, StopReason};
-use arcanum_core::types::Vector;
-use atlas::{build_state, ModelDeps, Settings};
-use std::sync::Arc;
+mod common;
 
-struct FakeEmbedder;
-
-#[async_trait::async_trait]
-impl Embedder for FakeEmbedder {
-    async fn embed(&self, texts: Vec<String>) -> arcanum_core::Result<Vec<Vector>> {
-        Ok(texts
-            .iter()
-            .map(|t| {
-                let mut v = vec![0.0f32; 8];
-                for (i, b) in t.bytes().enumerate() {
-                    v[i % 8] += b as f32;
-                }
-                Vector(v)
-            })
-            .collect())
-    }
-    fn dimension(&self) -> usize {
-        8
-    }
-}
-
-fn models() -> ModelDeps {
-    let gen: Arc<dyn Generator> = Arc::new(ScriptedGenerator::new(
-        "m",
-        vec![
-            ScriptStep::Delta("ok".into()),
-            ScriptStep::Done(StopReason::EndTurn),
-        ],
-    ));
-    ModelDeps {
-        embedder: Arc::new(FakeEmbedder),
-        enricher: None,
-        generators: vec![("local".into(), gen, 512)],
-        default_generator: "local".into(),
-        judge: Some("local".into()),
-    }
-}
+use atlas::{build_state, Settings};
+use common::models;
 
 #[tokio::test]
 async fn build_state_wires_every_service() {

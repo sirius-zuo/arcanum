@@ -6,6 +6,7 @@ use axum::Json;
 /// Error type shared by all `/demo` routes; renders as `{"error": "..."}`.
 #[derive(Debug)]
 pub enum DemoError {
+    BadRequest(String),
     Unauthorized(String),
     Forbidden(String),
     NotFound(String),
@@ -17,6 +18,7 @@ pub enum DemoError {
 impl IntoResponse for DemoError {
     fn into_response(self) -> Response {
         let (status, msg) = match self {
+            DemoError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             DemoError::Unauthorized(m) => (StatusCode::UNAUTHORIZED, m),
             DemoError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             DemoError::NotFound(m) => (StatusCode::NOT_FOUND, m),

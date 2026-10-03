@@ -3,14 +3,17 @@ use crate::state::{AtlasState, GeneratorMeta};
 use anyhow::{Context, Result};
 use arcanum_core::config::{ArcanumConfig, OrchestrationMode};
 use arcanum_core::traits::{
-    Embedder, Generator, GraphStore, InMemoryChunkMetadataStore, TextEnricher, TreeStore,
-    VectorStore,
+    Embedder, Generator, GraphStore, InMemoryChunkMetadataStore, Preprocessor, TextEnricher,
+    TreeStore, VectorStore,
 };
+use arcanum_core::types::RawDocument;
 use arcanum_core::ArcanumError;
 use arcanum_engine::ArcanumEngineBuilder;
 use arcanum_evidence::DefaultEvidenceResolver;
 use arcanum_graph::InMemoryGraphStore;
-use arcanum_ingestion::{LocalSnapshotStore, SqliteDocumentVersionStore};
+use arcanum_ingestion::{
+    LocalOperationPayloadStore, LocalSnapshotStore, SqliteDocumentVersionStore,
+};
 use arcanum_models::{AnthropicGenerator, OllamaProvider, OpenAiCompatibleGenerator};
 use arcanum_tree::InMemoryTreeStore;
 use arcanum_vector::{Bm25Index, LanceDbStore};
@@ -24,6 +27,18 @@ pub const COLLECTION: &str = "halcyon";
 
 const CLAUDE_MODEL: &str = "claude-sonnet-5-5";
 const GENERATOR_MAX_OUTPUT_TOKENS: u32 = 1024;
+
+/// The sample corpus is already text (markdown), so preprocessing is the identity. The standard
+/// pipeline template fails without a `default` preprocessor, and passing the bytes through
+/// keeps the raw snapshot identical to the text the chunk offsets index.
+struct PassThroughPreprocessor;
+
+#[async_trait::async_trait]
+impl Preprocessor for PassThroughPreprocessor {
+    async fn process(&self, doc: RawDocument) -> arcanum_core::Result<RawDocument> {
+        Ok(doc)
+    }
+}
 
 /// The model-facing dependencies. Tests inject fakes; production uses Ollama.
 pub struct ModelDeps {
@@ -129,7 +144,9 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         .graph_store(graph_store.clone())
         .tree_store(tree_store.clone())
         .version_store(version_store)
+        .register_preprocessor("default", Arc::new(PassThroughPreprocessor))
         .snapshot_store(snapshot_store)
+        .payload_store(Arc::new(LocalOperationPayloadStore::new(path("payloads"))))
         .bm25_index(bm25)
         .chunk_metadata_store(registry.clone())
         .evidence(evidence);

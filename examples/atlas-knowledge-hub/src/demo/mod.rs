@@ -2,7 +2,9 @@
 
 pub mod auth;
 pub mod bootstrap;
+pub mod documents;
 pub mod health;
+pub mod library;
 pub mod samples;
 
 use crate::samples::Manifest;
@@ -37,5 +39,10 @@ pub fn demo_router(
         .route("/demo/bootstrap", get(bootstrap::bootstrap))
         .route("/demo/health", get(health::health))
         .route("/demo/samples", get(samples::samples))
+        .route("/demo/library", get(library::library))
+        .route(
+            "/demo/documents/:document_id/versions/:n/text",
+            get(documents::document_text),
+        )
         .with_state(ctx)
 }

@@ -1,8 +1,7 @@
-use arcanum_core::traits::{Embedder, Generator, ScriptStep, ScriptedGenerator, StopReason};
-use arcanum_core::types::Vector;
+mod common;
+
 use atlas::demo::{demo_router, OllamaProbe};
 use atlas::samples::load_manifest;
-use atlas::{build_state, ModelDeps, Settings};
 use axum::body::Body;
 use axum::Router;
 use http::{Request, StatusCode};
@@ -10,18 +9,6 @@ use serde_json::Value;
 use std::path::Path;
 use std::sync::Arc;
 use tower::ServiceExt;
-
-struct FakeEmbedder;
-
-#[async_trait::async_trait]
-impl Embedder for FakeEmbedder {
-    async fn embed(&self, texts: Vec<String>) -> arcanum_core::Result<Vec<Vector>> {
-        Ok(texts.iter().map(|_| Vector(vec![1.0; 8])).collect())
-    }
-    fn dimension(&self) -> usize {
-        8
-    }
-}
 
 struct FakeProbe(Result<Vec<String>, String>);
 
@@ -33,30 +20,9 @@ impl OllamaProbe for FakeProbe {
 }
 
 async fn app(probe: Result<Vec<String>, String>) -> (Router, tempfile::TempDir) {
-    let dir = tempfile::tempdir().unwrap();
-    let gen: Arc<dyn Generator> = Arc::new(ScriptedGenerator::new(
-        "m",
-        vec![
-            ScriptStep::Delta("ok".into()),
-            ScriptStep::Done(StopReason::EndTurn),
-        ],
-    ));
-    let models = ModelDeps {
-        embedder: Arc::new(FakeEmbedder),
-        enricher: None,
-        generators: vec![("local".into(), gen, 512)],
-        default_generator: "local".into(),
-        judge: Some("local".into()),
-    };
-    let state = build_state(Settings::for_tests(dir.path().join("data")), models)
-        .await
-        .unwrap();
+    let (state, dir) = common::test_state().await;
     let manifest = load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("samples")).unwrap();
-    let router = demo_router(
-        Arc::new(state),
-        Arc::new(manifest),
-        Arc::new(FakeProbe(probe)),
-    );
+    let router = demo_router(state, Arc::new(manifest), Arc::new(FakeProbe(probe)));
     (router, dir)
 }
 
