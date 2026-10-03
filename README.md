@@ -2,7 +2,15 @@
 
 **Production-grade grounded RAG engine written in Rust: retrieval, context, generation and verification, each traced to source document versions and offsets.**
 
-Arcanum combines four independent retrieval strategies (dense vector, BM25 lexical, knowledge graph, and hierarchical RAPTOR tree, plus a ColBERT re-rank variant of Vector) into a single, enterprise-ready system with pluggable backends, per-backend chunking strategies, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
+Arcanum covers the whole path from raw documents to an answer you can audit:
+
+1. **Ingest** documents through DAG pipelines with per-backend chunking, versioning and deduplication.
+2. **Retrieve** with four independent strategies (dense vector, BM25 lexical, knowledge graph, and hierarchical RAPTOR tree, plus a ColBERT re-rank variant of Vector) fused into one ranking.
+3. **Assemble context** that fits a token budget, with every passage numbered for citation.
+4. **Generate** an answer with inline `[P1]` citations, streamed or not, from a configured LLM.
+5. **Verify** that answer sentence by sentence against the passages, with evidence traced to a chunk, a document version and a byte range.
+
+Each step is usable on its own: call `search` and bring your own LLM, call `context` and bring your own prompt, or call `generate` and `verify` for the full loop. It ships as an enterprise-ready system with pluggable backends, shadow experiment infrastructure, and a native Model Context Protocol (MCP) interface for AI assistants.
 
 ---
 
@@ -15,6 +23,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 - **Chunk strategy experimentation built-in**: shadow experiments A/B-test a challenger chunking strategy against the live collection without affecting queries. An offline benchmark harness and an inspect API let you measure before you commit.
 - **Hexagonal architecture enforced at the type level**: every storage backend, model provider, and external service is hidden behind a trait. Swap LanceDB for PgVector, Tantivy for an external search service, or Neo4j for an in-memory store with a one-line builder change and zero pipeline rewrites.
 - **Built-in evidence layer**: every chunk, tree summary, graph entity, and relation can be traced back to the exact document version, byte range, and raw snapshot it came from. Document versioning and retention-based garbage collection are first-class, not bolted on.
+- **Grounded answers you can check**: Context assembles numbered passages, Generate cites them inline, and Verify judges each answer sentence against those passages and reports a pass or fail with evidence offsets. The same chunk registry that powers retrieval makes every verdict traceable to source text.
 - **Compiled, not interpreted**: the Rust runtime eliminates GIL contention, cold-start latency, and memory fragmentation that plague Python RAG stacks under concurrent load.
 - **MCP handler included**: Claude and other AI assistants can call `search`, `ingest`, `list_collections`, `eval_run`, `get_context`, `generate`, and `verify` over JSON-RPC 2.0 directly; all seven tools are implemented (see [MCP Integration](#mcp-integration)).
 - **Three runtime modes**: `Development` (SQLite, in-memory stores permitted), `Production`, and `Enterprise` (both require Postgres + LanceDB/Neo4j). Startup validation enforces the SQLite-vs-Postgres split only; RBAC, audit logging, and secret-store rotation are available in every mode, not gated by `runtime_mode` (see [Runtime Modes](#runtime-modes)).
@@ -35,6 +44,10 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
 │   ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
 │   │ IngestionService│  │ RetrievalService │  │  ExperimentService   │  │
 │   └────────┬────────┘  └────────┬─────────┘  └──────────────────────┘  │
+│   ┌─────────────────┐  ┌──────────────────┐  ┌──────────────────────┐  │
+│   │ ContextService  │  │ GenerateService  │  │    VerifyService     │  │
+│   │ (pack + number) │  │ (cite answers)   │  │ (judge, trace)       │  │
+│   └─────────────────┘  └──────────────────┘  └──────────────────────┘  │
 └────────────│────────────────────│────────────────────────────────────────┘
              │                    │
 ┌────────────▼──────┐   ┌────────▼──────────────────────────────────────┐
@@ -69,7 +82,7 @@ Most RAG frameworks are single-strategy wrappers around one vector database. Arc
     └──────────────┘                                  └──────────────┘
 ```
 
-The 15-crate workspace maps cleanly to layers:
+The 19-crate workspace maps cleanly to layers:
 
 | Layer | Crates |
 |---|---|
@@ -77,6 +90,7 @@ The 15-crate workspace maps cleanly to layers:
 | **Ingestion** | `arcanum-ingestion`, `arcanum-pipeline` |
 | **Evidence & provenance** | `arcanum-evidence` |
 | **Retrieval** | `arcanum-retrieval`, `arcanum-eval` |
+| **Grounded answers** (pure logic, no I/O) | `arcanum-context`, `arcanum-generate`, `arcanum-verify` |
 | **Chunk evaluation** | `arcanum-chunk-eval` |
 | **Storage adapters** | `arcanum-vector`, `arcanum-graph`, `arcanum-tree` |
 | **Model adapters** | `arcanum-models` |
@@ -773,6 +787,19 @@ let results = engine.retrieval.search(
 ).await?;
 ```
 
+### Ask, then check the answer
+
+With a chunk registry, a generator and a judge configured (see [Generate API](#generate-api) and [Verify API](#verify-api)), one request retrieves, answers with citations and verifies the answer:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/generate \
+  -H "Authorization: Bearer $TOKEN" \
+  -d '{"collection_id":"legal","query":"What counts as a material breach?","verify":true}'
+# -> { "answer": "... [P1] ...", "citations": [...], "verification": { "status": "ok", "verdict": "pass", ... } }
+```
+
+The same pieces are available separately: `/api/v1/context` returns packed, numbered passages for your own prompt, and `/api/v1/verify` checks any answer against passages you supply.
+
 ---
 
 ## Enterprise Features
@@ -831,6 +858,9 @@ WebSocket endpoint at `/ws/events`. Clients subscribe to topics (`ingestion:<col
 | `arcanum_request_duration_seconds` | Histogram | Per-endpoint latency |
 | `arcanum_ingest_docs_total` | Counter | Documents ingested, by status |
 | `arcanum_active_retrievers` | Gauge | Number of wired retriever strategies |
+| `arcanum_generation_total` | Counter | Generate calls by generator, mode and status |
+| `arcanum_verify_requests_total` | Counter | Verify calls by outcome (`pass`, `fail`, or an error code) |
+| `arcanum_verify_judge_calls_total` | Counter | Judge calls by result, for judge health |
 
 ---
 

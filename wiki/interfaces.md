@@ -235,7 +235,7 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    error `-32602` on failure) and defaults `render` to `xml` when absent.
 2. Both call `ContextService::assemble(req, &claims)`; the handler does
    not check collection access itself, the service does (see
-   [Engine](engine.md) for the flow and [Retrieval](retrieval.md) for
+   [Context](context.md) and [Engine](engine.md) for the flow and [Retrieval](retrieval.md) for
    candidates).
 3. REST maps `ContextError` through `context_error_status`: `Invalid` to
    400, `Forbidden` to 403, `Unavailable` to 503, `Internal` to 500, each
@@ -273,8 +273,10 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    drops the stream and cancels the upstream LLM request.
 4. The handler records `arcanum_requests_total` and
    `arcanum_request_duration_seconds` with `endpoint="generate"`; the
-   status label reflects the HTTP status, so a mid-stream `error` event
-   still counts as `ok`. Generation-level metrics are recorded by the
+   for SSE responses the `SseMetrics` guard records the status when
+   the stream ends: `error` unless a `done` event was seen, so a mid-stream
+   `error` event and a dropped stream both count as `error`. JSON responses
+   use the HTTP status. Generation-level metrics are recorded by the
    service (see [Engine](engine.md)).
 5. MCP maps `Invalid` to a JSON-RPC `-32602` error and every other
    `GenerateError` to an `isError` result. Success returns the answer as
@@ -549,3 +551,6 @@ Newest first.
 - [Retrieval](retrieval.md)
 - [Storage](storage.md)
 - [Evaluation](evaluation.md)
+- [Context](context.md)
+- [Generate](generate.md)
+- [Verify](verify.md)

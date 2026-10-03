@@ -21,7 +21,7 @@ either of those crates; see Key Decisions.
 (`EvidenceResolver`, `ChunkMetadataStore`, `DocumentVersionStore`,
 `TreeStore`, `GraphStore`) and `arcanum_core::types` (`ChunkId`,
 `EntityId`, `TreeNodeId`, `EvidenceKind`, `ProofChain`, `ProofNode`,
-`RawSourceRef`, `ChunkMetadataRecord`, `VersionStatus`). It has no
+`RawSourceRef`, `ChunkMetadataRecord`, `ChunkBackend`, `VersionStatus`). It has no
 non-test dependency on `arcanum-tree` or `arcanum-graph` as concrete
 crates: `DefaultEvidenceResolver` and `PostgresGcWorker` reach tree and
 graph data only through the `Arc<dyn TreeStore>`/`Arc<dyn GraphStore>`
@@ -62,7 +62,9 @@ store it touches through the same `arcanum-core` trait objects.
 classDiagram
     class EvidenceResolver { <<trait>> resolve_chunk() resolve_tree_node() resolve_entity() resolve_relation() }
     class DefaultEvidenceResolver
-    class ChunkMetadataStore { <<trait>> }
+    class ChunkMetadataStore { <<trait>> put() get() get_many() }
+    class ChunkMetadataRecord
+    class ChunkBackend { <<enum>> Vector Lexical Graph Tree }
     class DocumentVersionStore { <<trait>> }
     class TreeStore { <<trait>> }
     class GraphStore { <<trait>> }
@@ -72,6 +74,8 @@ classDiagram
     class GcWorker { <<trait>> run_once() }
     class PostgresGcWorker
 
+    ChunkMetadataStore --> ChunkMetadataRecord : stores
+    ChunkMetadataRecord --> ChunkBackend : backend
     EvidenceResolver <|.. DefaultEvidenceResolver
     DefaultEvidenceResolver --> ChunkMetadataStore : chunk_metadata
     DefaultEvidenceResolver --> DocumentVersionStore : version_store
@@ -120,6 +124,15 @@ per-chunk error via `tracing::warn!`), then wrap the collected
 removes exact duplicates) as `ProofChain.raw_sources`. `resolve_chunk`
 skips this fan-out: it wraps `resolve_chunk_inner`'s pair directly into
 a one-node `ProofChain`.
+
+`ChunkMetadataRecord` (in `arcanum-core`) is, since PR #60, the shared chunk
+registry for all four retrieval backends. It carries `backend: ChunkBackend`
+(`Vector`, `Lexical`, `Graph`, `Tree`; lowercase serde plus `as_str`/`FromStr`
+for the SQL column), `text` and `chunk_index` beside its provenance fields.
+`ChunkMetadataStore::get_many` returns present ids in unspecified order, and
+`ChunkMetadataRecord::to_chunk` rebuilds a `Chunk` for hydration (consumers
+in [Retrieval](retrieval.md)). `resolve_chunk_inner` reads none of the three
+new fields, so resolver behavior is unchanged by PR #60.
 
 `PostgresGcWorker` (moved into this crate from `arcanum-ingestion` by
 PR #53, pure rename) is a plain struct of a `sqlx::PgPool` plus six
@@ -199,6 +212,30 @@ Runtime Flows.
 ## Key Decisions
 
 Newest first.
+
+### One chunk registry for all retrieval backends, tagged by `ChunkBackend`
+- **Decision**: `ChunkMetadataRecord` gains `backend: ChunkBackend`, `text`
+  and `chunk_index`, and `ChunkMetadataStore` gains `get_many`, so the single
+  registry that `DefaultEvidenceResolver` resolves through also serves
+  Vector, BM25, Graph and RAPTOR retrieval. Each ingestion line registers
+  its own chunks after its own write succeeds, and a registry write failure
+  is a stage failure.
+- **Context**: PR #60's summary states the goal as every chunk returned by
+  the four backends carrying its real `ChunkId`, stable `DocumentId`, source
+  text, byte offsets and provenance, each backend "self-sufficient at
+  ingestion and retrieval". It records that BM25 and RAPTOR leaves hydrate
+  from the registry and that the engine fails at build time if lexical,
+  graph or tree is enabled without one (`ArcanumEngineBuilder::build`
+  returns `ArcanumError::Config`).
+- **Alternatives rejected**: not recorded.
+- **Consequences**: registry rows now span four backends, so
+  `ChunkMetadataStore::delete_by_document_version` (used by
+  `PostgresGcWorker`) returns chunk ids from every backend, not only
+  vector ones; see Implementation Notes. The PR states this is greenfield
+  with no migrations or compatibility code, so existing databases must be
+  recreated: the `chunk_metadata` schema is created with `CREATE TABLE IF NOT
+  EXISTS` and does not alter an older table.
+- **Ref**: 2026-10-02, PR #60.
 
 ### `PostgresGcWorker` moves into `arcanum-evidence`; `DefaultEvidenceResolver`'s tree/graph stores become optional
 - **Decision**: PR #53 relocated `PostgresGcWorker` from
@@ -350,6 +387,17 @@ Newest first.
 
 ## Implementation Notes
 
+- **PR #59 touched this page's anchors only mechanically**: its diff to the
+  evidence files is `cargo fmt` reformatting (the PR body calls its first
+  commit a mechanical workspace format), so it has no Key Decision here.
+- **Gap (observed): GC deletes registry rows for all backends but calls only
+  `VectorStore::delete`.** Since PR #60,
+  `ChunkMetadataStore::delete_by_document_version` returns ids from every
+  backend; `PostgresGcWorker` passes them all to `VectorStore::delete` and
+  counts them in `GcReport.chunks_removed`. The worker holds no BM25 handle,
+  so lexical entries of a GC'd version are not purged by GC (PR #60 covers
+  lexical cleanup on source deletion, not on GC). Follow-up candidate, not
+  current design.
 - **`DefaultEvidenceResolver` auto-wiring gate narrowed from three
   stores to one (resolved by PR #53; previously documented here as
   three-store-gated).** PR #50's item 2.4 (commit `b7e81d70`) originally
@@ -411,3 +459,5 @@ Newest first.
 - [Interfaces](interfaces.md)
 - [Retrieval](retrieval.md)
 - [Engine](engine.md)
+- [Storage](storage.md)
+- [Verify](verify.md)

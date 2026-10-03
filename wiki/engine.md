@@ -40,9 +40,10 @@ composes:
   supply the corresponding store directly (PR #53, PR #54).
 - [Pipeline](pipeline.md): builds `PipelineDeps`, an
   `ArcanumPipelineRegistry`, and a pool of `IngestionWorker`s; also
-  constructs `arcanum-middleware`'s `CircuitBreaker`, `BoundedQueue`,
-  `RetryPolicy` (see Pipeline's Position section for the shared-queue
-  detail).
+  constructs `arcanum-middleware`'s `CircuitBreaker` and `BoundedQueue`
+  (see Pipeline's Position section for the shared-queue detail). The engine
+  no longer constructs a `RetryPolicy`; the worker's retry loop was removed
+  when ingestion operations became durable (PR #59).
 - [Retrieval](retrieval.md): builds `RetrievalOrchestrator` and adds
   `VectorRetriever`/`ColBertRetriever`/`GraphRetriever`/`RaptorRetriever`/
   `Bm25Retriever` conditionally; all five retrieval strategies are
@@ -69,11 +70,11 @@ composes:
   an `Option<Arc<ArcanumEngine>>` and call through its public fields
   (`engine.auth`, `engine.retrieval`, `engine.ingestion`, ...); no code
   in this crate depends on either.
-- `arcanum-context` (no separate wiki page; documented here): the pure
+- `arcanum-context` (see [Context](context.md)): the pure
   context-packing crate (`cluster_sources`, `assemble`, `render`,
   `resolve_query`, `ConversationRewriter`/`EnricherRewriter`). It depends
   only on `arcanum-core`; `ContextService` is its sole consumer.
-- `arcanum-verify` (no separate wiki page; documented here): the pure
+- `arcanum-verify` (see [Verify](verify.md)): the pure
   Verify logic crate (see Architecture). It depends on `arcanum-core`,
   `arcanum-context` (the `xml` passage rendering; `TokenCounter` is in
   `arcanum-core`)
@@ -362,7 +363,10 @@ and `VerifyError::code()` gives the wire codes (`invalid`, `forbidden`,
    generator (`Unavailable` when open).
 5. `build_prompt` produces the system prompt and messages; the returned
    event stream is lazy, so the LLM call happens when it is first polled.
-   Dropping the stream cancels the upstream request and records nothing.
+   Dropping the stream cancels the upstream request and records no
+   generation metric, breaker result or audit entry; the route's `SseMetrics`
+   guard still records `arcanum_requests_total` as `error` unless a `done`
+   event was seen (see [Interfaces](interfaces.md)).
 6. Polling drives `Generator::stream` under `timeout_at`: the first-token
    deadline covers the call and the first event, the total deadline covers
    everything. A timeout yields `Timeout`; a generator error or a stream
@@ -393,7 +397,9 @@ reports usage, and writes a `generate` audit entry.
 3. `segment` and `attribute` produce the units and their `cited` and
    `invalid_refs`; `plan_batches` splits the claim units (`Invalid` when
    the passages alone exceed `max_judge_input_tokens`).
-4. The judge breaker is checked once (`Unavailable` when open). Batches run
+4. The judge breaker is checked once before fan-out in `VerifyService::run`
+   (`Unavailable` when open) and again inside every `call_judge` call,
+   retries included. Batches run
    concurrently, four at a time, each as a `Generator::stream` call at
    temperature 0 under `judge_timeout_secs`, with the stream drained into
    a string.
@@ -740,6 +746,12 @@ Newest first.
   calls bypass both the cache and the health monitor; per-provider
   monitor attribution under the router is also unimplemented.
 
+- **Provenance note.** The rationale in the `no_context`-before-breaker Key
+  Decision above is not recorded in a tracked source (commit 816e913 has no
+  message body); it may come from the untracked generate design doc. Commit
+  6cfed24 records only the ordering (short-circuit to `no_context` before the
+  generator breaker).
+
 ## Source Anchors
 
 - `arcanum-engine/src/engine.rs`
@@ -770,3 +782,6 @@ Newest first.
 - [Evidence](evidence.md)
 - [Interfaces](interfaces.md)
 - [Evaluation](evaluation.md)
+- [Context](context.md)
+- [Generate](generate.md)
+- [Verify](verify.md)

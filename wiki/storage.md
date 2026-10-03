@@ -8,11 +8,11 @@ storage technology, so the rest of the system can depend on `Arc<dyn
 VectorStore>`/`Arc<dyn GraphStore>`/`Arc<dyn TreeStore>` without knowing which
 backend is behind it. `arcanum-vector` provides `LanceDbStore` (embedded,
 file-based) and `PgVectorStore` (pgvector) as `VectorStore` implementations,
-plus a Tantivy-backed `Bm25Index` (`LexicalIndex`) and a `HybridIndexManager`
-that pairs the two. `arcanum-graph` provides three `GraphStore`
+plus a Tantivy-backed `Bm25Index` (`LexicalIndex`), partitioned by
+collection. `arcanum-graph` provides three `GraphStore`
 implementations spanning dev to production (`InMemoryGraphStore`, the
 persistent embedded `SledGraphStore`, and `Neo4jStore`), plus
-`GraphQueryPlanner` (`GraphPlanner`). `arcanum-tree` provides
+`GraphQueryPlanner` (`GraphPlanner`) and `HopDecayScorer` (`GraphScorer`). `arcanum-tree` provides
 `InMemoryTreeStore` and `PgTreeStore` (`TreeStore`), plus `RaptorBuilder`,
 which builds a RAPTOR-style hierarchical summary tree on top of any
 `TreeStore`. Splitting these into three crates (rather than one) lets a
@@ -25,24 +25,23 @@ All three crates consume only [Core](core.md): `arcanum-core::traits::store`
 (`VectorStore`, `GraphStore`, `TreeStore`, and the shared `relation_identity_key`/
 `relation_touches_removed_entity`/`merge_relation` free functions),
 `traits::lexical_index::LexicalIndex`, `traits::graph_planner::GraphPlanner`,
-and `types::*`. None of the three depends on either of the other two.
+`traits::graph_scorer::GraphScorer`, and `types::*`. None of the three depends on either of the other two.
 
 - [Pipeline](pipeline.md): `arcanum-pipeline` depends on `arcanum-vector`
-  and `arcanum-tree` directly (`Cargo.toml` regular dependencies): the latter
-  for the concrete `RaptorBuilder` type used by `make_raptor_build_stage`.
-  Its write stages otherwise call through `Arc<dyn VectorStore>`/`Arc<dyn
-  GraphStore>`/`Arc<dyn TreeStore>` trait objects, so it does not need a
-  regular dependency on `arcanum-graph` to write graph data.
+  (for `Bm25Index`) and `arcanum-tree` (for `RaptorBuilder`) directly; its
+  write stages otherwise use `Arc<dyn VectorStore>`/`Arc<dyn
+  GraphStore>`/`Arc<dyn TreeStore>`, so it has no `arcanum-graph` dependency.
 - [Retrieval](retrieval.md): `arcanum-retrieval` depends on `arcanum-vector`
   and `arcanum-graph` only as `[dev-dependencies]` (for its own tests); its
-  non-test build reaches these backends solely through the `LexicalIndex`
-  and `GraphPlanner` trait objects `arcanum-engine` wires in; see core.md's
+  non-test build reaches these backends solely through the `LexicalIndex`,
+  `GraphPlanner` and `GraphScorer` trait objects `arcanum-engine` wires in; see core.md's
   "LexicalIndex and GraphPlanner extracted" decision.
 - [Engine](engine.md): `arcanum-engine`'s builder is the composition root:
   it depends on all three crates directly, constructs one concrete backend
   per port, and exposes each behind `Arc<dyn VectorStore>`/`Arc<dyn
   GraphStore>`/`Arc<dyn TreeStore>` (plus `Arc<Bm25Index>` and
-  `GraphQueryPlanner`) on `ArcanumEngine`.
+  `GraphQueryPlanner`) on `ArcanumEngine`. It also constructs
+  `HopDecayScorer::new(2)` for `GraphRetriever`.
 
 ## Architecture
 
@@ -53,6 +52,7 @@ classDiagram
     class TreeStore { <<trait>> }
     class LexicalIndex { <<trait>> }
     class GraphPlanner { <<trait>> }
+    class GraphScorer { <<trait>> }
 
     class LanceDbStore
     class PgVectorStore
@@ -63,7 +63,7 @@ classDiagram
     class PgTreeStore
     class Bm25Index
     class GraphQueryPlanner
-    class HybridIndexManager
+    class HopDecayScorer
     class RaptorBuilder
 
     LanceDbStore ..|> VectorStore
@@ -75,17 +75,16 @@ classDiagram
     PgTreeStore ..|> TreeStore
     Bm25Index ..|> LexicalIndex
     GraphQueryPlanner ..|> GraphPlanner
-    HybridIndexManager --> VectorStore : wraps
-    HybridIndexManager --> Bm25Index : wraps
+    HopDecayScorer ..|> GraphScorer
+    HopDecayScorer --> GraphStore : queries
     RaptorBuilder --> TreeStore : generic over S
 ```
 
 `arcanum-vector/src/` has one file per concern: `lancedb_store.rs`
 (`LanceDbStore`), `pgvector_store.rs` (`PgVectorStore`), `bm25.rs`
 (`Bm25Index`, a Tantivy index wrapped to implement `LexicalIndex`),
-`hybrid.rs` (`HybridIndexManager`), `metadata.rs` (`SqliteMetadataStore`,
-a document-hash tracker), and `collection.rs` (`CollectionManager`, an
-in-memory collection-metadata registry). Both `VectorStore` implementations
+`metadata.rs` (`SqliteMetadataStore`, a document-hash tracker), and
+`collection.rs` (`CollectionManager`, an in-memory collection registry). Both `VectorStore` implementations
 store the full `IndexedChunk` as a serialized JSON blob (`chunk_json` column)
 alongside first-class `id`/`text`/`source_uri`/`vector` columns: the JSON
 blob is the source of truth for `search` results; the first-class columns
@@ -93,20 +92,24 @@ exist for filtering, deletion, and counting without deserializing every row.
 
 `arcanum-graph/src/` holds `lib.rs` (`InMemoryGraphStore`, plus the
 `GraphTraversalPlan` type), `sled_store.rs` (`SledGraphStore`),
-`neo4j_store.rs` (`Neo4jStore`), and `query_planner.rs`
-(`GraphQueryPlanner`, which wraps an `Arc<dyn TextEnricher>` to turn a query
-string into a `GraphTraversalPlan`'s `seed_entities`). `InMemoryGraphStore`
-and `SledGraphStore` share their relation-identity, merge, and cascade-delete
-logic via the free functions in `arcanum_core::traits::store`; `Neo4jStore`
-re-derives the same semantics independently in Cypher (`MERGE`/`DETACH
-DELETE`) rather than calling them; see Implementation Notes.
+`neo4j_store.rs` (`Neo4jStore`), `scorer.rs` (`HopDecayScorer`), and
+`query_planner.rs` (`GraphQueryPlanner`, which wraps an `Arc<dyn
+TextEnricher>` to turn a query string into a `GraphTraversalPlan`'s
+`seed_entities`). `InMemoryGraphStore` and `SledGraphStore` share their
+relation-identity, merge, cascade-delete and hop-walk logic via the free
+functions in `arcanum_core::traits::store` (including `walk_hops`);
+`Neo4jStore` re-derives the same semantics independently in Cypher
+(`MERGE`/`DETACH DELETE`, and a variable-length path with `min(length(p))`
+for hops); see Implementation Notes. `GraphStore::query` returns
+`Vec<EntityHit>` (entity plus minimum hop distance from a seed).
+`HopDecayScorer` calls it once per seed entity and sums `1 / (1 + hops)` into
+every chunk in each reached entity's `source_chunks`.
 
 `arcanum-tree/src/` holds `lib.rs` (`InMemoryTreeStore`), `postgres_store.rs`
 (`PgTreeStore`), and `raptor.rs` (`RaptorBuilder<S: TreeStore + ?Sized>` and
 the free function `kmeans_cluster`). `RaptorBuilder` is generic over the
-`TreeStore` it writes to (including `dyn TreeStore`), so pipeline code can
-build a tree against whichever concrete store the engine wired in without
-`arcanum-tree` depending on a specific one.
+`TreeStore` (including `dyn TreeStore`), so it builds against whichever
+concrete store the engine wired in.
 
 ## Runtime Flows
 
@@ -116,76 +119,124 @@ build a tree against whichever concrete store the engine wired in without
    `LanceDbStore::upsert` builds an Arrow `RecordBatch` via
    `LanceDbStore::build_batch`/`LanceDbStore::make_schema` (five columns:
    `id`, `text`, `chunk_json`, `source_uri`, `vector`), then `Table::add`s to
-   an existing LanceDB table for `collection` or `create_table`s a new one.
-2. `LanceDbStore::search` opens the same table; a `MetadataFilter` on
-   `source_uri` with `FilterOp::Eq` becomes a `lance_eq_filter` clause
-   (which escapes embedded single quotes) and one on `chunk_id` with
-   `FilterOp::In` becomes a `lance_in_filter("id", ids)` clause; any
-   filters present are ANDed together into a single LanceDB `only_if`
-   predicate; any other operator or field is still logged and dropped. It
-   runs `nearest_to(query_vec)` with `.limit(top_k)`, then deserializes each
-   row's `chunk_json` column back into `IndexedChunk` to build the returned
-   `ScoredChunk`s. `PgVectorStore::search` composes the same two filters as
-   independent optional `WHERE` clauses (`source_uri = $n`, `id =
-   ANY($n)`).
-3. `LanceDbStore::delete_by_source_uri` guards an empty `source_uri` as a
-   no-op (with a warning), then issues `table.delete(lance_eq_filter(uri))`
-   against the first-class column, the mechanism `arcanum-pipeline`'s
-   cleanup stage uses to remove one document's stale chunks before
-   re-indexing a changed re-ingest. `PgVectorStore` implements the same
-   three steps as parameterized SQL (`INSERT ... ON CONFLICT DO UPDATE`,
-   a `WHERE source_uri = $n` clause, `DELETE ... WHERE source_uri = $2`)
-   against its `arcanum_chunks` table.
+   the collection's LanceDB table or `create_table`s it.
+2. `LanceDbStore::search` turns a `MetadataFilter` on `source_uri` with
+   `FilterOp::Eq` into a `lance_eq_filter` clause (escaping single quotes)
+   and one on `chunk_id` with `FilterOp::In` into `lance_in_filter("id",
+   ids)`, ANDs them into one `only_if` predicate (any other operator or field
+   is logged and dropped), runs `nearest_to(query_vec)` with `.limit(top_k)`,
+   and deserializes each row's `chunk_json` into the returned `ScoredChunk`s.
+   `PgVectorStore::search` composes the same filters as optional `WHERE`
+   clauses (`source_uri = $n`, `id = ANY($n)`).
+3. `LanceDbStore::delete_by_source_uri` no-ops on an empty `source_uri`, else
+   issues `table.delete(lance_eq_filter(uri))` on the first-class column;
+   `arcanum-pipeline`'s cleanup stage uses it to remove a document's stale
+   chunks before a changed re-ingest. `PgVectorStore` does the same with
+   parameterized SQL against `arcanum_chunks` (`INSERT ... ON CONFLICT DO
+   UPDATE`, `DELETE ... WHERE source_uri = $2`).
 
 **2. Graph relation write path: dedup, merge, and cascade delete**
 1. `GraphStore::upsert_relations(collection, relations)` is implemented
    independently by three backends. `InMemoryGraphStore` and
    `SledGraphStore` first check both endpoints exist via
-   `get_entity_by_id`, dropping (with a warning) any relation whose source
-   or target entity is missing.
+   `get_entity_by_id`, dropping (with a warning) any relation with a missing
+   endpoint.
 2. Surviving relations are keyed by
-   `relation_identity_key(source, relation_type, target)`. If a relation
-   already exists at that key, `merge_relation(existing, incoming)` unions
-   `source_chunks` (no duplicates) and keeps `max(confidence)` instead of
-   letting the newer upsert silently discard the older evidence.
-   `Neo4jStore::upsert_relations` instead issues `MERGE
-   (s)-[r:RELATION {relation_type}]->(t)` per relation; Neo4j's own graph
-   identity makes this idempotent by construction, so it never calls
-   `merge_relation`.
+   `relation_identity_key(source, relation_type, target)`; on an existing key,
+   `merge_relation(existing, incoming)` unions `source_chunks` and keeps
+   `max(confidence)`. `Neo4jStore::upsert_relations` instead issues `MERGE
+   (s)-[r:RELATION {relation_type}]->(t)` per relation (idempotent by
+   construction), never calling `merge_relation`.
 3. `GraphStore::delete_by_source_uri(collection, uri)` (a no-op on empty
-   `uri`) finds every entity whose `source_uri` matches and removes it, then
-   calls `relation_touches_removed_entity` to cascade-delete every relation
-   touching a removed entity id, checked globally, not scoped to
-   `collection`, because relation identity itself is global (matching
-   `Neo4jStore`'s `DETACH DELETE`, which removes relationships regardless of
-   which collection they were tagged with). `SledGraphStore` implements the
-   same sweep as `SledGraphStore::cascade_delete_relations` over its
-   `relations` `sled::Tree`.
+   `uri`) removes every entity whose `source_uri` matches, then uses
+   `relation_touches_removed_entity` to cascade-delete every relation touching
+   a removed entity id, checked globally, not per `collection`, because
+   relation identity is global (matching `Neo4jStore`'s `DETACH DELETE`).
+   `SledGraphStore` does the sweep in `SledGraphStore::cascade_delete_relations`.
 
 **3. RAPTOR tree construction**
-1. Upstream in `arcanum-pipeline` (out of scope here; see
-   [Pipeline](pipeline.md)), a `tree_embed` stage embeds each chunk and
-   populates `tree_chunks`/`tree_vectors` on the shared `IngestionState`
-   (falling back to the primary `chunks`/`vectors` if no tree-specific
-   chunker ran).
-2. `make_raptor_build_stage` zips them into `(ChunkId, String, Vector)` leaf
-   tuples and calls `RaptorBuilder::build(collection, source_uri, leaves)`.
+1. Upstream in `arcanum-pipeline` (see [Pipeline](pipeline.md)), a
+   `tree_embed` stage populates `tree_chunks`/`tree_vectors` on the shared
+   `IngestionState`.
+2. `make_raptor_build_stage` uses only those two fields (it returns early
+   when `tree_chunks` is empty, with no fallback to the vector line's
+   chunks), zips them into `(ChunkId, String, Vector)` leaves and calls
+   `RaptorBuilder::build(collection, source_uri, leaves)`.
 3. `RaptorBuilder::build` inserts one level-0 `TreeNode` per leaf via
    `TreeStore::insert_node`. For each level up to `max_depth`, it calls the
    free function `kmeans_cluster(vectors, k)` with `k =
-   ceil(sqrt(n)).max(2)`, backed by `linfa_clustering::KMeans::fit`/
-   `predict`, and turns each resulting cluster into one parent `TreeNode`
-   whose `vector` is `RaptorBuilder::centroid` (a plain per-dimension
-   average of the cluster's vectors) and whose `text` comes from
-   `RaptorBuilder::summarize`: by default (no `TextEnricher` passed to
-   `with_enricher`) it's still the placeholder string `"{n} chunks
-   clustered at level {level}"`; if an enricher was configured, `summarize`
-   instead calls it with `EnrichIntent::Summarize` over the group's joined
-   text and uses the result, falling back to the placeholder (with a
-   `tracing::warn!`) if that call fails (see Implementation Notes).
+   ceil(sqrt(n)).max(2)` (`linfa_clustering::KMeans`), and turns each cluster
+   into one parent `TreeNode` whose `vector` is `RaptorBuilder::centroid` (the
+   per-dimension mean) and whose `text` comes from `RaptorBuilder::summarize`:
+   the placeholder `"{n} chunks clustered at level {level}"` unless a
+   `TextEnricher` was set via `with_enricher` (see Implementation Notes).
    Recursion stops when a level has ≤1 node or `max_depth` is hit.
 
+**4. BM25 write, search and delete (`Bm25Index`)**
+1. `make_lexical_write_stage` (`arcanum-pipeline/src/stages.rs`) calls
+   `Bm25Index::index_chunks(collection_id, source_uri, &[(ChunkId, String)])`:
+   one document per chunk (`id`, `collection`, `source_uri` as exact-match
+   `STRING` fields, `body` as `TEXT`), added and committed inside
+   `Bm25Index::with_writer`, which locks the shared `IndexWriter` and rolls it
+   back on error. The stage then registers the chunks ([Evidence](evidence.md)).
+2. `Bm25Index::search(collection_id, query, top_k)` ANDs a `TermQuery` on
+   `collection` with the parsed `body` query and returns `(ChunkId, score)`
+   pairs, not text; `Bm25Retriever` hydrates from the chunk registry
+   ([Retrieval](retrieval.md)).
+3. `Bm25Index::delete_by_source_uri(collection_id, source_uri)` deletes via a
+   `collection` plus `source_uri` `BooleanQuery` through `with_writer`;
+   callers are the pipeline cleanup stage and the server's source-removal
+   route.
+
 ## Key Decisions
+
+### BM25 index partitioned by collection, with one shared rollback-on-error writer
+- **Decision**: `Bm25Index` stores `collection` and `source_uri` fields, scopes
+  `search` and `delete_by_source_uri` by collection, uses `ChunkId` instead of
+  `String`, and holds one `IndexWriter` behind a `Mutex` that is rolled back on
+  any write, delete or commit error.
+- **Context**: PR #60's summary: "collection-partitioned Tantivy index with a
+  shared writer that rolls back on error. BM25 hydrates from the registry."
+  PR commit messages state that after a failed commit the long-lived writer
+  kept accepting documents that never became searchable, and that registry
+  hydration made BM25 serve deleted text, so source deletion now also clears
+  the lexical index.
+- **Alternatives rejected**: No PR or design doc records alternatives;
+  observed current state: the replaced code opened a fresh writer per call and
+  its `LexicalIndex::search` ignored `collection_id`.
+- **Consequences**: the Tantivy schema changed, and the PR body states
+  "Existing databases and Tantivy indexes must be recreated" (no migration).
+  `index_document` and `delete_document` no longer exist.
+- **Ref**: 2026-10-02, PR #60.
+
+### GraphStore::query traverses relations and reports hop distance; ranking moves to GraphScorer
+- **Decision**: `GraphStore::query` returns `Vec<EntityHit>` (entity plus
+  minimum hop distance) by walking relations in both directions within the
+  collection up to `max_hops`; `HopDecayScorer` implements the new
+  `GraphScorer` trait to rank chunks from those hits.
+- **Context**: PR #60's summary: "`GraphStore::query` now traverses and
+  reports hop distance. `GraphScorer` / `HopDecayScorer` rank results, and
+  Graph no longer depends on the vector store." A PR commit message records
+  that graph retrieval previously returned nothing.
+- **Alternatives rejected**: No PR or design doc records alternatives;
+  observed current state: the walk is implemented per backend (`walk_hops` for
+  the embedded two, Cypher for `Neo4jStore`), not as a trait default.
+- **Consequences**: the PR's test plan leaves the gated Neo4j test unchecked
+  after its traversal query was rewritten, so Neo4j parity with the embedded
+  stores is unverified; see Implementation Notes.
+- **Ref**: 2026-10-02, PR #60.
+
+### HybridIndexManager removed
+- **Decision**: `hybrid.rs`, `HybridIndexManager` and its re-export were
+  deleted from `arcanum-vector` in the PR #60 squash commit.
+- **Context**: No PR or design doc records a rationale for the deletion;
+  observed current state: nothing constructed the type outside its own
+  assertion-only test, and the PR body describes "four independent lines
+  (vector, lexical, graph, tree), each with its own chunker and store".
+- **Alternatives rejected**: not recorded.
+- **Consequences**: no code path pairs a `VectorStore` and a `Bm25Index`
+  write behind one call; each ingestion line writes its own store.
+- **Ref**: 2026-10-02, PR #60.
 
 ### Persistent SledGraphStore added; relation dedup and cascade-delete semantics fixed to match Neo4j
 - **Decision**: added `SledGraphStore`, an embedded/persistent `GraphStore`
@@ -304,71 +355,59 @@ build a tree against whichever concrete store the engine wired in without
 
 ## Implementation Notes
 
-- **Unwired: `HybridIndexManager` (debt).** Nothing outside
-  `arcanum-vector/src/hybrid.rs` and its own (assertion-only) test
-  constructs a `HybridIndexManager`: not `arcanum-pipeline`'s write stages,
-  not `arcanum-engine`'s builder; it remains dead code, now odder since the
-  write-path gap it looks designed to solve was closed a different way
-  (below), never routing through it.
-- **Resolved: `Bm25Index` write path wired to ingestion (PR #50, commit
-  `b7e81d70`).** `Bm25Index` reads were already wired
-  (`ArcanumEngine::bm25_index`); `make_vector_write_stage`
-  (`arcanum-pipeline/src/stages.rs`) now also takes an
-  `Option<Arc<Bm25Index>>` and calls `Bm25Index::index_chunks` alongside the
-  vector-store write (best-effort: a failed call is `tracing::warn!`'d, not
-  fatal), closing the write-path gap directly, bypassing `HybridIndexManager`
-  entirely.
+- **Resolved: `HybridIndexManager` removed (PR #60).** It was dead code; see
+  the "HybridIndexManager removed" decision.
+- **Resolved, then superseded: `Bm25Index` write path.** PR #50 (commit
+  `b7e81d70`) wired `Bm25Index::index_chunks` into `make_vector_write_stage`
+  as a best-effort call. PR #60 moved it to `make_lexical_write_stage`, which
+  propagates errors; `make_vector_write_stage` no longer takes a `Bm25Index`.
+- **Gap (observed): GC does not purge lexical entries.** The evidence GC
+  worker holds no `Bm25Index` handle, so a GC'd version's BM25 entries
+  survive; see [Evidence](evidence.md). Follow-up candidate.
+- **Debt: Neo4j traversal not run against a live server.** The PR #60 test
+  plan leaves the gated Neo4j test unchecked; this pass did not run it.
+- **Observed: `GraphQuery::relation_filter` is never read** by
+  `InMemoryGraphStore`, `SledGraphStore` or `Neo4jStore`; callers set it to
+  `None`. Pre-dates PR #60.
 - **Unwired: `CollectionManager` and `SqliteMetadataStore` (debt).**
   `CollectionManager::new` has no call site anywhere in the workspace, not
-  even in tests. `SqliteMetadataStore::new`/`new_in_memory` is only
-  constructed inside `arcanum-vector/tests/metadata_test.rs`. Both types
-  compile and have passing unit tests but are not part of any live write or
-  read path; `arcanum-engine` builds collection state through each store's
-  own `list_collections`/`create_collection`/`count_documents` trait methods
-  instead.
+  even in tests; `SqliteMetadataStore` is only constructed in
+  `arcanum-vector/tests/metadata_test.rs`. Neither is on a live write or read
+  path; `arcanum-engine` uses each store's own `list_collections`/
+  `create_collection`/`count_documents` instead.
 - **Resolved: both stores now compute real scores (PR #49, commit
-  `31c83450`).** `LanceDbStore::search` used to hardcode `score: 1.0`; it now
-  converts LanceDB's `_distance` column to `score = 1.0/(1.0+distance)`.
-  `PgVectorStore::search` already computed `1 - (embedding <=> $1::vector)`
-  (cosine distance). Both are now real, monotonically "closer = higher"
-  scores, but on different scales: LanceDB's bounded to `(0, 1]`, while
-  pgvector's can go negative (as low as `-1`, since cosine distance ranges
-  `[0, 2]`); both cap at `1.0`, so the asymmetry is at the low end, not the
-  high end, worth noting for a caller comparing raw scores across backends
-  rather than ranking within one.
-- **Shared vs. independent semantics (see core.md).** `relation_identity_key`,
-  `relation_touches_removed_entity`, and `merge_relation` are free functions
-  in `arcanum_core::traits::store` called by `InMemoryGraphStore` and
-  `SledGraphStore` but never by `Neo4jStore`, which re-derives the same
-  behavior in Cypher. `GraphQueryPlanner` similarly sits in `arcanum-graph`
-  but is a pure orchestration wrapper around `Arc<dyn TextEnricher>`; it
-  makes no graph-store calls itself.
+  `31c83450`).** `LanceDbStore::search` converts LanceDB's `_distance` to
+  `score = 1.0/(1.0+distance)` (bounded to `(0, 1]`); `PgVectorStore::search`
+  computes `1 - (embedding <=> $1::vector)`, which can go as low as `-1`.
+  Both are "closer = higher" and cap at `1.0`, but raw scores are not
+  comparable across backends.
+- **Shared vs. independent semantics (see core.md).** The
+  `arcanum_core::traits::store` free functions (`relation_identity_key`,
+  `relation_touches_removed_entity`, `merge_relation`, `walk_hops`) are never
+  called by `Neo4jStore`. `GraphQueryPlanner` makes no graph-store calls.
 - **Resolved (conditionally): RAPTOR summaries can be real `TextEnricher`
-  output, not just placeholders (PR #50, commit `b7e81d70`).**
-  `RaptorBuilder::summarize` still defaults to the placeholder string `"{n}
-  chunks clustered at level {level}"`; only if a `TextEnricher` was passed
-  to `RaptorBuilder::with_enricher` does it call `enricher.enrich` with
-  `EnrichIntent::Summarize` over the group's joined text instead, falling
-  back to the placeholder on failure. The `raptor`/`full` pipeline templates
-  do call `with_enricher` (via `PipelineDeps::context_enricher`), but that's
-  only `Some` when `ArcanumEngineBuilder::enricher(...)` was called; it
-  defaults to `None`, so placeholder text is what an unconfigured deployment
-  gets. The parent node's `vector` is still a plain arithmetic mean of its
-  children's vectors (`RaptorBuilder::centroid`), not a re-embedding of the
-  summary; leaf-level vectors come from a real `Embedder`, but upstream in
-  `arcanum-pipeline`'s `tree_embed` stage, not in `arcanum-tree`.
+  output (PR #50, commit `b7e81d70`).** `RaptorBuilder::summarize` defaults
+  to the placeholder `"{n} chunks clustered at level {level}"`; only if
+  `RaptorBuilder::with_enricher` was given a `TextEnricher` does it call it
+  with `EnrichIntent::Summarize`, falling back to the placeholder on failure.
+  The `raptor`/`full` templates pass one via `PipelineDeps::context_enricher`,
+  but that is `Some` only when `ArcanumEngineBuilder::enricher(...)` was
+  called, so an unconfigured deployment gets placeholders. The parent
+  `vector` is still the mean of its children (`RaptorBuilder::centroid`), not
+  a re-embedding of the summary.
 - **Empty-`source_uri` guard is duplicated per backend.** `delete_by_source_uri`
-  on all six store implementations (`LanceDbStore`, `PgVectorStore`,
-  `InMemoryGraphStore`, `SledGraphStore`, `Neo4jStore`,
-  `InMemoryTreeStore`/`PgTreeStore`) independently checks for an empty
-  `source_uri` and no-ops with a `tracing::warn!` rather than deleting; the
-  trait itself does not enforce this (see core.md's "delete_by_source_uri
-  and source_uri added" decision for why the guard exists).
+  on all seven `VectorStore`/`GraphStore`/`TreeStore` implementations
+  (`LanceDbStore`, `PgVectorStore`, `InMemoryGraphStore`, `SledGraphStore`,
+  `Neo4jStore`, `InMemoryTreeStore`, `PgTreeStore`) independently no-ops with
+  a `tracing::warn!` on an empty `source_uri`; the trait does not enforce it
+  (see core.md's "delete_by_source_uri and source_uri added" decision).
+  `Bm25Index::delete_by_source_uri` has no such guard; the pipeline cleanup
+  stage rejects an empty `source_uri` before calling any store.
 - `SledGraphStore` partitions entities by collection (key = `"{collection}\0{id}"`)
-  but stores relations globally, matching `Neo4jStore`'s real identity
-  scope; a "ghost" collection marker is removed once its last entity is
-  deleted unless `create_collection` was called explicitly for it (mirrored
-  by `InMemoryGraphStore`'s `created: HashSet<String>`).
+  but stores relations globally, matching `Neo4jStore`'s identity scope; a
+  "ghost" collection marker is removed once its last entity is deleted unless
+  `create_collection` was called (mirrored by `InMemoryGraphStore`'s
+  `created: HashSet<String>`).
 
 ## Source Anchors
 
@@ -384,3 +423,4 @@ build a tree against whichever concrete store the engine wired in without
 - [Engine](engine.md)
 - [Interfaces](interfaces.md)
 - [Ingestion](ingestion.md)
+- [Verify](verify.md)

@@ -10,7 +10,8 @@ name-keyed registry, prompt-injection sanitization and entity/context
 enrichment helpers, and the persistence layer that makes re-ingestion
 idempotent: document version history, raw/canonical snapshot storage,
 per-chunk provenance metadata, and, since PR #54, the Postgres adapter
-for shadow-experiment persistence. The retention-based GC worker that
+for shadow-experiment persistence, and, since PR #59, the durable
+ingestion-operation stores (`operations/`). The retention-based GC worker that
 previously lived here moved to [Evidence](evidence.md) in PR #53; see
 Key Decisions. It exists as its own crate so `arcanum-pipeline`
 can depend on a stable set of ingestion-side ports without pulling in
@@ -20,42 +21,35 @@ can depend on a stable set of ingestion-side ports without pulling in
 
 `arcanum-ingestion` consumes only [Core](core.md): `arcanum_core::traits`
 (`DocumentLoader`, `Preprocessor`, `Chunker`, `DocumentVersionStore`,
-`SnapshotStore`, `ChunkMetadataStore`, `ExperimentStore`) and
-`arcanum_core::types` (`RawDocument`, `Chunk`, `DocumentVersion`,
-`ChunkMetadataRecord`, and related evidence/provenance types). It has no
-dependency on `arcanum-vector`, `arcanum-graph`, `arcanum-tree`, or
-`arcanum-evidence` as concrete crates. **Update (2026-07-16, PR #53)**:
-`PostgresGcWorker` and its `Arc<dyn VectorStore>`/`Arc<dyn TreeStore>`/
-`Arc<dyn GraphStore>` cross-store deletes, previously documented here,
-moved to `arcanum-evidence`; see the Evidence bullet below and Key
-Decisions.
+`SnapshotStore`, `ChunkMetadataStore`, `ExperimentStore`,
+`OperationStore`, `OperationPayloadStore`) and `arcanum_core::types`
+(`RawDocument`, `Chunk`, `DocumentVersion`, `ChunkMetadataRecord`, and
+related evidence/provenance types). It has no dependency on
+`arcanum-vector`, `arcanum-graph`, `arcanum-tree`, or `arcanum-evidence`
+as concrete crates. (`PostgresGcWorker` moved to `arcanum-evidence` in
+PR #53; see Key Decisions.)
 
 - [Pipeline](pipeline.md): `arcanum-pipeline`'s DAG stages
-  (`arcanum-pipeline/src/stages.rs`: `make_load_stage`, `make_dedup_stage`,
-  `make_cleanup_stage`, `make_preprocess_stage`, `make_snapshot_stage`,
-  `make_context_enrich_stage`, `make_entity_extract_stage`,
-  `make_vector_write_stage`, `make_register_version_stage`) call
-  `arcanum-ingestion`'s `LoaderRegistry`, `MimeDetector`,
-  `ContextEnricher`, `EntityExtractor`, and the
+  (`arcanum-pipeline/src/stages.rs`) call `LoaderRegistry`,
+  `MimeDetector`, `ContextEnricher`, `EntityExtractor`, and the
   `DocumentVersionStore`/`SnapshotStore`/`ChunkMetadataStore` trait
-  objects that concrete `arcanum-ingestion` types back. The chunk stages
-  (out of scope here; see Pipeline) consume an already-resolved
-  `Arc<dyn Chunker>` per backend, not `ChunkRegistry` directly.
+  objects that concrete types here back. The chunk stages consume an
+  already-resolved `Arc<dyn Chunker>` per backend (`vector`, `lexical`,
+  `graph`, `tree`), not `ChunkRegistry` directly, and the four
+  per-backend writers call `ChunkMetadataStore::put` (Flow 3).
 - [Engine](engine.md): `ArcanumEngineBuilder` (`arcanum-engine/src/engine.rs`)
   registers the concrete loaders (`RawLoader`, `FileLoader`, `HttpLoader`)
   into a `LoaderRegistry`; `EngineIngestionDepsResolver`
   (`arcanum-engine/src/ingestion_deps_resolver.rs`) calls
   `default_registry()` and `PreprocessorCatalog` to resolve per-collection
-  chunkers and preprocessor on every ingest.
+  chunkers and preprocessor on every ingest. The builder's
+  `resolve_operation_store` picks this crate's durable `OperationStore`
+  adapter.
 - [Evidence](evidence.md): `arcanum-evidence`'s `DefaultEvidenceResolver`
   reads the same `DocumentVersionStore`/`SnapshotStore`/`ChunkMetadataStore`
-  data that `arcanum-ingestion`'s concrete stores write, via the
-  `arcanum-core` trait objects; neither crate depends on the other.
-  `PostgresGcWorker` (`arcanum_core::traits::GcWorker`) lived in this
-  crate's `gc.rs` through PR #45; PR #53 moved it to
-  `arcanum-evidence/src/gc.rs` as a pure rename, closing the mis-placement
-  this page previously flagged as debt; the GC worker's architecture,
-  runtime flow, and Key Decisions now live on [Evidence](evidence.md).
+  data that this crate's concrete stores write, via the `arcanum-core`
+  trait objects; neither crate depends on the other. The GC worker lives
+  there since PR #53.
 
 ## Architecture
 
@@ -68,6 +62,8 @@ classDiagram
     class SnapshotStore { <<trait>> }
     class ChunkMetadataStore { <<trait>> }
     class ExperimentStore { <<trait>> }
+    class OperationStore { <<trait>> }
+    class OperationPayloadStore { <<trait>> }
 
     class LoaderRegistry
     class FileLoader
@@ -89,6 +85,10 @@ classDiagram
     class LocalSnapshotStore
     class PostgresChunkMetadataStore
     class PostgresExperimentStore
+    class PostgresOperationStore
+    class SqliteOperationStore
+    class LocalOperationPayloadStore
+    class S3OperationPayloadStore
     class ContextEnricher
     class EntityExtractor
 
@@ -115,58 +115,61 @@ classDiagram
     LocalSnapshotStore ..|> SnapshotStore
     PostgresChunkMetadataStore ..|> ChunkMetadataStore
     PostgresExperimentStore ..|> ExperimentStore
+    PostgresOperationStore ..|> OperationStore
+    SqliteOperationStore ..|> OperationStore
+    LocalOperationPayloadStore ..|> OperationPayloadStore
+    S3OperationPayloadStore ..|> OperationPayloadStore
 ```
 
 `loaders/` is one file per source type: `file.rs` (`FileLoader`, extension
-→ MIME), `http.rs` (`HttpLoader`, `Content-Type` header hint), `raw.rs`
+to MIME), `http.rs` (`HttpLoader`, `Content-Type` hint), `raw.rs`
 (`RawLoader`, pass-through for `Source::Raw`), and four stubs
 (`git.rs`/`database.rs`/`cloud_storage.rs`/`connector.rs`) whose `load()`
 always returns `ArcanumError::Ingestion("... not yet implemented")` while
-`supports()` still matches correctly by source variant (see
-Implementation Notes). `loaders/registry.rs`'s `LoaderRegistry` is a
+`supports()` still matches by source variant. `LoaderRegistry` is a
 `Vec<Arc<dyn DocumentLoader>>`; `load()` dispatches to the first entry
-whose `supports()` matches. `detection.rs`'s `MimeDetector::detect` does
-magic-byte sniffing via the `infer` crate, with a ZIP-specific
-disambiguation pass (`disambiguate_zip`) that checks for
-`META-INF/container.xml` (EPUB) or `[Content_Types].xml` (OOXML) before
-falling back to `application/zip`.
+whose `supports()` matches. `detection.rs`'s `MimeDetector::detect` sniffs
+magic bytes via the `infer` crate, with `disambiguate_zip` separating EPUB
+(`META-INF/container.xml`) and OOXML (`[Content_Types].xml`) from plain
+`application/zip`.
 
-`preprocessors/catalog.rs`'s `PreprocessorCatalog` is a `HashMap<String,
-Arc<dyn Preprocessor>>`; selection is by logical name (e.g. `"default"`),
-not MIME type, since the one registered preprocessor (`DoclingPreprocessor`)
-already dispatches internally by MIME. `preprocessors/docling.rs`'s
-`DoclingPreprocessor` wraps a `DoclingBackend` enum: `Http` (a
-`docling-serve` sidecar, sync or async polling) or `Cli` (a subprocess).
-`process()` passes through any document whose `mime_type` isn't in
-`SUPPORTED_MIMES`; otherwise `convert_via_http`/`convert_via_cli` return
-the document with `content` replaced by Docling's Markdown and
-`mime_type` set to `text/markdown`. `canonical()`/`set_canonical()` on
-`Preprocessor` let `DoclingPreprocessor` stash Docling's canonical JSON
-(`extract_canonical_from_str`) in an internal `RwLock<HashMap<DocumentId,
-Value>>`, evicted on first read.
+`PreprocessorCatalog` is a `HashMap<String, Arc<dyn Preprocessor>>`
+selected by logical name (e.g. `"default"`), not MIME type, since the one
+registered `DoclingPreprocessor` dispatches internally by MIME. It wraps a
+`DoclingBackend` enum: `Http` (a `docling-serve` sidecar, sync or async
+polling) or `Cli` (a subprocess). `process()` passes through documents
+whose `mime_type` is not in `SUPPORTED_MIMES`; otherwise
+`convert_via_http`/`convert_via_cli` replace `content` with Docling's
+Markdown and set `mime_type` to `text/markdown`. `canonical()`/
+`set_canonical()` let it stash Docling's canonical JSON in an internal
+`RwLock<HashMap<DocumentId, Value>>`, evicted on first read.
 
 `chunkers/` holds five `Chunker` implementations (`FixedSizeChunker`,
 `SemanticChunker`, `HierarchicalChunker`, `PropositionalChunker`,
 `StructureAwareChunker`); `registry.rs`'s `ChunkRegistry` is a
-`HashMap<String, Factory>` (`Factory = Box<dyn Fn(&serde_json::Value) ->
-Result<Arc<dyn Chunker>>>`) built by `default_registry()`, which registers
-all five under matching names with parameter validation (`get_u64_param`
-rejects non-integer or, for `semantic`/`structure`, zero values; `fixed`
-rejects `overlap >= chunk_size`).
+`HashMap<String, Factory>` built by `default_registry()`, which registers
+all five with parameter validation (`get_u64_param` rejects non-integer
+or, for `semantic`/`structure`, zero values; `fixed` rejects `overlap >=
+chunk_size`). Since PR #60 every chunker emits `ChunkPosition` as UTF-8
+byte offsets such that `text[start..end]` equals the chunk text, built on
+two crate-private helpers in `chunkers/mod.rs`: `line_spans` (handles both
+`\n` and `\r\n`) and `trimmed_span`. `FixedSizeChunker` still windows in
+chars but maps them to bytes through a char-boundary table.
 
-`enrichment/`'s `ContextEnricher::enrich_chunk` (prepends a
-`TextEnricher`-generated context prefix) and `EntityExtractor::extract`
-(parses a `TextEnricher` JSON response into `Entity`/`Relation` vectors)
-both sanitize chunk text first via `sanitizer::sanitize_for_enrichment`,
-which strips role-prefixed lines (`system:`/`human:`/`assistant:`/`user:`)
-and lines matching a fixed list of prompt-injection phrases.
+`enrichment/`'s `ContextEnricher::enrich_chunk` and
+`EntityExtractor::extract` both sanitize chunk text first via
+`sanitizer::sanitize_for_enrichment`, which strips role-prefixed lines
+(`system:`/`human:`/`assistant:`/`user:`) and lines matching a fixed list
+of prompt-injection phrases.
 
 `versioning/` holds two `DocumentVersionStore` implementations:
 `sqlite.rs` (`SqliteDocumentVersionStore`, local/dev) and `postgres.rs`
 (`PostgresDocumentVersionStore`, production), sharing a
 `source_documents`/`document_versions`/`collection_config` schema, plus
 `chunk_metadata.rs`'s `PostgresChunkMetadataStore` (`ChunkMetadataStore`
-over a `chunk_metadata` table). `snapshot/local.rs`'s `LocalSnapshotStore`
+over a `chunk_metadata` table, which since PR #60 also stores `backend`
+(`ChunkBackend`), `text` and `chunk_index`, and implements `get_many` via
+`chunk_id = ANY($1)`). `snapshot/local.rs`'s `LocalSnapshotStore`
 implements `SnapshotStore` over the filesystem
 (`<root>/<doc_id>/<version>/{raw.bin,canonical.json}`). `experiments.rs`'s
 `PostgresExperimentStore` (added in PR #54) implements
@@ -180,6 +183,17 @@ mapped to the same "already has an active experiment" error the
 in-memory store returns, rather than an application-level lock.
 [Evaluation](evaluation.md) owns the experiment-lifecycle domain rules
 this adapter persists.
+
+`operations/` (PR #59) holds `PostgresOperationStore` and
+`SqliteOperationStore` (`OperationStore`), plus `OperationPayloadStore`
+adapters in `operations/payload/`: `LocalOperationPayloadStore`
+(`file://` locators, temp file then rename so an interrupted stream leaves
+no partial object) and `S3OperationPayloadStore`
+(`s3://bucket/operations/{operation_id}`, always server-side encrypted)
+over an `S3ObjectStore` trait. `operations/mod.rs` holds the shared
+`submission_hash` (SHA-256 of the serialized `IngestionSubmission`) and
+`validate_transition`. See [Core](core.md) for the trait and type
+contract.
 
 ## Runtime Flows
 
@@ -224,8 +238,9 @@ this adapter persists.
    `PreprocessorCatalog::get("default")`.
 2. Otherwise it calls the free function `resolve_chunkers`, which builds a
    fresh `default_registry()` and calls `ChunkRegistry::build` once per
-   backend: `vector` (required), `graph` and `tree` (each falling back to
-   the collection's or global `vector` config if unset), producing a
+   backend: `vector` (required), `lexical`, `graph` and `tree` (each
+   falling back to the collection's, then global, then `vector` config if
+   unset), producing a
    `PerBackendChunkers`. The preprocessor is resolved separately:
    `PreprocessorCatalog::get(name)` where `name` is
    `col_info.preprocessor` if set, else `"default"`.
@@ -235,24 +250,90 @@ this adapter persists.
    are pipeline-side orchestration; see [Pipeline](pipeline.md).
 
 **3. Version registration and chunk metadata**
-1. After a successful `vector_write` stage, `make_register_version_stage`
-   calls `DocumentVersionStore::add_version` with the version whose
-   `snapshot_uri`/`canonical_uri` came from the snapshot stage, so a
-   version is registered only once every store write has already
-   succeeded, not before.
-2. `make_vector_write_stage` builds one `ChunkMetadataRecord` per chunk
-   (offsets from `chunk.position`, provenance from
-   `chunk.provenance.{source_uri,snapshot_uri,canonical_uri,page,section,
-   block_ids}`) and calls `ChunkMetadataStore::put` (`PostgresChunkMetadataStore::put`
-   upserts by `chunk_id`) only after the vector store `upsert` itself
-   succeeds.
+1. Each backend line registers its own chunks after its own store write
+   succeeds: `make_vector_write_stage` (`ChunkBackend::Vector`),
+   `make_lexical_write_stage` (`Lexical`, after `Bm25Index::index_chunks`),
+   `make_entity_extract_stage` (`Graph`, after both graph upserts) and
+   `make_raptor_build_stage` (`Tree`). Each calls
+   `build_chunk_records` (`arcanum-pipeline/src/registration.rs`), which
+   slices `text` from the preprocessed document at `chunk.position` (not
+   from `chunk.text`, which enrichment may rewrite) and errors on
+   out-of-range or non-char-boundary offsets, then `register_chunks`,
+   which calls `ChunkMetadataStore::put` (`PostgresChunkMetadataStore::put`
+   upserts by `chunk_id`) per record. A registry write failure fails the
+   stage. Provenance fields come from `chunk.provenance`, stamped
+   upstream with the stable snapshot document id
+   (`stamp_snapshot_identity`).
+2. `make_register_version_stage` (`deps: ["vector_write"]`) calls
+   `DocumentVersionStore::add_version` with the version whose
+   `snapshot_uri`/`canonical_uri` came from the snapshot stage. It
+   depends only on `vector_write`, so it is ordered after the vector
+   store write, not after the lexical, graph or tree writes; the
+   `register_version` note in Implementation Notes covers which failures
+   still block it.
+3. On replacement, `make_cleanup_stage` also calls
+   `Bm25Index::delete_by_source_uri` when a lexical index is configured,
+   alongside the vector/graph/tree deletes.
 
-Reclaiming a superseded version's snapshot/chunk/vector/tree/graph data
-once it ages past `retention_days` is `PostgresGcWorker::run_once`'s job.
-Since PR #53 that worker, and its runtime flow, live in
-[Evidence](evidence.md), not here.
+**4. Durable operation lifecycle (store side)**
+1. `OperationStore::create_or_get` inserts into `ingestion_operations`
+   (`UNIQUE idempotency_key`, `ON CONFLICT DO NOTHING`) as `Accepted`. On
+   conflict it returns the existing operation (`is_new: false`) if the
+   stored `submission_hash` matches, else `ArcanumError::Conflict`.
+2. Workers call `mark_running`, then `complete(&IngestionReport)`.
+   `validate_transition` allows `Accepted -> Running | Failed` and
+   `Running -> Succeeded | Failed`; a `Succeeded` report must carry
+   `content_uri`; re-applying the identical terminal report is a no-op and
+   any other transition is `ArcanumError::Conflict`.
+
+The HTTP API, queueing and worker orchestration are outside this crate;
+see [Engine](engine.md) for store wiring. The HTTP operations API is not
+yet covered in the wiki.
 
 ## Key Decisions
+
+### Four independent chunk lines, each registering in `ChunkMetadataStore` after its own write
+- **Decision**: ingestion runs four independent lines (vector, lexical,
+  graph, tree), each with its own chunker and store, and each registers
+  its chunks in `ChunkMetadataStore` only after its own write succeeds.
+  Chunker offsets became UTF-8 byte offsets that slice back to the chunk
+  text, and `chunk_metadata` gained `backend`, `text` and `chunk_index`
+  columns.
+- **Context**: PR #60's summary: every chunk returned by Vector, BM25,
+  Graph and RAPTOR carries its real `ChunkId`, the stable `DocumentId`,
+  source text, byte offsets and provenance, and "each backend is
+  self-sufficient at ingestion and retrieval." Its post-review fixes
+  include CRLF handling in the hierarchical and structure chunkers and
+  graph entities taking `source_uri` from provenance
+  (`EntityExtractor::extract` now reads `chunk.provenance.source_uri`).
+- **Alternatives rejected**: No PR or design doc records an alternative;
+  observed current state: the PR body states only that registry write
+  failure is a stage failure and that the engine fails at build time if
+  lexical, graph or tree is enabled without a chunk registry.
+- **Consequences**: greenfield, per the PR body: "no migrations or
+  compatibility code. Existing databases and Tantivy indexes must be
+  recreated." Retrieval-side hydration and the registry's cross-backend
+  design are on [Evidence](evidence.md) and [Pipeline](pipeline.md).
+- **Ref**: 2026-10-02, PR #60.
+
+### Ingestion operation state is persisted in durable stores, with idempotency by key and submission hash
+- **Decision**: operation lifecycle moves out of process memory into
+  `OperationStore` adapters (`PostgresOperationStore`,
+  `SqliteOperationStore`) plus `OperationPayloadStore` adapters (local and
+  S3-compatible) in `operations/`.
+- **Context**: PR #59's summary: "Makes ingestion operation state durable
+  and queryable, so a restart no longer loses a job." Ingestion persists
+  `Accepted` before queueing, workers persist every state transition and
+  the terminal report, and failures emit a generic safe error message,
+  never the raw text.
+- **Alternatives rejected**: No PR or design doc records an alternative;
+  observed current state: the PR removed "the old worker-retry machinery"
+  rather than layering durability on it.
+- **Consequences**: reusing an idempotency key with a different submission
+  is an `ArcanumError::Conflict`; the PR's `restart_durability.rs` test
+  checks that the operation id and terminal report survive an engine
+  restart.
+- **Ref**: 2026-10-02, PR #59.
 
 ### `PostgresExperimentStore` joins `versioning/` as the `ExperimentStore` port's Postgres adapter
 - **Decision**: `experiments.rs` implements
@@ -433,30 +514,48 @@ Since PR #53 that worker, and its runtime flow, live in
   finding and deleted the module entirely, including its `pub mod`
   declaration in `lib.rs`; the debt this page documented is now resolved
   by removal, not by a new caller appearing.
-- **`document_registry.rs` was deleted (drift resolved by removal).**
-  This page previously described it as a two-line stub whose own TODO
-  comment predicted its removal in "Task 6." PR #49 (commit `31c83450`)
-  deleted the file outright, describing it as an "orphaned stub (never
-  declared as a module in `lib.rs` — pure dead file since some prior
-  refactor)." See Key Decisions above ("Persistent `DocumentVersionStore`
-  replaces `DocumentRegistry`-based dedup") for the historical
-  `DocumentRegistry` → `DocumentVersionStore` migration this completes,
-  and [Core](core.md)'s "Superseded dedup mechanism removed" note for the
-  matching update from the crate-placement side.
-- **`PostgresGcWorker`'s crate-root placement was resolved by moving it
-  out, not by a rewrite (resolved debt).** This page previously flagged
-  `gc.rs`'s `PostgresGcWorker` as living inconsistently at the crate root
-  rather than under `versioning/` alongside the other adapters, and as
-  misplaced in `arcanum-ingestion` rather than `arcanum-evidence`; see
-  [Core](core.md)'s crate-placement note for the matching update from
-  that side. PR #53 moved the file to `arcanum-evidence/src/gc.rs`
-  unchanged; the debt is resolved by relocation, and both flagged issues
-  no longer apply to this crate.
+- **`document_registry.rs` was deleted (drift resolved by removal).** PR
+  #49 (commit `31c83450`) deleted the orphaned stub, never declared as a
+  module in `lib.rs`; see Key Decisions ("Persistent `DocumentVersionStore`
+  replaces `DocumentRegistry`-based dedup") and [Core](core.md).
+- **`PostgresGcWorker`'s placement debt was resolved by relocation.**
+  PR #53 moved it to `arcanum-evidence/src/gc.rs` unchanged; see
+  [Core](core.md) and [Evidence](evidence.md).
 - **Sanitization runs at enrichment time, on chunk text, not at intake,
   on raw bytes.** `sanitizer::sanitize_for_enrichment` is only called from
   `ContextEnricher::enrich_chunk` and `EntityExtractor::extract`, after
   chunking; nothing in the loader → dedup → cleanup → preprocess →
   snapshot path (Flow 1) sanitizes raw document content.
+- **`register_version` declares only `deps: ["vector_write"]` (observed
+  gap).** Its doc comment says the version is only registered when all
+  store writes succeed, which overstates the DAG ordering: `lexical_write`,
+  `entity_extract` and `raptor_build` have no edge to it. In practice
+  (`stage_failure.rs`, `executor.rs`): `lexical_write` is a core stage
+  (`is_core_stage`) and runs in an earlier wave than `register_version`
+  (`lexical_chunk` then `lexical_write`, versus `vector_write` then
+  `register_version`), so its failure returns `Err` from `execute` before
+  registration. `entity_extract` and `raptor_build` are non-core, so their
+  failures are recorded and skipped and do not prevent registration.
+- **Re-ingest cleanup leaves registry rows (observed).**
+  `make_cleanup_stage` deletes vector, graph, tree and lexical data by
+  `source_uri` but does not call `ChunkMetadataStore::delete_by_source_uri`;
+  registry rows for superseded versions persist and are keyed by
+  `version_num` (reclaimed by the evidence-side GC, see
+  [Evidence](evidence.md)).
+- **No real S3 binding (debt).** `S3OperationPayloadStore` is
+  transport-agnostic over `S3ObjectStore`, and the only implementation
+  shipped is the file-backed `LocalFsObjectStore` (contract tests and local
+  development); the `S3ObjectStore` docs describe a SigV4 binding that does
+  not exist in this crate.
+- **In-memory operation fallback.** `ArcanumEngineBuilder::resolve_operation_store`
+  falls back to `InMemoryOperationStore` (with a logged warning) when the
+  Sqlite backend has no `sqlite:` `database_url`, so operation state is
+  then not durable. Postgres without `storage.database_url`, or a store
+  that fails to open, is a config error.
+- **Schemas are `CREATE TABLE IF NOT EXISTS` only.** `chunk_metadata` and
+  `ingestion_operations` are created on first use with no migration, so an
+  existing `chunk_metadata` table lacks PR #60's `backend`, `text` and
+  `chunk_index` columns and must be recreated (greenfield, per the PR).
 - `SUPPORTED_MIMES` in `docling.rs` and `mime_to_ext` are kept consistent
   by a dedicated unit test that fails if a MIME type is added to one
   without the other.
@@ -473,6 +572,8 @@ Since PR #53 that worker, and its runtime flow, live in
 - `arcanum-ingestion/src/snapshot/` (module)
 - `arcanum-ingestion/src/sanitizer.rs`
 - `arcanum-ingestion/src/detection.rs`
+- `arcanum-ingestion/src/operations/` (module)
+- `arcanum-pipeline/src/registration.rs`
 
 ## Related Pages
 
