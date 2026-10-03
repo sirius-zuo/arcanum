@@ -139,3 +139,36 @@ async fn ingest_requires_key() {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
+
+/// Fresh state, load all ten samples at once, every operation must succeed. Repeated with
+/// fresh states to show the first-use table race is gone.
+#[tokio::test]
+async fn concurrent_first_ingests_all_succeed() {
+    for _ in 0..3 {
+        let (state, router, key, _dir) = setup().await;
+        let (status, body) = post_standard(&router, "/demo/samples/load", &key).await;
+        assert_eq!(status, StatusCode::ACCEPTED);
+        let ids = op_ids(&body);
+        assert_eq!(ids.len(), 10);
+        wait_all(&state, &ids).await;
+    }
+}
+
+#[tokio::test]
+async fn warmup_leaves_no_data() {
+    use arcanum_core::types::{CollectionId, Query};
+    let (state, _dir) = test_state().await;
+    let result = state
+        .engine
+        .retrieval
+        .search(
+            Query::new("atlas warm-up sentinel")
+                .with_collection(CollectionId("halcyon".into()))
+                .with_top_k(10),
+            &state.claims,
+        )
+        .await
+        .unwrap();
+    assert!(result.chunks.is_empty(), "{:?}", result.chunks.len());
+    assert!(state.registry.get_all().await.is_empty());
+}

@@ -137,6 +137,7 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         .collect();
     let judge = models.judge.clone();
 
+    let embed_dim = models.embedder.dimension();
     let mut builder = ArcanumEngineBuilder::new(config)
         .auth_secret(&settings.auth_secret)
         .vector_store(vector_store.clone())
@@ -167,6 +168,8 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
     ignore_exists(graph_store.create_collection(COLLECTION).await)?;
     ignore_exists(tree_store.create_collection(COLLECTION).await)?;
 
+    warm_up_vector_table(vector_store.as_ref(), embed_dim).await?;
+
     let admin_key = engine.auth.generate_admin_key("atlas");
     let claims = engine.auth.validate_api_key(&admin_key)?;
     let metrics_token: String = rand::thread_rng()
@@ -186,4 +189,47 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         generators: generator_meta,
         judge,
     })
+}
+
+/// `LanceDbStore::upsert` creates the collection's table on first use without a lock, so
+/// concurrent first ingests race and some fail. Creating the table up front (one sentinel
+/// chunk written straight to the vector store, then deleted) removes the race. The sentinel
+/// never goes through ingestion, so it is not in the chunk registry, and it is gone from the
+/// table before the engine serves anything.
+async fn warm_up_vector_table(store: &dyn VectorStore, dim: usize) -> Result<()> {
+    use arcanum_core::types::{
+        Chunk, ChunkId, ChunkMetadata, ChunkPosition, ChunkProvenance, CollectionId, DocumentId,
+        IndexedChunk, Vector,
+    };
+    let id = ChunkId::new();
+    let chunk = Chunk {
+        id: id.clone(),
+        text: "atlas warm-up sentinel".into(),
+        document_id: DocumentId::new(),
+        collection_id: CollectionId(COLLECTION.into()),
+        position: ChunkPosition {
+            start: 0,
+            end: 0,
+            index: 0,
+        },
+        metadata: ChunkMetadata::default(),
+        provenance: ChunkProvenance {
+            document_version: 0,
+            source_uri: "atlas-warm-up-sentinel".into(),
+            snapshot_uri: String::new(),
+            canonical_uri: None,
+            page: None,
+            section: None,
+            block_ids: vec![],
+        },
+    };
+    let indexed = IndexedChunk {
+        chunk,
+        vector: Vector(vec![0.0; dim]),
+        token_vectors: None,
+        store_id: id.0.to_string(),
+    };
+    store.upsert(COLLECTION, vec![indexed]).await?;
+    store.delete(COLLECTION, &[id]).await?;
+    Ok(())
 }

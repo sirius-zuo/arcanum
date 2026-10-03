@@ -1,14 +1,13 @@
 use super::{require_key, DemoCtx, DemoError};
 use crate::engine_setup::COLLECTION;
 use crate::samples::{read_sample, SampleFile};
-use arcanum_core::types::{CollectionId, IngestionSubmission, OperationId, OperationStatus};
+use arcanum_core::types::{CollectionId, IngestionSubmission};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use std::time::{Duration, Instant};
 
 #[derive(Serialize)]
 pub struct OperationRef {
@@ -53,11 +52,6 @@ async fn submit_files(
             .submit_operation(submission, false, "atlas")
             .await
             .map_err(|e| DemoError::Internal(format!("ingest {}: {e}", f.source_uri)))?;
-        if is_new && !any_new {
-            // The vector store creates its table on first upsert without guarding against a
-            // concurrent creator, so let the first new operation finish before the rest start.
-            wait_terminal(ctx, &id).await;
-        }
         any_new |= is_new;
         operations.push(OperationRef {
             source_uri: f.source_uri.clone(),
@@ -70,24 +64,6 @@ async fn submit_files(
         StatusCode::OK
     };
     Ok((status, Json(IngestResponse { operations })))
-}
-
-/// Polls until the operation is terminal, giving up after two minutes (the operation keeps
-/// running either way).
-async fn wait_terminal(ctx: &DemoCtx, id: &OperationId) {
-    let ops = ctx.state.engine.ingestion.operations();
-    let deadline = Instant::now() + Duration::from_secs(120);
-    while Instant::now() < deadline {
-        match ops.get(id).await {
-            Ok(Some(op))
-                if !matches!(
-                    op.status,
-                    OperationStatus::Succeeded | OperationStatus::Failed
-                ) => {}
-            _ => return,
-        }
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
 }
 
 fn hex(bytes: &[u8]) -> String {
