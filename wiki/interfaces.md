@@ -124,8 +124,8 @@ forwarding the JSON-RPC body to `McpJsonRpcHandler::handle`;
 `McpJsonRpcHandler` (`handlers.rs`) owns an `Arc<CapabilityRegistry>` and
 an `Arc<SessionManager>`, both built in `McpJsonRpcHandler::new`/
 `new_test`: the registry via `default_registry()`, which registers all
-five tools (`ingest`, `search`, `list_collections`, `eval_run`,
-`get_context`) with a JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
+six tools (`ingest`, `search`, `list_collections`, `eval_run`,
+`get_context`, `generate`) with a JSON-Schema `input_schema` each. `handle` matches on the JSON-RPC `method`
 field: `tools/list` returns `self.registry.list()` (sorted by name)
 directly, `initialize` calls `self.sessions.create(client_info)` and
 returns the new `McpSession`'s `id` in `_meta.sessionId`, and `tools/call`
@@ -187,7 +187,7 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    `validate_bearer`, this path does not consult `engine.rate_limiter`
    (see Implementation Notes).
 4. `dispatch_tool` then matches `request["params"]["name"]` against all
-   five registered tools (`"get_context"` is Runtime Flow 4). `"search"`/`"ingest"` build a `Query`/
+   six registered tools (`"get_context"` is Runtime Flow 4, `"generate"` Runtime Flow 5). `"search"`/`"ingest"` build a `Query`/
    `IngestRequest` and call `engine.retrieval.search`/
    `engine.ingestion.ingest`. `"list_collections"` calls
    `engine.version_store.list_collections()` and filters the result
@@ -247,6 +247,36 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    `ContextError` (and a missing registry) to a tool result with
    `isError: true`. Success returns the `rendered` string as the text
    content and the full `ContextResponse` as `structuredContent`.
+
+**5. Grounded generation through `POST /api/v1/generate` and MCP `generate`**
+1. REST: `routes::api::generate` calls `validate_bearer` (401), parses the
+   body from a JSON value into `GenerateRequest` (400 on a malformed
+   body), and answers 503 (`generation requires a configured generator and
+   a chunk registry`) when `engine.generate` is `None`. MCP: the
+   `"generate"` arm deserializes the arguments the same way (`-32602` on
+   failure), forces `stream` to false, and returns an `isError` result
+   with the same message when the service is absent.
+2. With `stream: false` both call `GenerateService::generate`. REST maps
+   `GenerateError` through `generate_error_status`: `Invalid` to 400,
+   `Forbidden` to 403, `Unavailable` to 503, `Upstream` to 502, `Timeout`
+   to 504, `Internal` to 500, each with a `{"error": ...}` body. Success is
+   the `GenerateResponse` as JSON.
+3. With `stream: true` REST calls `GenerateService::generate_stream`.
+   Errors raised before the stream exists (validation, access, retrieval,
+   open breaker) use the same status mapping. Otherwise `sse_response`
+   emits a `context` event with the full `ContextResponse`, one `delta`
+   event (`{"text": ...}`) per generator delta, then one `done` event
+   (the `GenerateOutcome`) or one `error` event (`{"error": ...}`) after
+   which the stream closes. Keep-alives are enabled. A client disconnect
+   drops the stream and cancels the upstream LLM request.
+4. The handler records `arcanum_requests_total` and
+   `arcanum_request_duration_seconds` with `endpoint="generate"`; the
+   status label reflects the HTTP status, so a mid-stream `error` event
+   still counts as `ok`. Generation-level metrics are recorded by the
+   service (see [Engine](engine.md)).
+5. MCP maps `Invalid` to a JSON-RPC `-32602` error and every other
+   `GenerateError` to an `isError` result. Success returns the answer as
+   the text content and the full response as `structuredContent`.
 
 ## Key Decisions
 
@@ -391,7 +421,7 @@ Newest first.
   `McpServer::new` so far.
 - **MCP tool list: all advertised tools now dispatch (closed gap, PR
   #57; `get_context` added later).** `tools/list` advertises `ingest`,
-  `search`, `list_collections`, `eval_run`, and `get_context`; `dispatch_tool` now has a real arm for each; see
+  `search`, `list_collections`, `eval_run`, `get_context`, and `generate`; `dispatch_tool` now has a real arm for each; see
   Runtime Flow 2. A coverage test
   (`test_every_registered_tool_dispatches_without_unknown_tool_error`)
   iterates `registry.list()` and asserts none of them fall through to the

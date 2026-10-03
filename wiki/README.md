@@ -2,7 +2,7 @@
 
 Arcanum is a production-grade Retrieval-Augmented Generation engine written in Rust. `arcanum-retrieval` defines five retrieval strategies (dense vector, BM25 lexical, knowledge graph, hierarchical RAPTOR tree, and token-level ColBERT) behind a single orchestrator with document-level RRF fusion, though (see [Retrieval](retrieval.md)'s Implementation Notes) `ArcanumEngineBuilder` wires at most four of the five in practice, and two strategies don't yet participate correctly in the document-level fusion they're meant to share. A hexagonal architecture is enforced at the type level: every storage backend, model provider, and external service sits behind a trait defined in `arcanum-core`, so backends (LanceDB vs. PgVector, Neo4j vs. in-memory Sled) swap with a builder change rather than a pipeline rewrite.
 
-The workspace is seventeen crates layered as a strict DAG. `arcanum-core` holds the shared domain types and ports; `arcanum-vector`, `arcanum-graph`, and `arcanum-tree` implement the storage backends, each with its own chunking strategy; `arcanum-ingestion` and `arcanum-pipeline` turn raw documents into indexed chunks through a DAG stage runner; `arcanum-retrieval` fuses backend results; `arcanum-evidence` traces every chunk back to an exact document version and byte range; and `arcanum-engine` composes it all into services consumed by the REST server and the native MCP server. Shadow chunk-strategy experiments and an offline benchmark harness (`arcanum-chunk-eval`, `arcanum-eval`) let changes be measured before they are committed.
+The workspace is eighteen crates layered as a strict DAG. `arcanum-core` holds the shared domain types and ports; `arcanum-vector`, `arcanum-graph`, and `arcanum-tree` implement the storage backends, each with its own chunking strategy; `arcanum-ingestion` and `arcanum-pipeline` turn raw documents into indexed chunks through a DAG stage runner; `arcanum-retrieval` fuses backend results; `arcanum-evidence` traces every chunk back to an exact document version and byte range; and `arcanum-engine` composes it all into services consumed by the REST server and the native MCP server. Shadow chunk-strategy experiments and an offline benchmark harness (`arcanum-chunk-eval`, `arcanum-eval`) let changes be measured before they are committed.
 
 > **Audience:** developers **of** Arcanum itself. Consumer-facing
 > documentation (READMEs, tutorials, API docs) lives elsewhere and is not
@@ -19,6 +19,7 @@ graph TD
     mcp --> core
     engine --> retrieval[arcanum-retrieval]
     engine --> context[arcanum-context]
+    engine --> generate[arcanum-generate]
     engine --> pipeline[arcanum-pipeline]
     engine --> evidence[arcanum-evidence]
     engine --> eval[arcanum-eval]
@@ -37,6 +38,7 @@ graph TD
     pipeline --> core
     retrieval --> core
     context --> core
+    generate --> core
     evidence --> core
     chunk-eval --> ingestion
     chunk-eval --> core
@@ -59,7 +61,7 @@ graph TD
 | [pipeline](pipeline.md) | `arcanum-pipeline`, `arcanum-middleware` | The DAG stage runner and executor that turn one `IngestionTask` into a completed ingest, the pipeline-template registry, `IngestionWorker`'s queue/retry loop, and the `arcanum-middleware` reliability primitives (`BoundedQueue`, `RetryPolicy`, `CircuitBreaker`) backing it. |
 | [retrieval](retrieval.md) | `arcanum-retrieval` | `RetrievalOrchestrator` runs a configurable subset of four independent strategy retrievers (vector, BM25, graph, RAPTOR, plus a ColBERT re-rank variant of vector) in parallel and merges their hits with document-level RRF fusion. |
 | [evidence](evidence.md) | `arcanum-evidence` | Resolves a chunk, tree node, entity, or relation back to the raw source bytes it came from via `DefaultEvidenceResolver`, returning an auditable `ProofChain`. |
-| [engine](engine.md) | `arcanum-engine`, `arcanum-context` | The composition root: `ArcanumEngineBuilder::build` wires every configured store/provider into a running `ArcanumEngine`: pipeline workers, the retrieval orchestrator, per-domain services, and the cross-cutting auth, audit, events, and circuit breakers they share; also covers `arcanum-context` (budgeted, citation-mapped context packing) and `ContextService`. |
+| [engine](engine.md) | `arcanum-engine`, `arcanum-context`, `arcanum-generate` | The composition root: `ArcanumEngineBuilder::build` wires every configured store/provider into a running `ArcanumEngine`: pipeline workers, the retrieval orchestrator, per-domain services, and the cross-cutting auth, audit, events, and circuit breakers they share; also covers `arcanum-context` (budgeted, citation-mapped context packing), `arcanum-generate` (prompt building and citation parsing), `ContextService`, and `GenerateService`. |
 | [interfaces](interfaces.md) | `arcanum-server`, `arcanum-mcp`, `arcanum-telemetry` | The workspace's outward-facing edge: `arcanum-server`'s REST/WebSocket API, `arcanum-mcp`'s native JSON-RPC MCP server, and `arcanum-telemetry`'s tracing/metrics wiring. |
 | [evaluation](evaluation.md) | `arcanum-eval`, `arcanum-chunk-eval` | `arcanum-eval`'s scaffolded retrieval-quality metrics and scheduler, `arcanum-chunk-eval`'s deterministic chunking-strategy inspect/benchmark harness, and the shadow-experiment lifecycle built on top of it. |
 

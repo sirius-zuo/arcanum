@@ -173,6 +173,42 @@ and `EnrichmentConfig::rewrite_query_provider` add a rewrite intent that
 `EnrichmentDispatcher` routes like the others (key `rewrite_query`);
 `OllamaProvider` builds a "standalone question" prompt for it.
 
+### Generate types, `Generator`, and `GenerateConfig`
+
+`traits/generator.rs` defines the `Generator` port: `stream(GenerationRequest)`
+returns a `BoxStream` of `GenerationEvent`s (`TextDelta`, then one `Done`
+carrying `GenerationUsage` and a `StopReason`), and `model()` names the
+model. A stream ends with exactly one `Done` or one `Err`, and there is no
+non-streaming method; the JSON path drains the stream. `StopReason`
+(`EndTurn`, `MaxTokens`, `Other`) serializes to `end_turn`, `max_tokens`,
+`other`. `ScriptedGenerator` replays a list of `ScriptStep`s and serves
+engine, server, and MCP tests.
+
+`types/generate.rs` holds the wire shapes. `GenerateRequest` adds `mode`
+(`GenerateMode`: `answer`, `summarize`), `generator`, `max_tokens`,
+`temperature`, `instructions`, a `GenerateContextOptions` block, and
+`stream` to the Context inputs. Its `validate()` runs the Context rules
+(through `to_context_request`, which always asks for `xml` rendering) and
+rejects `max_tokens` of 0, a `temperature` outside 0.0..=2.0, and
+`instructions` over 2000 characters. `GenerateOutcome` (`status`,
+`citations`, `unknown_refs`, `stop_reason`, `usage`, `generator`) is the SSE
+`done` payload, and `GenerateResponse` flattens it next to `answer` and the
+full `ContextResponse`. A `Citation` carries the passage's `chunk_ids`,
+document id and version, source URI, byte offsets, and `answer_spans`.
+
+`GenerateConfig` (`[generate]`) holds the defaults (`default_generator`,
+`default_max_tokens` 1024, `summarize_token_budget` 8000,
+`history_max_messages` 10, `first_token_timeout_secs` 30,
+`total_timeout_secs` 120, `no_context_answer`) and a map of named
+`GeneratorConfig`s (`protocol` of `anthropic` or `openai_compatible`,
+`model`, `api_key_env`, `base_url`, `max_output_tokens`). It defaults when
+absent. `ArcanumError::Generation` carries generator-side failures.
+
+On the `arcanum-models` side, `sse.rs` is a byte-buffering SSE line parser
+(a multibyte character split across network chunks decodes whole), and
+`AnthropicGenerator` and `OpenAiCompatibleGenerator` implement `Generator`
+over it with a streaming `reqwest` call.
+
 ## Runtime Flows
 
 **1. Embedding/generation request through arcanum-models**
@@ -487,6 +523,8 @@ and `EnrichmentConfig::rewrite_query_provider` add a rewrite intent that
 - `arcanum-core/src/config.rs`
 - `arcanum-core/src/types/` (module)
 - `arcanum-core/src/traits/` (module)
+- `arcanum-core/src/traits/generator.rs`
+- `arcanum-core/src/types/generate.rs`
 - `arcanum-models/src/` (crate)
 
 ## Related Pages
