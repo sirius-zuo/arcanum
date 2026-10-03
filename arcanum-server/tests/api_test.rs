@@ -242,3 +242,62 @@ async fn test_generate_no_context_json_and_sse_agree() {
     obj.remove("context");
     assert_eq!(events[2].1, expected);
 }
+
+#[tokio::test]
+async fn test_verify_requires_auth() {
+    let status = post_json(
+        "/api/v1/verify",
+        serde_json::json!({ "collection_id": "docs", "answer": "a", "passages": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+/// POSTs to /api/v1/verify as an authenticated admin on an engine built
+/// without a verifier.
+async fn post_verify_authed(body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    use arcanum_core::traits::NoOpDocumentVersionStore;
+    use arcanum_engine::ArcanumEngine;
+    use std::sync::Arc;
+    let engine = ArcanumEngine::builder()
+        .auth_secret("a-32-char-secret-for-testing-ok!")
+        .version_store(Arc::new(NoOpDocumentVersionStore))
+        .build()
+        .await
+        .unwrap();
+    let token = engine.auth.generate_admin_key("tester");
+    let app = build_app(Some(engine));
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/verify")
+        .header("Authorization", format!("Bearer {token}"))
+        .header("content-type", "application/json")
+        .body(Body::from(serde_json::to_vec(&body).unwrap()))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    (status, serde_json::from_slice(&bytes).unwrap())
+}
+
+#[tokio::test]
+async fn test_verify_unconfigured_is_503() {
+    let (status, body) = post_verify_authed(
+        serde_json::json!({ "collection_id": "docs", "answer": "a", "passages": [] }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body["error"],
+        arcanum_engine::services::verify::VERIFY_UNAVAILABLE
+    );
+}
+
+#[tokio::test]
+async fn test_verify_bad_body_is_400() {
+    let (status, _) =
+        post_verify_authed(serde_json::json!({ "collection_id": "docs", "passages": [] })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
