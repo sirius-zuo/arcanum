@@ -43,6 +43,9 @@ impl Preprocessor for PassThroughPreprocessor {
 /// The model-facing dependencies. Tests inject fakes; production uses Ollama.
 pub struct ModelDeps {
     pub embedder: Arc<dyn Embedder>,
+    /// Length of the vectors `embedder` returns. `Embedder::dimension()` cannot be trusted
+    /// (`OllamaProvider` reports 0), so the startup warm-up uses this value instead.
+    pub embed_dimension: usize,
     pub enricher: Option<Arc<dyn TextEnricher>>,
     pub generators: Vec<(String, Arc<dyn Generator>, u32)>,
     pub default_generator: String,
@@ -79,6 +82,8 @@ impl ModelDeps {
         }
         ModelDeps {
             embedder,
+            // Dimension of nomic-embed-text; must match the embedding model above.
+            embed_dimension: 768,
             enricher: Some(enricher),
             generators,
             default_generator,
@@ -137,7 +142,7 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         .collect();
     let judge = models.judge.clone();
 
-    let embed_dim = models.embedder.dimension();
+    let embed_dim = models.embed_dimension;
     let mut builder = ArcanumEngineBuilder::new(config)
         .auth_secret(&settings.auth_secret)
         .vector_store(vector_store.clone())
@@ -168,7 +173,9 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
     ignore_exists(graph_store.create_collection(COLLECTION).await)?;
     ignore_exists(tree_store.create_collection(COLLECTION).await)?;
 
-    warm_up_vector_table(vector_store.as_ref(), embed_dim).await?;
+    warm_up_vector_table(vector_store.as_ref(), embed_dim)
+        .await
+        .context("warm up the vector table")?;
 
     let admin_key = engine.auth.generate_admin_key("atlas");
     let claims = engine.auth.validate_api_key(&admin_key)?;
@@ -201,6 +208,9 @@ async fn warm_up_vector_table(store: &dyn VectorStore, dim: usize) -> Result<()>
         Chunk, ChunkId, ChunkMetadata, ChunkPosition, ChunkProvenance, CollectionId, DocumentId,
         IndexedChunk, Vector,
     };
+    if dim == 0 {
+        anyhow::bail!("embed_dimension is 0; set the embedding dimension of the model in use");
+    }
     let id = ChunkId::new();
     let chunk = Chunk {
         id: id.clone(),

@@ -172,3 +172,46 @@ async fn warmup_leaves_no_data() {
     assert!(result.chunks.is_empty(), "{:?}", result.chunks.len());
     assert!(state.registry.get_all().await.is_empty());
 }
+
+/// Like `FakeEmbedder` but, like `OllamaProvider`, reports dimension 0.
+struct ZeroDimEmbedder;
+
+#[async_trait::async_trait]
+impl arcanum_core::traits::Embedder for ZeroDimEmbedder {
+    async fn embed(
+        &self,
+        texts: Vec<String>,
+    ) -> arcanum_core::Result<Vec<arcanum_core::types::Vector>> {
+        crate::common::FakeEmbedder.embed(texts).await
+    }
+    fn dimension(&self) -> usize {
+        0
+    }
+}
+
+#[allow(clippy::await_holding_lock)]
+async fn state_with(embed_dimension: usize, dir: &tempfile::TempDir) -> anyhow::Result<AtlasState> {
+    let mut m = crate::common::models();
+    m.embedder = Arc::new(ZeroDimEmbedder);
+    m.embed_dimension = embed_dimension;
+    let _env = env_guard();
+    atlas::build_state(atlas::Settings::for_tests(dir.path().join("data")), m).await
+}
+
+#[tokio::test]
+async fn warmup_uses_configured_dimension_not_embedder_dimension() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = state_with(8, &dir).await.unwrap();
+    let bytes = std::fs::read("samples/employee-handbook.md").unwrap();
+    let report =
+        crate::common::ingest_and_wait(&state, "employee-handbook.md", &bytes, "standard").await;
+    assert_eq!(report.status, OperationStatus::Succeeded, "{report:?}");
+}
+
+#[tokio::test]
+async fn warmup_rejects_zero_dimension() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = state_with(0, &dir).await.err().expect("must fail");
+    let msg = format!("{err:#}");
+    assert!(msg.contains("dimension"), "{msg}");
+}

@@ -57,6 +57,7 @@ pub fn models() -> ModelDeps {
     ));
     ModelDeps {
         embedder: Arc::new(FakeEmbedder),
+        embed_dimension: 8,
         enricher: None,
         generators: vec![("local".into(), gen, 512)],
         default_generator: "local".into(),
