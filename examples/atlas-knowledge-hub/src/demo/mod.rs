@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod bootstrap;
 pub mod documents;
+pub mod eval;
 pub mod health;
 pub mod ingest;
 pub mod library;
@@ -47,5 +48,6 @@ pub fn demo_router(
         )
         .route("/demo/samples/load", post(ingest::load))
         .route("/demo/samples/apply-update", post(ingest::apply_update))
+        .route("/demo/eval", post(eval::eval))
         .with_state(ctx)
 }
