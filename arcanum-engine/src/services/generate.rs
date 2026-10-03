@@ -222,6 +222,7 @@ impl GenerateService {
                         answer,
                         outcome,
                         context,
+                        verification: None,
                     })
                 }
                 GenerateEvent::Error(e) => return Err(e),
@@ -516,6 +517,7 @@ mod tests {
             instructions: None,
             context: Default::default(),
             stream: false,
+            verify: false,
         }
     }
 

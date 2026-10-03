@@ -107,6 +107,7 @@ async fn generate_over_full_ingestion_maps_citations_to_registry() {
                     candidate_k: None,
                 },
                 stream: false,
+                verify: false,
             },
             &claims,
         )
