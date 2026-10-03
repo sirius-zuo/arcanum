@@ -40,6 +40,7 @@ tower              = { version = "0.4", features = ["util"] }
 async-trait        = "0.1"
 http               = "1"
 uuid               = "1"
+sha2               = "0.10"
 
 [dev-dependencies]
 tempfile    = "3"

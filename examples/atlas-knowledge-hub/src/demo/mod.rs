@@ -4,12 +4,13 @@ pub mod auth;
 pub mod bootstrap;
 pub mod documents;
 pub mod health;
+pub mod ingest;
 pub mod library;
 pub mod samples;
 
 use crate::samples::Manifest;
 use crate::state::AtlasState;
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::Router;
 use std::sync::Arc;
 
@@ -44,5 +45,7 @@ pub fn demo_router(
             "/demo/documents/:document_id/versions/:n/text",
             get(documents::document_text),
         )
+        .route("/demo/samples/load", post(ingest::load))
+        .route("/demo/samples/apply-update", post(ingest::apply_update))
         .with_state(ctx)
 }
