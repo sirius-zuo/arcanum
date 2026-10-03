@@ -209,6 +209,7 @@ fn sse_response(s: GenerateStream, start: std::time::Instant) -> Response {
             metrics.set("ok");
             sse_event("done", &outcome)
         }
+        GenerateEvent::Verification(v) => sse_event("verification", &v),
         GenerateEvent::Error(e) => {
             metrics.set("error");
             sse_event("error", &serde_json::json!({ "error": e.to_string() }))
