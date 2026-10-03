@@ -1,0 +1,23 @@
+[
+  {
+    "id": "supported",
+    "title": "Every sentence is supported",
+    "question": "What payload and battery runtime does the HX-2 have?",
+    "answer": "The HX-2 has a payload of 60 kg [P1]. Its battery gives a runtime of 8 hours [P1]. The battery pack is the HX2-BAT-48V [P1].",
+    "expected": ["supported", "supported", "supported"]
+  },
+  {
+    "id": "flawed",
+    "title": "A wrong number and a wrong citation",
+    "question": "Compare the payload and battery runtime of the HX-2 and the older HX-1.",
+    "answer": "The HX-2 has a payload of 60 kg [P1]. The HX-2 can carry a payload of 80 kg [P1]. The older HX-1 runs for 5 hours per charge [P1].",
+    "expected": ["supported", "unsupported", "miscited"]
+  },
+  {
+    "id": "uncited",
+    "title": "True but without a citation",
+    "question": "How long does the HX-2 battery last and how fast does it charge?",
+    "answer": "The HX-2 battery gives a runtime of 8 hours [P1]. Fast charging from 20 to 80 percent takes 45 minutes.",
+    "expected": ["supported", "uncited_supported"]
+  }
+]

@@ -1,6 +1,7 @@
 //! Atlas Knowledge Hub: a showcase of every Arcanum capability.
 
 pub mod engine_setup;
+pub mod samples;
 pub mod settings;
 pub mod state;
 

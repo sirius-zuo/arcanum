@@ -1,0 +1,14 @@
+[
+  {"query": "How much annual leave do I get each year?", "relevant_source_uri": "employee-handbook.md"},
+  {"query": "How often do I have to change my password?", "relevant_source_uri": "security-policy.md"},
+  {"query": "Which group builds route planning and obstacle avoidance software for the robots?", "relevant_source_uri": "org-and-teams.md"},
+  {"query": "Why did 212 robots stop moving at the Northgate warehouse in Utrecht?", "relevant_source_uri": "incident-2025-03-warehouse-outage.md"},
+  {"query": "HX2-BAT-48V charging time and cycle rating", "relevant_source_uri": "product-hx2-datasheet.md"},
+  {"query": "HX1-BAT-36V availability after 2026", "relevant_source_uri": "product-hx1-datasheet.md"},
+  {"query": "How long does it take to get a fleet live after signing a contract?", "relevant_source_uri": "customer-faq.md"},
+  {"query": "What happens when the on-call lead does not acknowledge a page within 10 minutes?", "relevant_source_uri": "fleet-ops-runbook.md"},
+  {"query": "When will the higher payload HX-2 Pro variant be launched?", "relevant_source_uri": "roadmap-2026.md"},
+  {"query": "Aurora Optics contract renewal date", "relevant_source_uri": "vendor-contracts-summary.md"},
+  {"query": "Who is Nadia Petrova and which team does she lead?", "relevant_source_uri": "org-and-teams.md"},
+  {"query": "What does the company pay for meals while I am on a business trip?", "relevant_source_uri": "employee-handbook.md"}
+]
