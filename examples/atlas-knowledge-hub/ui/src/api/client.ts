@@ -17,7 +17,7 @@ export interface Client {
   raw(path: string, init?: RequestInit): Promise<Response>
 }
 
-async function readError(res: Response): Promise<ApiError> {
+export async function readError(res: Response): Promise<ApiError> {
   const text = await res.text().catch(() => '')
   let body: unknown = text || null
   let message = `${res.status} ${res.statusText}`.trim()
