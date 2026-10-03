@@ -16,9 +16,19 @@ export const RRF_HINT =
 
 /** Text with the query's terms wrapped in <mark>. */
 export function Highlighted({ text, query }: { text: string; query: string }) {
-  // Whole-word matches only: "is" should not light up inside "disk".
+  // Whole-word matches only: "is" should not light up inside "disk". Checked per code point so astral letters count.
   const isWord = (ch: string | undefined) => ch !== undefined && /[\p{L}\p{N}_]/u.test(ch)
-  const ranges = termRanges(text, query).filter((r) => !isWord(text[r.start - 1]) && !isWord(text[r.end]))
+  const before = (i: number) => {
+    if (i <= 0) return undefined
+    const lo = text.charCodeAt(i - 1)
+    return lo >= 0xdc00 && lo <= 0xdfff && i >= 2 ? text.slice(i - 2, i) : text[i - 1]
+  }
+  const after = (i: number) => (i < text.length ? String.fromCodePoint(text.codePointAt(i) as number) : undefined)
+  const terms = query
+    .split(/\s+/)
+    .map((t) => t.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+    .join(' ')
+  const ranges = termRanges(text, terms).filter((r) => !isWord(before(r.start)) && !isWord(after(r.end)))
   const segments = segmentText(text, ranges)
   return (
     <>

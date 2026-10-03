@@ -111,7 +111,7 @@ export default function ContextPage() {
     setMessages((ms) => ms.map((m, j) => (j === i ? { ...m, ...patch } : m)))
 
   const err = build.error
-  const noRegistry = err instanceof ApiError && err.status === 503
+  const noRegistry = err instanceof ApiError && err.status === 503 && /chunk registry/i.test(err.message)
   const data = built?.data
   const shownRendered = built && built.format === format ? built.data.rendered : undefined
 
@@ -219,7 +219,7 @@ export default function ContextPage() {
       <div aria-live="polite">
         {err && !build.isPending && (
           <ErrorState
-            title={noRegistry ? 'Context is not available' : 'Could not build context'}
+            title={noRegistry ? 'Context is not available' : err instanceof ApiError && err.status === 503 ? 'Retrieval unavailable' : 'Could not build context'}
             message={err.message}
             action={
               noRegistry ? (
@@ -264,10 +264,12 @@ export default function ContextPage() {
                     {data.retrieval.strategies_failed.length === 0 ? (
                       <span className="text-muted">none</span>
                     ) : (
-                      data.retrieval.strategies_failed.map((s) => (
-                        <Chip key={s} tone="unsupported" icon={<X className="h-3 w-3" aria-hidden="true" />}>
-                          {s}
-                        </Chip>
+                      data.retrieval.strategies_failed.map((f) => (
+                        <span key={f.strategy} title={f.reason}>
+                          <Chip tone="unsupported" icon={<X className="h-3 w-3" aria-hidden="true" />}>
+                            {f.strategy}: {f.reason}
+                          </Chip>
+                        </span>
                       ))
                     )}
                   </dd>

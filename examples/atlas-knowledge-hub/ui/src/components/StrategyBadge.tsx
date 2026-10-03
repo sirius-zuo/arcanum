@@ -33,7 +33,7 @@ export function StrategyBadge({ strategy }: { strategy: string }) {
   const { label, tone, Icon, hint } = LOOKS[key]
   return (
     <span title={hint}>
-      <Chip tone={tone} icon={<Icon className={`h-3 w-3 strategy-${key}`} aria-hidden="true" />}>
+      <Chip tone={tone} icon={<Icon className="h-3 w-3" data-icon={Icon.displayName ?? label} aria-hidden="true" />}>
         {label}
       </Chip>
     </span>

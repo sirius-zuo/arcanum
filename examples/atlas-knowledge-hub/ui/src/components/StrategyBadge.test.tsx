@@ -11,7 +11,7 @@ describe('StrategyBadge', () => {
       labels.add(container.textContent ?? '')
       const svg = container.querySelector('svg')
       expect(svg).not.toBeNull()
-      icons.add(svg?.getAttribute('class') ?? '')
+      icons.add(svg?.getAttribute('data-icon') ?? '')
       unmount()
     }
     expect(labels.size).toBe(STRATEGIES.length)

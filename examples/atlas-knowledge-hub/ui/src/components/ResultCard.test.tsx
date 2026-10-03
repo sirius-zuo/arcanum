@@ -43,3 +43,27 @@ describe('ResultCard', () => {
     expect(screen.getByRole('link', { name: /open evidence/i })).toHaveAttribute('href', '/evidence?chunk=chunk-9')
   })
 })
+
+describe('ResultCard highlighting', () => {
+  const withText = (text: string): RetrievedChunk => ({
+    ...chunk,
+    kind: 'Source',
+    indexed_chunk: { ...chunk.indexed_chunk, chunk: { ...chunk.indexed_chunk.chunk, text } },
+  })
+  const marks = (text: string, query: string) => {
+    const { container } = render(
+      <MemoryRouter>
+        <ResultCard chunk={withText(text)} query={query} />
+      </MemoryRouter>,
+    )
+    return Array.from(container.querySelectorAll('mark')).map((m) => m.textContent)
+  }
+
+  it('strips_punctuation_from_query_terms', () => {
+    expect(marks('The SLA is 99.9%.', 'SLA?')).toEqual(['SLA'])
+  })
+
+  it('word_boundary_check_handles_astral_letters', () => {
+    expect(marks('\u{1D49C}dmin and dmin', 'dmin')).toEqual(['dmin'])
+  })
+})

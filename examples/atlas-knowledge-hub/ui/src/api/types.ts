@@ -229,10 +229,15 @@ export interface ContextUsage {
   counter: string
 }
 
+export interface StrategyFailure {
+  strategy: string
+  reason: string
+}
+
 export interface ContextRetrieval {
   queries: string[]
   strategies_ok: string[]
-  strategies_failed: string[]
+  strategies_failed: StrategyFailure[]
 }
 
 export interface ContextResponse {
@@ -375,6 +380,7 @@ export type VerificationErrorCode =
   | 'judge_timeout'
   | 'judge_invalid_output'
   | 'invalid'
+  | 'forbidden'
   | 'internal'
 
 export interface VerificationOk extends VerifyResponse {

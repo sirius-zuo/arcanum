@@ -2,7 +2,6 @@ import { Search as SearchIcon } from 'lucide-react'
 import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from 'react-router-dom'
-import { ApiError } from '../api/client'
 import { useSamples } from '../api/library'
 import { useSearch } from '../api/search'
 import { Chip } from '../components/Chip'
@@ -56,7 +55,6 @@ export default function SearchPage() {
   }
 
   const err = search.error
-  const noCorpus = err instanceof ApiError && (err.status === 503 || /no corpus|not found/i.test(err.message))
 
   return (
     <>
@@ -136,9 +134,8 @@ export default function SearchPage() {
         )}
         {err && !search.isPending && (
           <ErrorState
-            title={noCorpus ? 'Nothing to search yet' : 'Search failed'}
-            message={noCorpus ? `${err.message} Load the sample corpus in the Library first.` : err.message}
-            action={noCorpus ? libraryLink : undefined}
+            title="Search failed"
+            message={err.message}
           />
         )}
         {search.data && !search.isPending && search.data.chunks.length === 0 && (
