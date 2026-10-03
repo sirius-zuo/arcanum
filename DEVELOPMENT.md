@@ -1,6 +1,6 @@
 # Building an Enterprise RAG System with Arcanum
 
-A practical guide to assembling a production-grade RAG system from Arcanum's primitives. It walks through every decision point (backend selection, chunking configuration, retrieval strategy, experiment workflow, and operations) in the order you encounter them when building a real system.
+A practical guide to assembling a production-grade RAG system from Arcanum's primitives. It walks through every decision point (backend selection, chunking configuration, retrieval strategy, grounded generation and verification, experiment workflow, and operations) in the order you encounter them when building a real system. For the API reference of each endpoint, see [README.md](README.md); for the internals of each subsystem, see [wiki/](wiki/README.md).
 
 ---
 
@@ -20,7 +20,11 @@ arcanum-graph   = { path = "../arcanum/arcanum-graph" }    # Neo4j, in-memory gr
 arcanum-tree    = { path = "../arcanum/arcanum-tree" }     # RAPTOR tree
 
 # Model providers
-arcanum-models  = { path = "../arcanum/arcanum-models" }   # Ollama, OpenAI embedders
+arcanum-models  = { path = "../arcanum/arcanum-models" }   # Ollama, OpenAI embedders; Anthropic and OpenAI-compatible generators
+
+# Grounded answers (pulled in by arcanum-engine; depend on them directly only to reuse the pure logic)
+# arcanum-context  = packing and rendering, arcanum-generate = prompts and citation parsing,
+# arcanum-verify   = segmentation, judge prompts and verdicts. None of the three does I/O.
 
 # Optional tooling
 arcanum-chunk-eval = { path = "../arcanum/arcanum-chunk-eval" } # offline benchmarks
@@ -84,6 +88,23 @@ metadata_backend = "postgres"
 vector_backend   = "lancedb"
 graph_enabled    = true
 tree_enabled     = true
+
+# Optional: Context needs only a chunk registry; Generate adds a generator; Verify adds a judge.
+[context]
+default_token_budget = 4000
+default_candidate_k  = 50
+
+[generate]
+default_generator = "smart"
+
+[generate.generators.smart]
+protocol          = "anthropic"            # anthropic | openai_compatible
+model             = "claude-sonnet-5-5"
+api_key_env       = "ANTHROPIC_API_KEY"
+max_output_tokens = 4096
+
+[verify]
+judge = "smart"   # a name from [generate.generators.*]; absent = Verify disabled
 
 [admin]
 portal_enabled       = true
@@ -208,6 +229,9 @@ async fn main() -> anyhow::Result<()> {
 
     // engine.ingestion   — IngestionService
     // engine.retrieval   — RetrievalService
+    // engine.context     — Option<ContextService>   (needs a chunk registry)
+    // engine.generate    — Option<GenerateService>  (needs a chunk registry and a generator)
+    // engine.verify      — Option<VerifyService>    (needs a chunk registry and [verify].judge)
     // engine.experiment  — ExperimentService
     // engine.collection  — CollectionService
     // engine.auth        — AuthService
@@ -222,7 +246,8 @@ async fn main() -> anyhow::Result<()> {
 3. Builds `PerBackendChunkers` from `ingestion.chunking`.
 4. Creates the document registry and ingestion worker pool.
 5. Wires retrievers based on which stores are present.
-6. Starts background tasks: secret reload loop, experiment eval loop.
+6. Builds the generators from `[generate.generators.*]`, then `ContextService`, `VerifyService` and `GenerateService` when their prerequisites exist. Verify and Generate share one generator map, so a judge and an answer model that name the same generator share its circuit breaker.
+7. Starts background tasks: secret reload loop, experiment eval loop.
 
 Any misconfiguration (bad strategy name, dimension mismatch, missing Postgres connection string in `production` mode) is returned from `build()` as an error, not discovered later.
 
@@ -506,6 +531,42 @@ curl -X POST /api/v1/search \
   }'
 ```
 
+### Beyond retrieval: context, generation and verification
+
+Search returns scored chunks. Three further endpoints turn them into an answer you can check. Each builds on the previous one and needs one more piece of wiring:
+
+| Step | Endpoint | Needs |
+|---|---|---|
+| Pack numbered passages into a token budget | `POST /api/v1/context` | chunk registry (`chunk_metadata_store`) |
+| Answer with inline `[P1]` citations, streamed or not | `POST /api/v1/generate` | + a generator (`[generate.generators.*]`) |
+| Check an answer sentence by sentence against passages | `POST /api/v1/verify`, or `"verify": true` on Generate | + a judge (`[verify].judge`) |
+
+Without the prerequisite, the endpoint returns HTTP 503 with a message naming what is missing; nothing else in the engine changes. The same three are exposed as the MCP tools `get_context`, `generate` and `verify`.
+
+Typical flow when you own the prompt: call Context, put `render: "xml"` output in your own LLM prompt, then pass your model's answer and the context's `passages` (`ref_id` and `chunk_ids` are enough) to Verify:
+
+```bash
+# 1. Context for your own LLM
+curl -X POST /api/v1/context -H "Authorization: Bearer $TOKEN" \
+  -d '{"collection_id":"legal-contracts","query":"payment obligations under force majeure"}'
+
+# 2. ... call your LLM with the returned context, get `answer` ...
+
+# 3. Check the answer against the same passages
+curl -X POST /api/v1/verify -H "Authorization: Bearer $TOKEN" \
+  -d '{"collection_id":"legal-contracts","answer":"Payment is suspended during force majeure [P1].",
+       "passages":[{"ref_id":"P1","chunk_ids":["<chunk id from step 1>"]}]}'
+```
+
+Verify returns an overall `pass` or `fail`, a verdict per sentence (`supported`, `miscited`, `uncited_supported`, `partial`, `unsupported`, `no_claim`), and for every supporting quote the chunk, document version and byte range it came from. A sentence the judge cannot ground against the passages is `unsupported`, which fails the answer; with `strict_citations` a citation pointing at the wrong passage fails it too.
+
+Operational notes:
+
+- **The judge is just a generator.** Point `[verify].judge` at a cheaper or stronger model than the one that writes answers. A request can override it with the `judge` field.
+- **Judge failures never change an answer.** On Generate with `verify: true`, a judge error appears as `verification: {"status": "error", ...}` while the answer is delivered as usual.
+- **Verification is bounded.** Answers over `max_answer_chars`, more than `max_passages` passages, passages over the judge input budget, or answers needing more than 25 judge batches are rejected with a 400. See the [Verify API](README.md#verify-api) section for the limits.
+- **Monitor the judge.** Watch `arcanum_verify_judge_calls_total{result}` and the `arcanum_circuit_breaker_state` gauge for breaker trips.
+
 ---
 
 ## 10. Optimising Chunking with Shadow Experiments
@@ -691,6 +752,9 @@ cargo run -p arcanum-server
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/api/v1/search` | Semantic search |
+| `POST` | `/api/v1/context` | Token-budgeted, numbered passages for your own prompt |
+| `POST` | `/api/v1/generate` | Grounded answer with inline citations (JSON or SSE; optional `verify`) |
+| `POST` | `/api/v1/verify` | Sentence-by-sentence answer verification with source offsets |
 | `POST` | `/api/v1/ingest` | Enqueue a document for ingestion |
 | `POST` | `/api/v1/upload` | Direct file upload |
 | `GET` | `/api/v1/collections` | List collections |
@@ -868,7 +932,7 @@ Configure Claude to use it in `.claude/config.json`:
 }
 ```
 
-Claude can then call `search`, `ingest`, `list_collections`, and `eval_run` directly in its tool-use loop; all four are implemented. `list_collections` returns the collections visible to the caller, ACL-filtered; `eval_run` runs retrieval-quality evaluation against caller-supplied golden samples and returns an MRR/NDCG/Hit-Rate report. Each call requires a valid Bearer token passed as an `Authorization` header: no shared session, no bypass.
+Claude can then call `search`, `ingest`, `list_collections`, `eval_run`, `get_context`, `generate` and `verify` directly in its tool-use loop; all seven are implemented. `list_collections` returns the collections visible to the caller, ACL-filtered; `eval_run` runs retrieval-quality evaluation against caller-supplied golden samples and returns an MRR/NDCG/Hit-Rate report. `get_context`, `generate` and `verify` expose the grounded-answer flow described in section 9 (`generate` is always non-streaming over MCP); they return a tool error when the chunk registry, generator or judge they need is not configured. Each call requires a valid Bearer token passed as an `Authorization` header: no shared session, no bypass.
 
 ---
 
@@ -911,6 +975,9 @@ Key metrics to alert on:
 | `arcanum_ingest_docs_total{status="error"}` | Rate > 0 sustained |
 | `arcanum_circuit_breaker_state{backend="embedder"}` | == "open" |
 | `arcanum_circuit_breaker_state{backend="vector_store"}` | == "open" |
+| `arcanum_generation_total{status="error"}` / `{status="timeout"}` | Rate > 0 sustained |
+| `arcanum_verify_requests_total{outcome="judge_upstream"}` | Rate > 0 sustained (judge unhealthy) |
+| `arcanum_verify_requests_total{outcome="fail"}` | Trend for answer quality, not an incident by itself |
 
 The Grafana dashboard stack ships in `arcanum-telemetry/grafana/`. Import the JSON dashboard files into your Grafana instance; they assume a Prometheus datasource named `arcanum-metrics`.
 
@@ -1001,6 +1068,12 @@ Use `/health/ready` as the Kubernetes readiness probe. It checks the vector stor
 **Setting `force: true` on large corpora.** This bypasses the deduplication check and re-embeds every document, even unchanged ones. Set it only on specific documents where you want to reprocess, or after a chunker/embedder change where consistency is required.
 
 **Running `full` pipeline without graph or tree stores.** The `full` template gracefully skips graph and tree stages when the corresponding stores are not wired. This is intentional. If you expect graph or tree ingestion, verify the stores are wired by checking the startup log; it lists which stages are enabled.
+
+**Treating a `pass` verdict as proof of truth.** Verify checks that an answer is supported by the passages you give it, using an LLM judge. It does not check the passages themselves, and a judge can be wrong. Use it as a gate and a diagnostic, keep `strict_citations` on where citation accuracy matters, and read the evidence offsets when a decision depends on it.
+
+**Verifying against different passages than the answer was written from.** Verify only sees the `passages` in its request. If you call Context for the prompt and later pass other chunk ids (or a re-run with a different `candidate_k`), correct claims show up as `unsupported`. With `generate` and `verify: true` this cannot happen; Arcanum reuses the context it built.
+
+**Expecting `verify: true` to work with any context size.** A Generate context with more passages than `verify.max_passages` (default 50), or passages over the judge input budget, still returns the answer, but `verification` carries an `invalid` error. Lower `candidate_k` or `token_budget`, or raise the `[verify]` limits.
 
 **Single active experiment limit.** Only one shadow experiment can be `Active` per collection. Starting a second before the first is promoted or abandoned returns HTTP 409. This is enforced atomically; no TOCTOU window.
 
