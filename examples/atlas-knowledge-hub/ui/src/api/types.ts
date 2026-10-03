@@ -428,8 +428,9 @@ export type RetrievalStrategy = 'Vector' | 'Bm25' | 'ColBert' | 'Raptor' | 'Grap
 export type ChunkKind = 'Source' | { Summary: { level: number; covers: string[] } }
 
 export interface RetrievedChunk {
-  /** `vector` and `token_vectors` are stripped client-side before rendering. */
-  indexed_chunk: { chunk: SearchChunk; vector?: unknown; token_vectors?: unknown; store_id: string }
+  /** The server also sends `vector` and `token_vectors`; `stripVectors` removes them client-side (see api/search.ts). */
+  indexed_chunk: { chunk: SearchChunk; store_id: string }
+  /** Fused RRF score (about 0.016 to 0.05), not a similarity. */
   score: number
   strategy: RetrievalStrategy
   kind: ChunkKind
@@ -446,8 +447,10 @@ export interface SearchCitation {
 
 export interface SearchResponse {
   chunks: RetrievedChunk[]
-  citations: SearchCitation[]
+  /** Not present in the verified search response; kept optional. */
+  citations?: SearchCitation[]
   strategy_scores: Record<string, number>
+  /** A constant on this API: never display it. */
   confidence: number
 }
 
