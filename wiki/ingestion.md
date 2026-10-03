@@ -268,8 +268,9 @@ contract.
    `DocumentVersionStore::add_version` with the version whose
    `snapshot_uri`/`canonical_uri` came from the snapshot stage. It
    depends only on `vector_write`, so it is ordered after the vector
-   store write, not after the lexical, graph or tree writes (see
-   Implementation Notes).
+   store write, not after the lexical, graph or tree writes; the
+   `register_version` note in Implementation Notes covers which failures
+   still block it.
 3. On replacement, `make_cleanup_stage` also calls
    `Bm25Index::delete_by_source_uri` when a lexical index is configured,
    alongside the vector/graph/tree deletes.
@@ -286,7 +287,8 @@ contract.
    any other transition is `ArcanumError::Conflict`.
 
 The HTTP API, queueing and worker orchestration are outside this crate;
-see [Interfaces](interfaces.md) and [Engine](engine.md).
+see [Engine](engine.md) for store wiring. The HTTP operations API is not
+yet covered in the wiki.
 
 ## Key Decisions
 
@@ -524,13 +526,16 @@ see [Interfaces](interfaces.md) and [Engine](engine.md).
   `ContextEnricher::enrich_chunk` and `EntityExtractor::extract`, after
   chunking; nothing in the loader → dedup → cleanup → preprocess →
   snapshot path (Flow 1) sanitizes raw document content.
-- **`register_version` is not ordered after every backend write (observed
-  gap).** `make_register_version_stage` declares only `deps:
-  ["vector_write"]`, while `lexical_write`, `entity_extract` and
-  `raptor_build` have no edge to it, and its doc comment still says it runs
-  after all store writes succeed. A failure in one of those parallel
-  branches does not by itself prevent the version row from being added.
-  Tracing the executor's failure semantics is out of scope for this page.
+- **`register_version` declares only `deps: ["vector_write"]` (observed
+  gap).** Its doc comment says the version is only registered when all
+  store writes succeed, which overstates the DAG ordering: `lexical_write`,
+  `entity_extract` and `raptor_build` have no edge to it. In practice
+  (`stage_failure.rs`, `executor.rs`): `lexical_write` is a core stage
+  (`is_core_stage`) and runs in an earlier wave than `register_version`
+  (`lexical_chunk` then `lexical_write`, versus `vector_write` then
+  `register_version`), so its failure returns `Err` from `execute` before
+  registration. `entity_extract` and `raptor_build` are non-core, so their
+  failures are recorded and skipped and do not prevent registration.
 - **Re-ingest cleanup leaves registry rows (observed).**
   `make_cleanup_stage` deletes vector, graph, tree and lexical data by
   `source_uri` but does not call `ChunkMetadataStore::delete_by_source_uri`;
@@ -578,4 +583,3 @@ see [Interfaces](interfaces.md) and [Engine](engine.md).
 - [Evidence](evidence.md)
 - [Engine](engine.md)
 - [Evaluation](evaluation.md)
-- [Interfaces](interfaces.md)
