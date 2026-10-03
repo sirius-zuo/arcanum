@@ -1,14 +1,20 @@
 use crate::routes::auth::validate_bearer;
 use arcanum_chunk_eval::{inspect, run_benchmark, BenchmarkJob, InspectRequest};
+use arcanum_core::types::generate::GenerateRequest;
 use arcanum_core::types::{CollectionId, ContextRequest, IngestionSubmission, OperationId, Query};
 use arcanum_core::ArcanumError;
 use arcanum_engine::services::context::ContextError;
+use arcanum_engine::services::generate::{GenerateError, GenerateEvent, GenerateStream};
 use arcanum_engine::ArcanumEngine;
 use axum::{
     extract::{Json, Multipart, Path, Query as UrlQuery, State},
     http::{HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{
+        sse::{Event, KeepAlive, Sse},
+        IntoResponse, Response,
+    },
 };
+use futures::StreamExt;
 use metrics::{counter, histogram};
 use serde::Deserialize;
 use std::sync::Arc;
@@ -136,6 +142,102 @@ pub async fn context(
     };
     counter!("arcanum_requests_total", "endpoint" => "context", "status" => status).increment(1);
     histogram!("arcanum_request_duration_seconds", "endpoint" => "context").record(elapsed);
+    response
+}
+
+fn generate_error_status(e: &GenerateError) -> StatusCode {
+    match e {
+        GenerateError::Invalid(_) => StatusCode::BAD_REQUEST,
+        GenerateError::Forbidden(_) => StatusCode::FORBIDDEN,
+        GenerateError::Unavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
+        GenerateError::Upstream(_) => StatusCode::BAD_GATEWAY,
+        GenerateError::Timeout => StatusCode::GATEWAY_TIMEOUT,
+        GenerateError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+fn sse_event<T: serde::Serialize>(name: &str, payload: &T) -> Event {
+    Event::default()
+        .event(name)
+        .json_data(payload)
+        .unwrap_or_else(|e| {
+            Event::default()
+                .event("error")
+                .data(serde_json::json!({ "error": e.to_string() }).to_string())
+        })
+}
+
+/// Emits `context` first, then `delta` events, then one `done` or `error`.
+fn sse_response(s: GenerateStream) -> Response {
+    let GenerateStream { context, events } = s;
+    let head = futures::stream::once(async move { sse_event("context", &context) });
+    let tail = events.map(|ev| match ev {
+        GenerateEvent::Delta(text) => sse_event("delta", &serde_json::json!({ "text": text })),
+        GenerateEvent::Done(outcome) => sse_event("done", &outcome),
+        GenerateEvent::Error(e) => {
+            sse_event("error", &serde_json::json!({ "error": e.to_string() }))
+        }
+    });
+    Sse::new(head.chain(tail).map(Ok::<Event, std::convert::Infallible>))
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+#[tracing::instrument(skip_all)]
+pub async fn generate(
+    headers: HeaderMap,
+    State(engine): State<Option<Arc<ArcanumEngine>>>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let start = std::time::Instant::now();
+    let response: Response = {
+        let claims = match validate_bearer(&headers, &engine) {
+            Ok(c) => c,
+            Err(e) => return e.into_response(),
+        };
+        let eng = engine.as_ref().unwrap();
+        match serde_json::from_value::<GenerateRequest>(body) {
+            Err(e) => (
+                StatusCode::BAD_REQUEST,
+                axum::Json(serde_json::json!({ "error": e.to_string() })),
+            )
+                .into_response(),
+            Ok(req) => match eng.generate.as_ref() {
+                None => (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    axum::Json(serde_json::json!({
+                        "error": "generation requires a configured generator and a chunk registry"
+                    })),
+                )
+                    .into_response(),
+                Some(svc) => {
+                    let stream = req.stream;
+                    let result: Result<Response, GenerateError> = if stream {
+                        svc.generate_stream(req, &claims).await.map(sse_response)
+                    } else {
+                        svc.generate(req, &claims)
+                            .await
+                            .map(|r| (StatusCode::OK, axum::Json(r)).into_response())
+                    };
+                    result.unwrap_or_else(|e| {
+                        (
+                            generate_error_status(&e),
+                            axum::Json(serde_json::json!({ "error": e.to_string() })),
+                        )
+                            .into_response()
+                    })
+                }
+            },
+        }
+    };
+    let elapsed = start.elapsed().as_secs_f64();
+    let status = if response.status() == StatusCode::OK {
+        "ok"
+    } else {
+        "error"
+    };
+    counter!("arcanum_requests_total", "endpoint" => "generate", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "generate").record(elapsed);
     response
 }
 
@@ -890,5 +992,123 @@ mod context_status_tests {
             context_error_status(&ContextError::Internal(ArcanumError::Storage("x".into()))),
             StatusCode::INTERNAL_SERVER_ERROR
         );
+    }
+}
+
+#[cfg(test)]
+mod generate_tests {
+    use super::*;
+    use arcanum_core::traits::{GenerationUsage, StopReason};
+    use arcanum_core::types::generate::{GenerateOutcome, GenerateStatus, GeneratorInfo};
+    use arcanum_core::types::{ContextResponse, ContextUsage, ResolvedQuerySource, RetrievalInfo};
+    use arcanum_engine::services::generate::{GenerateError, GenerateEvent, GenerateStream};
+    use futures::StreamExt;
+
+    #[test]
+    fn generate_error_status_maps_each_variant() {
+        let cases = [
+            (GenerateError::Invalid("x".into()), 400),
+            (GenerateError::Forbidden("x".into()), 403),
+            (GenerateError::Unavailable("x".into()), 503),
+            (GenerateError::Upstream("x".into()), 502),
+            (GenerateError::Timeout, 504),
+            (
+                GenerateError::Internal(ArcanumError::Storage("x".into())),
+                500,
+            ),
+        ];
+        for (e, code) in cases {
+            assert_eq!(generate_error_status(&e).as_u16(), code, "{e}");
+        }
+    }
+
+    fn outcome() -> GenerateOutcome {
+        GenerateOutcome {
+            status: GenerateStatus::Ok,
+            citations: vec![],
+            unknown_refs: vec![],
+            stop_reason: StopReason::EndTurn,
+            usage: GenerationUsage::default(),
+            generator: GeneratorInfo {
+                name: "g".into(),
+                model: "m".into(),
+            },
+        }
+    }
+
+    fn stream_of(events: Vec<GenerateEvent>) -> GenerateStream {
+        GenerateStream {
+            context: ContextResponse {
+                resolved_query: "q".into(),
+                resolved_query_source: ResolvedQuerySource::Original,
+                passages: vec![],
+                background: vec![],
+                usage: ContextUsage {
+                    budget: 0,
+                    used: 0,
+                    passages: 0,
+                    background: 0,
+                    dropped_passages: 0,
+                    counter: "c".into(),
+                },
+                retrieval: RetrievalInfo {
+                    queries: vec![],
+                    strategies_ok: vec![],
+                    strategies_failed: vec![],
+                },
+                rendered: None,
+            },
+            events: futures::stream::iter(events).boxed(),
+        }
+    }
+
+    /// Returns (event name, data) pairs parsed from an SSE body.
+    async fn events_of(resp: Response) -> Vec<(String, String)> {
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        text.split("\n\n")
+            .filter(|b| !b.trim().is_empty())
+            .map(|block| {
+                let mut name = String::new();
+                let mut data = String::new();
+                for line in block.lines() {
+                    if let Some(v) = line.strip_prefix("event:") {
+                        name = v.trim().to_string();
+                    } else if let Some(v) = line.strip_prefix("data:") {
+                        data = v.trim().to_string();
+                    }
+                }
+                (name, data)
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn sse_response_orders_events() {
+        let resp = sse_response(stream_of(vec![
+            GenerateEvent::Delta("a".into()),
+            GenerateEvent::Delta("b".into()),
+            GenerateEvent::Done(outcome()),
+        ]));
+        let evs = events_of(resp).await;
+        let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["context", "delta", "delta", "done"]);
+        assert_eq!(evs[1].1, r#"{"text":"a"}"#);
+        assert_eq!(evs[2].1, r#"{"text":"b"}"#);
+    }
+
+    #[tokio::test]
+    async fn sse_response_emits_error_event() {
+        let resp = sse_response(stream_of(vec![
+            GenerateEvent::Delta("a".into()),
+            GenerateEvent::Error(GenerateError::Upstream("boom".into())),
+        ]));
+        let evs = events_of(resp).await;
+        let (name, data) = evs.last().unwrap();
+        assert_eq!(name, "error");
+        let v: serde_json::Value = serde_json::from_str(data).unwrap();
+        assert!(v["error"].as_str().unwrap().contains("boom"), "{data}");
     }
 }
