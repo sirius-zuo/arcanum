@@ -235,7 +235,7 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    error `-32602` on failure) and defaults `render` to `xml` when absent.
 2. Both call `ContextService::assemble(req, &claims)`; the handler does
    not check collection access itself, the service does (see
-   [Engine](engine.md) for the flow and [Retrieval](retrieval.md) for
+   [Context](context.md) and [Engine](engine.md) for the flow and [Retrieval](retrieval.md) for
    candidates).
 3. REST maps `ContextError` through `context_error_status`: `Invalid` to
    400, `Forbidden` to 403, `Unavailable` to 503, `Internal` to 500, each
@@ -549,3 +549,6 @@ Newest first.
 - [Retrieval](retrieval.md)
 - [Storage](storage.md)
 - [Evaluation](evaluation.md)
+- [Context](context.md)
+- [Generate](generate.md)
+- [Verify](verify.md)

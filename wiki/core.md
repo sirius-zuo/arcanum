@@ -48,7 +48,7 @@ Both are consumed by every other layer:
 - [Evaluation](evaluation.md): `arcanum-eval` implements `Evaluator`.
 - [Engine](engine.md): `arcanum-engine` composes every port above, plus
   `arcanum-models` providers, behind `ArcanumEngine`'s builder.
-  `arcanum-context` (documented on that page) consumes the context types,
+  `arcanum-context` (see [Context](context.md)) consumes the context types,
   `TokenCounter`, and `TextEnricher` from here.
 
 ## Architecture
@@ -145,7 +145,7 @@ Flows and Key Decisions).
 
 ### Context API types, `TokenCounter`, and `RewriteQuery`
 
-`types/context.rs` defines the Context API's wire shapes, shared by the
+`types/context.rs` defines the Context wire types, shared by the
 REST route, the MCP tool, and `arcanum-context`. `ContextRequest`
 (`collection_id`, exactly one of `query` or `messages`, optional
 `token_budget`, `background_share`, `candidate_k`, `render`) carries
@@ -562,3 +562,6 @@ over it with a streaming `reqwest` call.
 - [Engine](engine.md)
 - [Evaluation](evaluation.md)
 - [Interfaces](interfaces.md)
+- [Context](context.md)
+- [Generate](generate.md)
+- [Verify](verify.md)

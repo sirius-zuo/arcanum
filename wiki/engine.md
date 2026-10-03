@@ -70,11 +70,11 @@ composes:
   an `Option<Arc<ArcanumEngine>>` and call through its public fields
   (`engine.auth`, `engine.retrieval`, `engine.ingestion`, ...); no code
   in this crate depends on either.
-- `arcanum-context` (no separate wiki page; documented here): the pure
+- `arcanum-context` (see [Context](context.md)): the pure
   context-packing crate (`cluster_sources`, `assemble`, `render`,
   `resolve_query`, `ConversationRewriter`/`EnricherRewriter`). It depends
   only on `arcanum-core`; `ContextService` is its sole consumer.
-- `arcanum-verify` (no separate wiki page; documented here): the pure
+- `arcanum-verify` (see [Verify](verify.md)): the pure
   Verify logic crate (see Architecture). It depends on `arcanum-core`,
   `arcanum-context` (the `xml` passage rendering; `TokenCounter` is in
   `arcanum-core`)
@@ -771,3 +771,6 @@ Newest first.
 - [Evidence](evidence.md)
 - [Interfaces](interfaces.md)
 - [Evaluation](evaluation.md)
+- [Context](context.md)
+- [Generate](generate.md)
+- [Verify](verify.md)

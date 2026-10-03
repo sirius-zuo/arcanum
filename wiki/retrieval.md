@@ -261,7 +261,7 @@ lexical, graph or tree is enabled without a chunk registry.)
    removed and counted via `arcanum_retrieval_unresolved_chunks_total`;
    `ChunkKind::Summary` chunks pass through untouched. Scores and
    strategy tags are preserved. `ContextService` consumes the result
-   (see [Engine](engine.md)).
+   (see [Context](context.md) and [Engine](engine.md)).
 
 ## Key Decisions
 
@@ -529,3 +529,4 @@ Newest first.
 - [Evaluation](evaluation.md)
 - [Interfaces](interfaces.md)
 - [Pipeline](pipeline.md)
+- [Context](context.md)

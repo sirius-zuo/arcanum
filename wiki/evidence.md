@@ -459,3 +459,5 @@ Newest first.
 - [Interfaces](interfaces.md)
 - [Retrieval](retrieval.md)
 - [Engine](engine.md)
+- [Storage](storage.md)
+- [Verify](verify.md)

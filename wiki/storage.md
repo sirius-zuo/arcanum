@@ -423,3 +423,4 @@ concrete store the engine wired in.
 - [Engine](engine.md)
 - [Interfaces](interfaces.md)
 - [Ingestion](ingestion.md)
+- [Verify](verify.md)
