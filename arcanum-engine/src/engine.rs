@@ -10,6 +10,7 @@ use crate::{
         context::ContextService,
         eval::EvalService,
         experiment::{ExperimentService, ExperimentStore, InMemoryExperimentStore},
+        generate::{GenerateService, GeneratorEntry},
         ingestion::IngestionService,
         retrieval::RetrievalService,
         source::IngestionSourceService,
@@ -17,10 +18,10 @@ use crate::{
 };
 use arcanum_context::{ConversationRewriter, EnricherRewriter};
 use arcanum_core::{
-    config::{ArcanumConfig, MetadataBackend, OrchestrationMode as CfgMode},
+    config::{ArcanumConfig, GeneratorProtocol, MetadataBackend, OrchestrationMode as CfgMode},
     traits::{
         ApproxCl100kCounter, CacheInvalidationBroadcaster, ChunkMetadataStore,
-        DocumentVersionStore, Embedder, EvidenceResolver, GcWorker, GraphStore,
+        DocumentVersionStore, Embedder, EvidenceResolver, GcWorker, Generator, GraphStore,
         IngestionDepsOverrideResolver, LexicalIndex, OperationPayloadStore, OperationStore,
         Preprocessor, Reranker, SecretStore, SnapshotStore, TextEnricher, TokenCounter, TreeStore,
         VectorStore,
@@ -52,6 +53,8 @@ pub struct ArcanumEngine {
     pub retrieval: Arc<RetrievalService>,
     /// Context assembly; present only when a `ChunkMetadataStore` is configured.
     pub context: Option<Arc<ContextService>>,
+    /// Grounded generation; present only with a chunk registry and at least one generator.
+    pub generate: Option<Arc<GenerateService>>,
     pub collection: Arc<CollectionService>,
     pub experiment: Arc<ExperimentService>,
     pub audit: Arc<AuditLogger>,
@@ -176,6 +179,7 @@ pub struct ArcanumEngineBuilder {
     additional_embedders: Vec<Arc<dyn Embedder>>,
     token_counter: Option<Arc<dyn TokenCounter>>,
     conversation_rewriter: Option<Arc<dyn ConversationRewriter>>,
+    generators: Vec<(String, Arc<dyn Generator>, u32)>,
 }
 
 impl ArcanumEngineBuilder {
@@ -346,6 +350,19 @@ impl ArcanumEngineBuilder {
         self
     }
 
+    /// Registers a generator under `name`, replacing a config entry of the same
+    /// name (whose `api_key_env` is then not read).
+    pub fn generator(
+        mut self,
+        name: impl Into<String>,
+        generator: Arc<dyn Generator>,
+        max_output_tokens: u32,
+    ) -> Self {
+        self.generators
+            .push((name.into(), generator, max_output_tokens));
+        self
+    }
+
     /// Resolves the enricher used for ingestion's context prefix / entity
     /// extraction steps. With no per-intent provider names set in
     /// `config.enrichment`, this is exactly `self.enricher` (today's
@@ -455,7 +472,79 @@ impl ArcanumEngineBuilder {
         Arc::new(LocalOperationPayloadStore::new("/tmp/arcanum-payloads"))
     }
 
+    /// Builds the generator map: builder-registered generators first, then
+    /// config entries not replaced by one. Checks `default_generator`.
+    fn resolve_generators(&self) -> Result<HashMap<String, GeneratorEntry>> {
+        let mut out: HashMap<String, GeneratorEntry> = HashMap::new();
+        let entry =
+            |name: &str, generator: Arc<dyn Generator>, max_output_tokens: u32| GeneratorEntry {
+                generator,
+                max_output_tokens,
+                breaker: Arc::new(CircuitBreaker::new(
+                    &format!("generator:{name}"),
+                    5,
+                    Duration::from_secs(30),
+                )),
+            };
+        for (name, generator, max) in &self.generators {
+            out.insert(name.clone(), entry(name, generator.clone(), *max));
+        }
+        for (name, gc) in &self.config.generate.generators {
+            if out.contains_key(name) {
+                continue;
+            }
+            let api_key = match &gc.api_key_env {
+                Some(var) => Some(std::env::var(var).map_err(|_| {
+                    ArcanumError::Config(format!(
+                        "generator '{name}': environment variable {var} is not set"
+                    ))
+                })?),
+                None => None,
+            };
+            let generator: Arc<dyn Generator> = match gc.protocol {
+                GeneratorProtocol::Anthropic => {
+                    let key = api_key.ok_or_else(|| {
+                        ArcanumError::Config(format!(
+                            "generator '{name}': anthropic protocol requires api_key_env"
+                        ))
+                    })?;
+                    Arc::new(arcanum_models::AnthropicGenerator::new(
+                        gc.model.clone(),
+                        key,
+                        gc.base_url.clone(),
+                    ))
+                }
+                GeneratorProtocol::OpenaiCompatible => {
+                    Arc::new(arcanum_models::OpenAiCompatibleGenerator::new(
+                        gc.model.clone(),
+                        api_key,
+                        gc.base_url.clone(),
+                    ))
+                }
+            };
+            out.insert(name.clone(), entry(name, generator, gc.max_output_tokens));
+        }
+        if !out.is_empty() {
+            match self.config.generate.default_generator.as_deref() {
+                None => {
+                    return Err(ArcanumError::Config(
+                        "generate.default_generator must be set when generators are configured"
+                            .into(),
+                    ))
+                }
+                Some(d) if !out.contains_key(d) => {
+                    return Err(ArcanumError::Config(format!(
+                        "generate.default_generator '{d}' does not name a configured generator"
+                    )))
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn build(self) -> Result<Arc<ArcanumEngine>> {
+        let generators = self.resolve_generators()?;
         self.config.validate()?;
 
         // Resolve the durable operation store before the queue is shared: every
@@ -859,6 +948,21 @@ impl ArcanumEngineBuilder {
                 vector_store_cb.clone(),
             ))
         });
+        let generate = match (&context, generators.is_empty()) {
+            (Some(ctx), false) => Some(Arc::new(GenerateService::new(
+                ctx.clone(),
+                generators,
+                self.config.generate.clone(),
+                audit.clone(),
+            ))),
+            (None, false) => {
+                tracing::info!(
+                    "generators configured but no chunk registry; generation is disabled"
+                );
+                None
+            }
+            _ => None,
+        };
         let eval = Arc::new(EvalService::new());
         let source = Arc::new(IngestionSourceService::new());
         let admin = Arc::new(AdminService::new(audit.clone()));
@@ -912,6 +1016,7 @@ impl ArcanumEngineBuilder {
             ingestion,
             retrieval,
             context,
+            generate,
             collection,
             experiment,
             audit,
@@ -1186,6 +1291,144 @@ mod tests {
             .await
             .expect("build should succeed");
         assert!(engine.context.is_some());
+    }
+
+    fn fake() -> Arc<dyn arcanum_core::traits::Generator> {
+        Arc::new(arcanum_core::traits::ScriptedGenerator::new("m", vec![]))
+    }
+
+    fn registry() -> Arc<arcanum_core::traits::InMemoryChunkMetadataStore> {
+        Arc::new(arcanum_core::traits::InMemoryChunkMetadataStore::new())
+    }
+
+    fn generate_config(
+        default: Option<&str>,
+        api_key_env: Option<&str>,
+        protocol: arcanum_core::config::GeneratorProtocol,
+    ) -> ArcanumConfig {
+        let mut cfg = ArcanumConfig::default();
+        cfg.generate.default_generator = default.map(String::from);
+        cfg.generate.generators.insert(
+            "smart".into(),
+            arcanum_core::config::GeneratorConfig {
+                protocol,
+                model: "m".into(),
+                api_key_env: api_key_env.map(String::from),
+                base_url: None,
+                max_output_tokens: 100,
+            },
+        );
+        cfg
+    }
+
+    fn build_err_msg(r: Result<Arc<ArcanumEngine>>) -> String {
+        match r {
+            Err(e) => e.to_string(),
+            Ok(_) => panic!("expected build error"),
+        }
+    }
+
+    #[tokio::test]
+    async fn generate_absent_without_generators() {
+        let engine = base_builder()
+            .chunk_metadata_store(registry())
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.generate.is_none());
+    }
+
+    #[tokio::test]
+    async fn generate_absent_without_registry() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.generate.default_generator = Some("fake".into());
+        let engine = base_builder()
+            .config(cfg)
+            .generator("fake", fake(), 100)
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.generate.is_none());
+    }
+
+    #[tokio::test]
+    async fn generate_present_with_registry_and_generator() {
+        let mut cfg = ArcanumConfig::default();
+        cfg.generate.default_generator = Some("fake".into());
+        let engine = base_builder()
+            .config(cfg)
+            .chunk_metadata_store(registry())
+            .generator("fake", fake(), 100)
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.generate.is_some());
+    }
+
+    #[tokio::test]
+    async fn default_generator_unset_or_unknown_is_config_error() {
+        let r = base_builder()
+            .chunk_metadata_store(registry())
+            .generator("fake", fake(), 100)
+            .build()
+            .await;
+        assert!(build_err_msg(r).contains("default_generator"));
+
+        let mut cfg = ArcanumConfig::default();
+        cfg.generate.default_generator = Some("nope".into());
+        let r = base_builder()
+            .config(cfg)
+            .chunk_metadata_store(registry())
+            .generator("fake", fake(), 100)
+            .build()
+            .await;
+        assert!(build_err_msg(r).contains("nope"));
+    }
+
+    #[tokio::test]
+    async fn unset_api_key_env_is_config_error() {
+        use arcanum_core::config::GeneratorProtocol;
+        let cfg = generate_config(
+            Some("smart"),
+            Some("ARCANUM_TEST_UNSET_KEY_7F3"),
+            GeneratorProtocol::Anthropic,
+        );
+        let r = base_builder()
+            .config(cfg)
+            .chunk_metadata_store(registry())
+            .build()
+            .await;
+        assert!(build_err_msg(r).contains("ARCANUM_TEST_UNSET_KEY_7F3"));
+    }
+
+    #[tokio::test]
+    async fn anthropic_without_api_key_env_is_config_error() {
+        use arcanum_core::config::GeneratorProtocol;
+        let cfg = generate_config(Some("smart"), None, GeneratorProtocol::Anthropic);
+        let r = base_builder()
+            .config(cfg)
+            .chunk_metadata_store(registry())
+            .build()
+            .await;
+        assert!(build_err_msg(r).contains("smart"));
+    }
+
+    #[tokio::test]
+    async fn builder_generator_replaces_config_entry() {
+        use arcanum_core::config::GeneratorProtocol;
+        let cfg = generate_config(
+            Some("smart"),
+            Some("ARCANUM_TEST_UNSET_KEY_7F3"),
+            GeneratorProtocol::Anthropic,
+        );
+        let engine = base_builder()
+            .config(cfg)
+            .chunk_metadata_store(registry())
+            .generator("smart", fake(), 100)
+            .build()
+            .await
+            .unwrap();
+        assert!(engine.generate.is_some());
     }
 
     #[tokio::test]
