@@ -44,16 +44,21 @@ export function OperationsProvider({ children }: { children: ReactNode }) {
 
   const track = useCallback((ids: TrackInput[]) => {
     setOps((current) => {
-      const seen = new Set(current.map((o) => o.operation_id))
       const now = Date.now()
-      const added: TrackedOp[] = []
+      const next = [...current]
+      let changed = false
       for (const id of ids) {
-        if (seen.has(id.operation_id)) continue
-        seen.add(id.operation_id)
-        added.push({ source_uri: id.source_uri, operation_id: id.operation_id, addedAt: now, ...(id.replay ? { replay: true } : {}) })
+        const at = next.findIndex((o) => o.operation_id === id.operation_id)
+        if (at === -1) {
+          next.push({ source_uri: id.source_uri, operation_id: id.operation_id, addedAt: now, ...(id.replay ? { replay: true } : {}) })
+          changed = true
+        } else if (id.replay && !next[at].replay) {
+          // A replay returns the original operation id: mark the existing entry, keep addedAt.
+          next[at] = { ...next[at], replay: true }
+          changed = true
+        }
       }
-      if (added.length === 0) return current
-      const next = [...current, ...added]
+      if (!changed) return current
       safeSet(KEY, JSON.stringify(next))
       return next
     })

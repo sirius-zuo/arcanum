@@ -41,4 +41,38 @@ describe('operations', () => {
     mount()
     expect(screen.getByTestId('count')).toHaveTextContent('0')
   })
+
+  it('replay_marks_the_existing_entry_and_persists', async () => {
+    const user = userEvent.setup()
+    function Replayer() {
+      const { ops, track } = useOperations()
+      return (
+        <div>
+          <button onClick={() => track([{ source_uri: 'x', operation_id: 'a' }])}>first</button>
+          <button onClick={() => track([{ source_uri: 'x', operation_id: 'a', replay: true }])}>replay</button>
+          <output data-testid="state">{JSON.stringify(ops.map((o) => [o.operation_id, o.replay === true, o.addedAt]))}</output>
+        </div>
+      )
+    }
+    const view = render(
+      <OperationsProvider>
+        <Replayer />
+      </OperationsProvider>,
+    )
+    await user.click(screen.getByText('first'))
+    const before = JSON.parse(screen.getByTestId('state').textContent!) as [string, boolean, number][]
+    await user.click(screen.getByText('replay'))
+    await user.click(screen.getByText('first'))
+    const after = JSON.parse(screen.getByTestId('state').textContent!) as [string, boolean, number][]
+    expect(after).toHaveLength(1)
+    expect(after[0][1]).toBe(true)
+    expect(after[0][2]).toBe(before[0][2])
+    view.unmount()
+    render(
+      <OperationsProvider>
+        <Replayer />
+      </OperationsProvider>,
+    )
+    expect(JSON.parse(screen.getByTestId('state').textContent!)).toEqual([['a', true, before[0][2]]])
+  })
 })

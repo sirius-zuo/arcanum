@@ -116,7 +116,7 @@ function operationOptions(client: Client, id: string, pollMs: number, enabled: b
 
 export interface OperationStatusOptions {
   pollMs?: number
-  /** Hook point for tour signals (wired in a later task). Called once when the operation first reads terminal. */
+  /** Hook point for tour signals (wired in a later task). Called once when the operation moves from non-terminal to terminal during this session; never for operations already terminal at first fetch. */
   onTerminal?: (doc: OperationDoc) => void
 }
 
@@ -125,12 +125,19 @@ export function useOperationStatus(id: string, opts: OperationStatusOptions = {}
   const { client, data: boot } = useBootstrap()
   const queryClient = useQueryClient()
   const query = useQuery(operationOptions(client, id, opts.pollMs ?? POLL_MS, boot !== null))
+  const sawLive = useRef(false)
   const fired = useRef(false)
   const onTerminal = useRef(opts.onTerminal)
   onTerminal.current = opts.onTerminal
 
   useEffect(() => {
-    if (!query.data || !isTerminal(query.data) || fired.current) return
+    if (!query.data) return
+    if (!isTerminal(query.data)) {
+      sawLive.current = true
+      return
+    }
+    // Operations already terminal at first fetch (history after a page load) are not events.
+    if (!sawLive.current || fired.current) return
     fired.current = true
     void queryClient.invalidateQueries({ queryKey: ['demo', 'library'] })
     onTerminal.current?.(query.data)
@@ -145,10 +152,17 @@ export function useTerminalCount(ids: string[]): { done: number; total: number }
   const queryClient = useQueryClient()
   const results = useQueries({ queries: ids.map((id) => operationOptions(client, id, POLL_MS, boot !== null)) })
   const done = results.filter((r) => isTerminal(r.data)).length
-  const last = useRef(done)
+  const live = useRef(new Set<string>())
+  const finished = results.map((r, i) => ({ id: ids[i], terminal: isTerminal(r.data), has: r.data !== undefined }))
+  const signature = finished.map((f) => `${f.id}:${f.has ? (f.terminal ? 1 : 0) : '-'}`).join(',')
   useEffect(() => {
-    if (done > last.current) void queryClient.invalidateQueries({ queryKey: ['demo', 'library'] })
-    last.current = done
-  }, [done, queryClient])
+    let transitioned = false
+    for (const f of finished) {
+      if (!f.has) continue
+      if (!f.terminal) live.current.add(f.id)
+      else if (live.current.delete(f.id)) transitioned = true
+    }
+    if (transitioned) void queryClient.invalidateQueries({ queryKey: ['demo', 'library'] })
+  }, [signature, queryClient])
   return { done, total: ids.length }
 }

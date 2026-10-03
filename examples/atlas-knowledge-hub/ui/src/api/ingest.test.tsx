@@ -123,4 +123,31 @@ describe('useOperationStatus', () => {
     expect(get.mock.calls.length).toBe(calls)
     expect(getOperation).toBeTypeOf('function')
   })
+
+  it('on_terminal_fires_only_on_a_real_transition', async () => {
+    const base = { operation_id: 'op-1', submission: {}, accepted_at: 'now', started_at: null }
+    const done: OperationDoc = {
+      ...base,
+      status: 'Succeeded',
+      terminal_report: { operation_id: 'op-1', status: 'Succeeded', outcome: 'Ingested', content_uri: 'u', error: null, partial_output_disposition: 'none' },
+    }
+    const run = async (docs: OperationDoc[]) => {
+      let n = 0
+      mockClient.current = { get: vi.fn(async () => docs[Math.min(n++, docs.length - 1)]), post: vi.fn(), del: vi.fn(), raw: vi.fn() } as unknown as Client
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+      const spy = vi.spyOn(qc, 'invalidateQueries')
+      const onTerminal = vi.fn()
+      const wrapper = ({ children }: { children: ReactNode }) => <QueryClientProvider client={qc}>{children}</QueryClientProvider>
+      const { result } = renderHook(() => useOperationStatus('op-1', { pollMs: 20, onTerminal }), { wrapper })
+      await waitFor(() => expect(result.current.data?.status).toBe('Succeeded'))
+      await new Promise((r) => setTimeout(r, 80))
+      return { onTerminal, spy }
+    }
+    const historic = await run([done])
+    expect(historic.onTerminal).not.toHaveBeenCalled()
+    expect(historic.spy).not.toHaveBeenCalled()
+    const live = await run([{ ...base, status: 'Running', terminal_report: null }, done])
+    expect(live.onTerminal).toHaveBeenCalledTimes(1)
+    expect(live.spy).toHaveBeenCalledWith({ queryKey: ['demo', 'library'] })
+  })
 })
