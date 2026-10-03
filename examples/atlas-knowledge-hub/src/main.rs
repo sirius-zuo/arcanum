@@ -13,7 +13,7 @@ async fn main() -> Result<()> {
     let s = &state.settings;
     let manifest = Arc::new(load_manifest(Path::new("samples")).context("load samples")?);
 
-    std::fs::write(".arcanum-dev-key", &state.admin_key)?;
+    std::fs::write(".arcanum-dev-key", &state.admin_key).context("write .arcanum-dev-key")?;
 
     let mcp = arcanum_mcp::McpServer::new(state.mcp.clone(), s.mcp_port);
     tokio::spawn(async move {
@@ -28,7 +28,7 @@ async fn main() -> Result<()> {
         .await
         .with_context(|| format!("bind port {}", s.port))?;
 
-    let ui = if Path::new("ui/dist").is_dir() {
+    let ui = if Path::new(atlas::UI_DIST).is_dir() {
         format!("http://localhost:{}/", s.port)
     } else {
         "run make dev: http://localhost:5173".to_string()

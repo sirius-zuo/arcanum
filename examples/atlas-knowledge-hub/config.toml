@@ -36,6 +36,9 @@ rewrite_max_messages = 6
 
 [generate]
 default_generator = "local"
+# Local models are slow, especially reasoning ones. A hosted model can use the defaults (30 / 120).
+first_token_timeout_secs = 120
+total_timeout_secs       = 300
 
 [generate.generators.local]
 protocol          = "openai_compatible"
@@ -45,3 +48,5 @@ max_output_tokens = 1024
 
 [verify]
 judge = "local"
+# Local judges are slow; a hosted judge can use the default (90).
+judge_timeout_secs = 300

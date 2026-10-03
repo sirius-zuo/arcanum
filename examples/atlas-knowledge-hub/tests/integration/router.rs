@@ -1,6 +1,6 @@
+use atlas::assemble_app_with_dist;
 use atlas::demo::OllamaProbe;
 use atlas::samples::load_manifest;
-use atlas::{assemble_app, assemble_app_with_dist};
 use axum::body::Body;
 use axum::Router;
 use http::{Request, StatusCode};
@@ -91,7 +91,37 @@ async fn assembled_app_serves_api_and_demo() {
     }
 
     // Without a dist dir there is no fallback at all.
-    let bare = assemble_app(state, manifest, Arc::new(FakeProbe));
+    let bare = assemble_app_with_dist(state, manifest, Arc::new(FakeProbe), None);
     let (s, _) = send(&bare, get("/library")).await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn cors_allows_only_the_vite_dev_origin() {
+    let (state, _dir) = crate::common::test_state().await;
+    let manifest =
+        Arc::new(load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("samples")).unwrap());
+    let app = assemble_app_with_dist(state, manifest, Arc::new(FakeProbe), None);
+
+    let from = |origin: &str| {
+        Request::builder()
+            .uri("/health")
+            .header("Origin", origin)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let allowed = app
+        .clone()
+        .oneshot(from("http://localhost:5173"))
+        .await
+        .unwrap();
+    assert_eq!(
+        allowed
+            .headers()
+            .get("access-control-allow-origin")
+            .unwrap(),
+        "http://localhost:5173"
+    );
+    let other = app.oneshot(from("http://evil.example")).await.unwrap();
+    assert!(other.headers().get("access-control-allow-origin").is_none());
 }

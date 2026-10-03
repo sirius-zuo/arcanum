@@ -22,6 +22,9 @@ use tower_http::services::{ServeDir, ServeFile};
 /// Origin of the Vite dev server, allowed in addition to the same-origin proxy.
 const DEV_ORIGIN: &str = "http://localhost:5173";
 
+/// Built UI, relative to the working directory.
+pub const UI_DIST: &str = "ui/dist";
+
 /// Path prefixes owned by the API. Unknown paths below them answer JSON 404, never `index.html`.
 const API_PREFIXES: [&str; 4] = ["/api/", "/demo/", "/evidence/", "/ws/"];
 
@@ -32,7 +35,7 @@ pub fn assemble_app(
     manifest: Arc<samples::Manifest>,
     probe: Arc<dyn demo::OllamaProbe>,
 ) -> Router {
-    let dist = PathBuf::from("ui/dist");
+    let dist = PathBuf::from(UI_DIST);
     assemble_app_with_dist(state, manifest, probe, dist.is_dir().then_some(dist))
 }
 
