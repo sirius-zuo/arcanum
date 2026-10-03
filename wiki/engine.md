@@ -40,9 +40,10 @@ composes:
   supply the corresponding store directly (PR #53, PR #54).
 - [Pipeline](pipeline.md): builds `PipelineDeps`, an
   `ArcanumPipelineRegistry`, and a pool of `IngestionWorker`s; also
-  constructs `arcanum-middleware`'s `CircuitBreaker`, `BoundedQueue`,
-  `RetryPolicy` (see Pipeline's Position section for the shared-queue
-  detail).
+  constructs `arcanum-middleware`'s `CircuitBreaker` and `BoundedQueue`
+  (see Pipeline's Position section for the shared-queue detail). The engine
+  no longer constructs a `RetryPolicy`; the worker's retry loop was removed
+  when ingestion operations became durable (PR #59).
 - [Retrieval](retrieval.md): builds `RetrievalOrchestrator` and adds
   `VectorRetriever`/`ColBertRetriever`/`GraphRetriever`/`RaptorRetriever`/
   `Bm25Retriever` conditionally; all five retrieval strategies are
