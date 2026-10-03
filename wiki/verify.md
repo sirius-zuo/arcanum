@@ -81,8 +81,8 @@ classDiagram
   line with `split_sentence_bound_indices`, keeps a trailing marker group (and
   adjacent groups and closing punctuation such as `.`, `,` or the CJK
   equivalents) on the sentence it follows, trims whitespace, drops empty
-  spans, and treats a fenced block (opened and closed by a line starting with
-  three backticks, an unclosed fence runs to the end) as one `code: true` unit.
+  spans, and treats a fenced block (opened and closed by a line that starts with
+  three backticks after optional leading whitespace, an unclosed fence runs to the end) as one `code: true` unit.
 - `attribute`: `attribute(answer, units, available)` assigns each
   `scan_markers` group to the non-code unit containing its start. An id naming
   an available passage goes to `cited` (deduplicated), anything else to
@@ -148,7 +148,9 @@ at `offset_start..offset_end`.
 **1. `POST /api/v1/verify` end to end (`VerifyService::run`)**
 1. `routes::api::verify` authenticates, parses the body (400) and answers 503
    with `VERIFY_UNAVAILABLE` when `engine.verify` is `None`. MCP does the same
-   (a tool error for 503, `-32602` for bad arguments).
+   (a tool error with the 503 text when unconfigured, `-32602` for bad
+   arguments). In MCP a service-level `VerifyError::Invalid` also maps to
+   `-32602` and every other `VerifyError` becomes an `isError` tool result.
 2. `VerifyRequest::validate` with `max_answer_chars` and `max_passages`:
    non-empty answer within the limit (counted in characters), non-empty
    passages within the limit, each `ref_id` matching `^P\d{1,3}$` and unique,

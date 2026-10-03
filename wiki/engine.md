@@ -363,7 +363,10 @@ and `VerifyError::code()` gives the wire codes (`invalid`, `forbidden`,
    generator (`Unavailable` when open).
 5. `build_prompt` produces the system prompt and messages; the returned
    event stream is lazy, so the LLM call happens when it is first polled.
-   Dropping the stream cancels the upstream request and records nothing.
+   Dropping the stream cancels the upstream request and records no
+   generation metric, breaker result or audit entry; the route's `SseMetrics`
+   guard still records `arcanum_requests_total` as `error` unless a `done`
+   event was seen (see [Interfaces](interfaces.md)).
 6. Polling drives `Generator::stream` under `timeout_at`: the first-token
    deadline covers the call and the first event, the total deadline covers
    everything. A timeout yields `Timeout`; a generator error or a stream
@@ -394,7 +397,9 @@ reports usage, and writes a `generate` audit entry.
 3. `segment` and `attribute` produce the units and their `cited` and
    `invalid_refs`; `plan_batches` splits the claim units (`Invalid` when
    the passages alone exceed `max_judge_input_tokens`).
-4. The judge breaker is checked once (`Unavailable` when open). Batches run
+4. The judge breaker is checked once before fan-out in `VerifyService::run`
+   (`Unavailable` when open) and again inside every `call_judge` call,
+   retries included. Batches run
    concurrently, four at a time, each as a `Generator::stream` call at
    temperature 0 under `judge_timeout_secs`, with the stream drained into
    a string.
@@ -740,6 +745,12 @@ Newest first.
   `MonitoredEmbedder`/`CachingEmbedder`-wrapped embedder, so query-time
   calls bypass both the cache and the health monitor; per-provider
   monitor attribution under the router is also unimplemented.
+
+- **Provenance note.** The rationale in the `no_context`-before-breaker Key
+  Decision above is not recorded in a tracked source (commit 816e913 has no
+  message body); it may come from the untracked generate design doc. Commit
+  6cfed24 records only the ordering (short-circuit to `no_context` before the
+  generator breaker).
 
 ## Source Anchors
 

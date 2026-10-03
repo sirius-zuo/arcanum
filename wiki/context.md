@@ -72,8 +72,6 @@ classDiagram
     ContextService ..> AssembleParams : builds
     ContextService ..> Assembled : assemble()
     EnricherRewriter ..|> ConversationRewriter
-    Assembled ..> Cluster : cluster_sources
-    Assembled ..> ScoredSummary : score_summaries
 ```
 
 The crate has four modules, each re-exported from `lib.rs` except `render`.
@@ -213,10 +211,11 @@ lines but reuses `render` for the passages (see [Verify](verify.md)).
    REST answers 503 `context requires a chunk registry` and MCP returns a
    tool error with the same text.
 2. Open breaker: 503 before any retrieval (step 3 above).
-3. `retrieve_candidates` returns `Ok` with at least one non-empty list:
+3. `retrieve_candidates` returns `Ok` with at least one `CandidateList` (it may
+   hold zero chunks):
    `record_success` on the breaker. Failed strategies listed in `failed`
    do not change that.
-4. `Ok` with no non-empty list: `Unavailable("retrieval unavailable")`
+4. `Ok` with no `CandidateList` at all: `Unavailable("retrieval unavailable")`
    (503). `record_failure` is called only if `failed` contains `Vector` or
    `ColBert`. An empty result because no strategy was active, or because
    only BM25, Graph or RAPTOR failed, leaves the breaker untouched, since
@@ -360,8 +359,8 @@ Newest first.
   Chunks dropped as unresolved appear only in the
   `arcanum_retrieval_unresolved_chunks_total` metric, not in
   `usage.dropped_passages`.
-- **Gotcha, breaker success.** `record_success` is called whenever any
-  list is non-empty, even if `Vector` failed in the same call, so a
+- **Gotcha, breaker success.** `record_success` is called whenever at
+  least one `CandidateList` exists (possibly with zero chunks), even if `Vector` failed in the same call, so a
   partial vector failure can reset the failure count shared with `search`.
 - **Gotcha, error text and audit.** REST and MCP return `e.to_string()`
   for `ContextError::Internal`, the underlying `ArcanumError` text. Only

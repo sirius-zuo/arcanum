@@ -273,8 +273,10 @@ recorder via `metrics_prometheus::try_install()`. It returns a
    drops the stream and cancels the upstream LLM request.
 4. The handler records `arcanum_requests_total` and
    `arcanum_request_duration_seconds` with `endpoint="generate"`; the
-   status label reflects the HTTP status, so a mid-stream `error` event
-   still counts as `ok`. Generation-level metrics are recorded by the
+   for SSE responses the `SseMetrics` guard records the status when
+   the stream ends: `error` unless a `done` event was seen, so a mid-stream
+   `error` event and a dropped stream both count as `error`. JSON responses
+   use the HTTP status. Generation-level metrics are recorded by the
    service (see [Engine](engine.md)).
 5. MCP maps `Invalid` to a JSON-RPC `-32602` error and every other
    `GenerateError` to an `isError` result. Success returns the answer as

@@ -6,8 +6,8 @@ Generate is the built-in grounded answer path: it asks Context for
 token-budgeted passages, prompts an LLM with them, streams the answer, and maps
 the inline `[P1]` markers in that answer back to passages, chunk ids, document
 versions and byte offsets. The work is split three ways. `arcanum-generate` is
-a pure crate (prompt building and citation parsing, depending only on
-`arcanum-core`). `arcanum-models` holds the two provider adapters and the SSE
+a pure crate (prompt building and citation parsing, depending on
+`arcanum-core`, `regex` and `serde`). `arcanum-models` holds the two provider adapters and the SSE
 line parser. `GenerateService` in `arcanum-engine` owns validation, auth via
 Context, timeouts, circuit breakers, metrics and audit. Whether a cited passage
 actually supports a sentence is not decided here; that is Verify's job (see
@@ -226,7 +226,7 @@ truncated to `MAX_HISTORY_CHARS` (4000). The final user turn is
    config error) and constructs `AnthropicGenerator` (needs `api_key_env`) or
    `OpenAiCompatibleGenerator` (key optional).
 2. Every entry gets a `CircuitBreaker` named `generator:<name>` (threshold 5,
-   reset 30 seconds, literals in `resolve_generators`). With at least one
+   reset 30 seconds). With at least one
    generator, `default_generator` must be set and name an entry, and
    `verify.judge`, when set, must name one too. The same map goes to
    `VerifyService`, so a judge and an answer model with one name share a
@@ -336,9 +336,10 @@ Newest first.
   TypeScript, one session per process, with a Rust port on a non-tokio runtime
   and not on crates.io, and unneeded because Generate v1 is single-shot (one
   retrieval, one LLM call).
-- **Consequences**: prompts and citation parsing are testable offline;
-  providers outside the two protocols are reached by `base_url` on the
-  OpenAI-compatible adapter; there is no agent loop, tool calling or retry.
+- **Consequences**: Observed: prompts and citation parsing live in
+  `arcanum-generate`, which depends only on `arcanum-core`, `regex` and
+  `serde`; Observed: the OpenAI-compatible adapter takes a `base_url`; there
+  is no agent loop, tool calling or retry.
 - **Ref**: 2026-10-02, 02ab46d, c7ae9b1, PR #62
 
 ## Implementation Notes
@@ -359,6 +360,9 @@ Newest first.
   `e.to_string()`: `generation failed` for `Upstream` but `generation timed
   out` for `Timeout`, so clients can tell the two apart there even though the
   upstream detail is hidden.
+- **Known debt, hard-coded breaker values.** The generator breaker threshold
+  (5) and reset (30 seconds) are literals in `resolve_generators`, not
+  configuration.
 - **Known debt, stale comment.** In `routes/api.rs` the doc comment "Emits
   `context` first, then `delta` events, then one `done` or `error`" sits above
   `record_generate`, not above `sse_response`, which it describes. It also
