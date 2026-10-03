@@ -1,8 +1,15 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Outlet } from 'react-router-dom'
 import { Rail } from './Rail'
 import { TopBar } from './TopBar'
 import { ErrorState } from './ErrorState'
+import { CommandPalette } from './CommandPalette'
+import type { PaletteAction } from './CommandPalette'
+import { Inspector, InspectorProvider } from './Inspector'
+import { CommandActionsProvider, useCommandActions } from '../state/commandActions'
+import { OperationsProvider } from '../state/operations'
+import { useApplyUpdate, useLoadSamples } from '../api/library'
+import { useTheme } from '../state/theme'
 import { useBootstrap } from '../state/bootstrap'
 import { safeGet, safeSet } from '../lib/storage'
 
@@ -13,6 +20,24 @@ function initialCollapsed(): boolean {
   if (stored === '1') return true
   if (stored === '0') return false
   return typeof window !== 'undefined' && window.innerWidth < 1280
+}
+
+/** Palette actions that need app state; routes are added by the palette itself. */
+function AppCommandPalette() {
+  const load = useLoadSamples()
+  const update = useApplyUpdate()
+  const { toggle } = useTheme()
+  const { run } = useCommandActions()
+  const actions = useMemo<PaletteAction[]>(
+    () => [
+      { id: 'load', label: 'Load sample corpus', run: () => load.mutate() },
+      { id: 'update', label: 'Apply policy update', run: () => update.mutate() },
+      { id: 'theme', label: 'Toggle theme', run: toggle },
+      { id: 'tour', label: 'Start tour', run: () => run('tour.start') },
+    ],
+    [load, update, toggle, run],
+  )
+  return <CommandPalette actions={actions} />
 }
 
 export function AppShell() {
@@ -26,6 +51,9 @@ export function AppShell() {
     })
 
   return (
+    <OperationsProvider>
+    <CommandActionsProvider>
+    <InspectorProvider>
     <div className="flex min-h-screen">
       <Rail collapsed={collapsed} onToggle={toggle} />
       <div className="min-w-0 flex-1">
@@ -51,6 +79,11 @@ export function AppShell() {
           )}
         </main>
       </div>
+      <Inspector />
+      <AppCommandPalette />
     </div>
+    </InspectorProvider>
+    </CommandActionsProvider>
+    </OperationsProvider>
   )
 }

@@ -1,18 +1,9 @@
-import { useQuery } from '@tanstack/react-query'
 import clsx from 'clsx'
 import { Link } from 'react-router-dom'
-import type { DemoHealth } from '../api/types'
-import { useBootstrap } from '../state/bootstrap'
+import { useHealth } from '../api/library'
 
 export function HealthPill() {
-  const { data, client } = useBootstrap()
-  const health = useQuery({
-    queryKey: ['demo', 'health'],
-    queryFn: () => client.get<DemoHealth>('/demo/health'),
-    enabled: data !== null,
-    refetchInterval: 15_000,
-    retry: false,
-  })
+  const health = useHealth()
 
   let tone = 'bg-muted'
   let label = 'Checking'
