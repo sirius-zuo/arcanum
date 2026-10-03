@@ -1,8 +1,8 @@
 use arcanum_core::{
     traits::ChunkMetadataStore,
     types::{
-        ChunkId, ChunkKind, ChunkMetadataRecord, IndexedChunk, RetrievalStrategy, RetrievedChunk,
-        Vector,
+        CandidateList, Candidates, ChunkId, ChunkKind, ChunkMetadataRecord, IndexedChunk,
+        RetrievalStrategy, RetrievedChunk, Vector,
     },
     Result,
 };
@@ -36,17 +36,75 @@ pub async fn fetch_records(
     let label = strategy_label(strategy);
     for id in ids {
         if !records.contains_key(id) {
-            warn!(
-                collection,
-                strategy = label,
-                chunk_id = %id.0,
-                "chunk not in registry"
-            );
-            metrics::counter!("arcanum_retrieval_unresolved_chunks_total", "strategy" => label)
-                .increment(1);
+            note_unresolved(collection, label, id);
         }
     }
     Ok(records)
+}
+
+fn note_unresolved(collection: &str, label: &'static str, id: &ChunkId) {
+    warn!(
+        collection,
+        strategy = label,
+        chunk_id = %id.0,
+        "chunk not in registry"
+    );
+    metrics::counter!("arcanum_retrieval_unresolved_chunks_total", "strategy" => label)
+        .increment(1);
+}
+
+/// Replaces every `Source` chunk in `candidates` with its registry record using
+/// one `get_many` over the unique ids. Vector and ColBERT payload text may carry
+/// an enrichment prefix, so the registry slice is the authoritative text.
+/// Unknown ids are dropped (logged and counted per list strategy, like
+/// `fetch_records`); `Summary` chunks pass through untouched.
+pub async fn hydrate_sources(
+    store: &dyn ChunkMetadataStore,
+    collection: &str,
+    mut candidates: Candidates,
+) -> Result<Candidates> {
+    let mut seen = std::collections::HashSet::new();
+    let mut ids: Vec<ChunkId> = Vec::new();
+    for list in &candidates.lists {
+        for c in &list.chunks {
+            if matches!(c.kind, ChunkKind::Source) && seen.insert(c.indexed_chunk.chunk.id.clone())
+            {
+                ids.push(c.indexed_chunk.chunk.id.clone());
+            }
+        }
+    }
+    let records: HashMap<ChunkId, ChunkMetadataRecord> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        store
+            .get_many(&ids)
+            .await?
+            .into_iter()
+            .map(|r| (r.chunk_id.clone(), r))
+            .collect()
+    };
+    for CandidateList {
+        strategy, chunks, ..
+    } in &mut candidates.lists
+    {
+        let label = strategy_label(strategy);
+        chunks.retain_mut(|c| {
+            if !matches!(c.kind, ChunkKind::Source) {
+                return true;
+            }
+            match records.get(&c.indexed_chunk.chunk.id) {
+                Some(r) => {
+                    c.indexed_chunk.chunk = r.to_chunk();
+                    true
+                }
+                None => {
+                    note_unresolved(collection, label, &c.indexed_chunk.chunk.id);
+                    false
+                }
+            }
+        });
+    }
+    Ok(candidates)
 }
 
 /// Resolves scored chunk ids into `RetrievedChunk`s through the registry,
@@ -199,5 +257,95 @@ mod tests {
         assert_eq!(store.get_many_calls.load(Ordering::SeqCst), 1);
         assert_eq!(got.len(), 2);
         assert!(got.contains_key(&a.chunk_id) && got.contains_key(&b.chunk_id));
+    }
+
+    fn cand_chunk(id: &ChunkId, text: &str, kind: ChunkKind) -> RetrievedChunk {
+        let mut r = rec(text, 0);
+        r.chunk_id = id.clone();
+        RetrievedChunk {
+            indexed_chunk: IndexedChunk {
+                chunk: r.to_chunk(),
+                vector: Vector(vec![]),
+                token_vectors: None,
+                store_id: id.0.to_string(),
+            },
+            score: 0.5,
+            strategy: RetrievalStrategy::Vector,
+            kind,
+        }
+    }
+
+    fn cands(chunks: Vec<RetrievedChunk>) -> Candidates {
+        Candidates {
+            queries: vec!["q".into()],
+            lists: vec![CandidateList {
+                query_index: 0,
+                strategy: RetrievalStrategy::Vector,
+                chunks,
+            }],
+            failed: vec![],
+        }
+    }
+
+    #[tokio::test]
+    async fn hydrate_sources_replaces_text_with_registry_slice() {
+        let store = InMemoryChunkMetadataStore::new();
+        let a = rec("slice", 3);
+        store.put(&a).await.unwrap();
+        let c = cands(vec![cand_chunk(
+            &a.chunk_id,
+            "prefix\nslice",
+            ChunkKind::Source,
+        )]);
+        let out = hydrate_sources(&store, "col", c).await.unwrap();
+        let ch = &out.lists[0].chunks[0];
+        assert_eq!(ch.indexed_chunk.chunk.text, "slice");
+        assert_eq!(ch.indexed_chunk.chunk.position.index, 3);
+        assert_eq!(ch.score, 0.5);
+    }
+
+    #[tokio::test]
+    async fn hydrate_sources_drops_unknown_and_keeps_summaries() {
+        let store = InMemoryChunkMetadataStore::new();
+        let a = rec("aaa", 0);
+        store.put(&a).await.unwrap();
+        let unknown = ChunkId::new();
+        let summary = ChunkId::new();
+        let c = cands(vec![
+            cand_chunk(&unknown, "gone", ChunkKind::Source),
+            cand_chunk(&a.chunk_id, "pre\naaa", ChunkKind::Source),
+            cand_chunk(
+                &summary,
+                "summary text",
+                ChunkKind::Summary {
+                    level: 1,
+                    covers: vec![],
+                },
+            ),
+        ]);
+        let out = hydrate_sources(&store, "col", c).await.unwrap();
+        let chunks = &out.lists[0].chunks;
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].indexed_chunk.chunk.text, "aaa");
+        assert_eq!(chunks[1].indexed_chunk.chunk.text, "summary text");
+    }
+
+    #[tokio::test]
+    async fn hydrate_sources_calls_get_many_once() {
+        let store = CountingStore {
+            inner: InMemoryChunkMetadataStore::new(),
+            get_many_calls: AtomicUsize::new(0),
+        };
+        let a = rec("aaa", 0);
+        store.put(&a).await.unwrap();
+        let mut c = cands(vec![cand_chunk(&a.chunk_id, "x\naaa", ChunkKind::Source)]);
+        c.lists.push(CandidateList {
+            query_index: 1,
+            strategy: RetrievalStrategy::Bm25,
+            chunks: vec![cand_chunk(&a.chunk_id, "aaa", ChunkKind::Source)],
+        });
+        let out = hydrate_sources(&store, "col", c).await.unwrap();
+        assert_eq!(store.get_many_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(out.lists[1].chunks.len(), 1);
     }
 }
