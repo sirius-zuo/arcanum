@@ -119,3 +119,15 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+@layer components {
+  .atlas-caret {
+    display: inline-block;
+    width: 2px;
+    height: 1.05em;
+    margin-left: 2px;
+    vertical-align: text-bottom;
+    background: rgb(var(--accent));
+    animation: caret 1s steps(2, start) infinite;
+  }
+}

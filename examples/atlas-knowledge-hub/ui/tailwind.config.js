@@ -35,13 +35,15 @@ export default {
       },
       transitionDuration: { DEFAULT: '150ms' },
       keyframes: {
+        caret: { to: { visibility: 'hidden' } },
+        'chip-in': { from: { opacity: '0', transform: 'translateY(2px) scale(0.96)' }, to: { opacity: '1', transform: 'none' } },
         shimmer: { '100%': { transform: 'translateX(100%)' } },
         rise: {
           from: { opacity: '0', transform: 'translateY(6px)' },
           to: { opacity: '1', transform: 'translateY(0)' },
         },
       },
-      animation: { rise: 'rise 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both' },
+      animation: { 'chip-in': 'chip-in 180ms ease-out both', rise: 'rise 260ms cubic-bezier(0.2, 0.7, 0.2, 1) both' },
     },
   },
   plugins: [],
