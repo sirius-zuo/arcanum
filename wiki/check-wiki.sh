@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-CANONICAL="README.md TEMPLATE.md core.md storage.md ingestion.md pipeline.md retrieval.md evidence.md engine.md interfaces.md evaluation.md"
+CANONICAL="README.md TEMPLATE.md core.md storage.md ingestion.md pipeline.md retrieval.md evidence.md engine.md interfaces.md evaluation.md context.md generate.md verify.md"
 SECTIONS=("## Purpose" "## Position in the System" "## Architecture" "## Runtime Flows" "## Key Decisions" "## Implementation Notes" "## Source Anchors" "## Related Pages")
 MERMAID_TYPES="graph|flowchart|sequenceDiagram|classDiagram|stateDiagram|erDiagram"
 
