@@ -6,5 +6,6 @@ mod demo_basic;
 mod demo_eval;
 mod demo_ingest;
 mod demo_library;
+mod demo_metrics_mcp;
 mod engine_setup;
 mod samples;

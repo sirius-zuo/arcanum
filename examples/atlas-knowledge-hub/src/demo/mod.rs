@@ -7,6 +7,8 @@ pub mod eval;
 pub mod health;
 pub mod ingest;
 pub mod library;
+pub mod mcp;
+pub mod metrics;
 pub mod samples;
 
 use crate::samples::Manifest;
@@ -49,5 +51,7 @@ pub fn demo_router(
         .route("/demo/samples/load", post(ingest::load))
         .route("/demo/samples/apply-update", post(ingest::apply_update))
         .route("/demo/eval", post(eval::eval))
+        .route("/demo/metrics", get(metrics::metrics))
+        .route("/demo/mcp", get(mcp::mcp))
         .with_state(ctx)
 }

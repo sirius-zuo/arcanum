@@ -186,6 +186,8 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         .collect();
     std::env::set_var("ARCANUM_METRICS_TOKEN", &metrics_token);
 
+    let mcp = Arc::new(arcanum_mcp::McpJsonRpcHandler::new(engine.clone()));
+
     Ok(AtlasState {
         engine,
         registry,
@@ -195,6 +197,7 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         claims,
         generators: generator_meta,
         judge,
+        mcp,
     })
 }
 

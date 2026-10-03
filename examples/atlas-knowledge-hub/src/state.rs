@@ -25,4 +25,5 @@ pub struct AtlasState {
     pub claims: ApiKeyClaims,
     pub generators: Vec<GeneratorMeta>,
     pub judge: Option<String>,
+    pub mcp: Arc<arcanum_mcp::McpJsonRpcHandler>,
 }
