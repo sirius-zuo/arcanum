@@ -218,6 +218,11 @@ in, `"{collection_id}__shadow_{experiment_id}"`.
    `status == Active`, builds a `ShadowContext` with the challenger's
    chunkers and `shadow_namespace(collection_id)`; the pipeline's shadow
    write against that namespace is [Pipeline](pipeline.md)'s concern.
+   Chunkers come from `resolve_chunkers`, which builds all four
+   `PerBackendChunkers` lines (`vector`, `lexical`, `graph`, `tree`); for
+   each optional line the order is the collection/challenger config, then
+   the global config, then `global_config.vector`, so a challenger that
+   sets only `vector` is chunked identically on all four lines.
 3. `POST .../experiments/{id}/eval` → `eval_experiment` (PR #50) is now
    the production caller of `ExperimentService::update_metrics`, the
    only method that can move a `ShadowExperiment` out of `Active` into
@@ -257,6 +262,31 @@ in, `"{collection_id}__shadow_{experiment_id}"`.
 ## Key Decisions
 
 Newest first.
+
+### Resolver builds a dedicated lexical chunker line next to vector, graph and tree
+- **Decision**: PR #60 adds `PerBackendChunkConfig::lexical`
+  (`Option<ChunkStrategyConfig>`) and `PerBackendChunkers::lexical`, and
+  `resolve_chunkers` in `arcanum-engine/src/ingestion_deps_resolver.rs`
+  now builds a lexical chunker beside the vector, graph and tree ones,
+  for both the live and the shadow (`ShadowContext`) path.
+- **Context**: the PR body describes ingestion as "four independent lines
+  (vector, lexical, graph, tree), each with its own chunker and store".
+  Its other items (all five chunkers emitting UTF-8 byte offsets,
+  `ChunkMetadataStore` registration after each line's own write) are
+  ingestion and pipeline behavior, documented on those pages.
+- **Alternatives rejected**: not recorded. No PR or design doc records a
+  rationale for the fallback order; observed current state: an unset
+  `lexical` falls back to the global lexical config, then to
+  `global_config.vector`, the same fallback `graph` and `tree` use, and
+  the unit tests `resolve_chunkers_lexical_falls_back_to_vector_config`
+  and `resolve_chunkers_prefers_collection_lexical` pin that order.
+- **Consequences**: a `challenger_config` passed to
+  `ExperimentService::start` can now vary the lexical chunking
+  independently of vector chunking, and `ShadowContext.chunkers` carries
+  a lexical chunker. The experiment recall comparison in
+  `eval_experiment` is unchanged: `EvalRunner` scores `ChunkId`s returned
+  by `RetrievalService::search`, with no per-backend breakdown.
+- **Ref**: 2026-10-02, PR #60.
 
 ### `ExperimentService` becomes a store-backed domain layer; one-active-per-collection is now DB-enforced across processes
 - **Decision**: PR #54 replaces `ExperimentService`'s private
@@ -470,6 +500,16 @@ Newest first.
   input/output shapes), not duplicates; merging them is a real design
   decision, not cleanup", consistent with `EvalRunner::evaluate` being
   sync against `StandardEvaluator::evaluate`'s `#[async_trait]`.
+
+- **Mechanical reformat in PR #59 touched every anchor file but changed
+  no eval or experiment behavior.** PR #59's first commit is a `cargo fmt`
+  of the whole workspace (205 files) and its second fixes clippy lints,
+  so `git blame` and `git diff` on this page's anchors show large
+  whitespace-only changes. The only non-formatting edits in `arcanum-eval`,
+  `arcanum-chunk-eval` and the engine services are clippy-driven:
+  `AnnotatedChunk`'s `overlap_chars` in `inspect` is computed with
+  `saturating_sub` (same result as the earlier branch), and `EvalService`
+  gained a `Default` impl delegating to `new()`.
 
 ## Source Anchors
 
