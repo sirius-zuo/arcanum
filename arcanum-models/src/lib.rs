@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod anthropic_generator;
 pub mod bge;
 pub mod cache;
 mod dispatcher;
@@ -14,6 +15,7 @@ pub mod spacy;
 pub mod sse;
 
 pub use anthropic::AnthropicProvider;
+pub use anthropic_generator::AnthropicGenerator;
 pub use bge::BgeProvider;
 pub use cache::{CachingEmbedder, EmbeddingCache};
 pub use dispatcher::EnrichmentDispatcher;

@@ -68,7 +68,6 @@ impl SseParser {
     }
 }
 
-#[allow(dead_code)] // first used by the generators in the next commits
 pub(crate) fn sse_events(
     resp: reqwest::Response,
 ) -> BoxStream<'static, arcanum_core::Result<SseEvent>> {
