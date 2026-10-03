@@ -16,6 +16,7 @@ arcanum-pipeline   = { path = "../arcanum-pipeline" }
 arcanum-middleware = { path = "../arcanum-middleware" }
 arcanum-evidence   = { path = "../arcanum-evidence" }
 arcanum-context    = { path = "../arcanum-context" }
+arcanum-generate   = { path = "../arcanum-generate" }
 async-trait        = { workspace = true }
 tokio              = { workspace = true }
 serde              = { workspace = true }
