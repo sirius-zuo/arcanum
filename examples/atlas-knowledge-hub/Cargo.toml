@@ -43,3 +43,13 @@ tempfile    = "3"
 async-trait = "0.1"
 
 [workspace]
+
+# Keep the example's build output small: it pulls in LanceDB and the full engine, and its
+# debug info alone runs to many GB.
+[profile.dev]
+debug = 0
+incremental = false
+
+[profile.test]
+debug = 0
+incremental = false
