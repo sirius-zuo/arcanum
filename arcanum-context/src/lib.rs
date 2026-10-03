@@ -1,4 +1,5 @@
 pub mod cluster;
+pub mod render;
 #[cfg(test)]
 pub(crate) mod test_support;
 
