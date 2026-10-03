@@ -1,5 +1,5 @@
 use crate::settings::Settings;
-use crate::state::AtlasState;
+use crate::state::{AtlasState, GeneratorMeta};
 use anyhow::{Context, Result};
 use arcanum_core::config::{ArcanumConfig, OrchestrationMode};
 use arcanum_core::traits::{
@@ -104,6 +104,24 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         Some(graph_store.clone()),
     ));
 
+    // The only generator that speaks the Anthropic protocol is the optional "claude" one.
+    let generator_meta: Vec<GeneratorMeta> = models
+        .generators
+        .iter()
+        .map(|(name, g, _)| GeneratorMeta {
+            name: name.clone(),
+            protocol: if name == "claude" {
+                "anthropic"
+            } else {
+                "openai-compatible"
+            }
+            .to_string(),
+            model: g.model().to_string(),
+            is_default: *name == models.default_generator,
+        })
+        .collect();
+    let judge = models.judge.clone();
+
     let mut builder = ArcanumEngineBuilder::new(config)
         .auth_secret(&settings.auth_secret)
         .vector_store(vector_store.clone())
@@ -148,5 +166,7 @@ pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasS
         admin_key,
         metrics_token,
         claims,
+        generators: generator_meta,
+        judge,
     })
 }
