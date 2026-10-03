@@ -1,11 +1,15 @@
 use crate::capability_registry::{CapabilityRegistry, ToolDefinition};
 use crate::session::SessionManager;
 use arcanum_core::{
-    types::{ChunkId, CollectionId, ContextRequest, Query, RenderFormat},
+    types::{
+        generate::GenerateRequest, ChunkId, CollectionId, ContextRequest, Query, RenderFormat,
+    },
     Result,
 };
 use arcanum_engine::{
-    auth::ApiKeyClaims, services::context::ContextError, ArcanumEngine, IngestRequest,
+    auth::ApiKeyClaims,
+    services::{context::ContextError, generate::GenerateError},
+    ArcanumEngine, IngestRequest,
 };
 use arcanum_eval::{EvalRunner, GoldenSample};
 use axum::http::HeaderMap;
@@ -101,6 +105,31 @@ impl McpJsonRpcHandler {
                     "background_share": { "type": "number" },
                     "candidate_k": { "type": "integer" },
                     "render": { "type": "string", "enum": ["numbered", "xml", "markdown"] }
+                }, "required": ["collection_id"] }),
+        ));
+        registry.register(ToolDefinition::new(
+            "generate",
+            "Answer or summarize from a collection with inline citations mapped to source passages",
+            json!({ "type": "object",
+                "properties": {
+                    "collection_id": { "type": "string" },
+                    "mode": { "type": "string", "enum": ["answer", "summarize"] },
+                    "query": { "type": "string" },
+                    "messages": { "type": "array", "items": { "type": "object",
+                        "properties": {
+                            "role": { "type": "string" },
+                            "content": { "type": "string" }
+                        }, "required": ["role", "content"] } },
+                    "generator": { "type": "string" },
+                    "max_tokens": { "type": "integer" },
+                    "temperature": { "type": "number" },
+                    "instructions": { "type": "string" },
+                    "context": { "type": "object",
+                        "properties": {
+                            "token_budget": { "type": "integer" },
+                            "background_share": { "type": "number" },
+                            "candidate_k": { "type": "integer" }
+                        } }
                 }, "required": ["collection_id"] }),
         ));
         Arc::new(registry)
@@ -360,6 +389,44 @@ impl McpJsonRpcHandler {
                         }))
                     }
                     Err(ContextError::Invalid(m)) => Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "error": { "code": -32602, "message": m }
+                    })),
+                    Err(e) => Ok(tool_error(e.to_string())),
+                }
+            }
+            "generate" => {
+                let mut req: GenerateRequest = match serde_json::from_value(args.clone()) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        return Ok(json!({
+                            "jsonrpc": "2.0", "id": id,
+                            "error": { "code": -32602, "message": format!("invalid arguments: {}", e) }
+                        }))
+                    }
+                };
+                req.stream = false;
+                let tool_error = |text: String| {
+                    json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": { "content": [{ "type": "text", "text": text }], "isError": true }
+                    })
+                };
+                let Some(svc) = self.engine.as_ref().and_then(|e| e.generate.as_ref()) else {
+                    return Ok(tool_error(
+                        "generation requires a configured generator and a chunk registry".into(),
+                    ));
+                };
+                match svc.generate(req, claims).await {
+                    Ok(resp) => Ok(json!({
+                        "jsonrpc": "2.0", "id": id,
+                        "result": {
+                            "content": [{ "type": "text", "text": resp.answer }],
+                            "structuredContent": serde_json::to_value(&resp)
+                                .unwrap_or(Value::Null)
+                        }
+                    })),
+                    Err(GenerateError::Invalid(m)) => Ok(json!({
                         "jsonrpc": "2.0", "id": id,
                         "error": { "code": -32602, "message": m }
                     })),
@@ -691,6 +758,7 @@ mod tests {
             names,
             vec![
                 "eval_run",
+                "generate",
                 "get_context",
                 "ingest",
                 "list_collections",
@@ -768,5 +836,73 @@ mod tests {
         {
             assert!(rendered.starts_with("<documents>"), "{rendered}");
         }
+    }
+
+    async fn call_generate(engine: Arc<ArcanumEngine>, args: Value) -> Value {
+        let token = engine.auth.generate_api_key("user1", vec!["col1".into()]);
+        let handler = McpJsonRpcHandler::new(engine);
+        let req = json!({ "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": { "name": "generate", "arguments": args } });
+        handler.handle(req, make_headers(&token)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn generate_unconfigured_is_tool_error() {
+        let resp = call_generate(
+            test_engine().await,
+            json!({ "collection_id": "col1", "query": "hi" }),
+        )
+        .await;
+        assert_eq!(resp["result"]["isError"], true);
+        assert_eq!(
+            resp["result"]["content"][0]["text"],
+            "generation requires a configured generator and a chunk registry"
+        );
+    }
+
+    #[tokio::test]
+    async fn generate_bad_mode_is_invalid_params() {
+        let resp = call_generate(
+            test_engine().await,
+            json!({ "collection_id": "col1", "query": "hi", "mode": "poem" }),
+        )
+        .await;
+        assert_eq!(resp["error"]["code"], -32602);
+    }
+
+    #[tokio::test]
+    async fn generate_no_context_returns_structured_content() {
+        use arcanum_core::traits::{ScriptStep, ScriptedGenerator, StopReason};
+        let dir = tempfile::tempdir().unwrap();
+        let bm25 = Arc::new(arcanum_vector::Bm25Index::new(dir.path().to_str().unwrap()).unwrap());
+        let fake = Arc::new(ScriptedGenerator::new(
+            "fake-model",
+            vec![ScriptStep::Done(StopReason::EndTurn)],
+        ));
+        let mut cfg = arcanum_core::ArcanumConfig::default();
+        cfg.generate.default_generator = Some("fake".into());
+        let engine = ArcanumEngine::builder()
+            .auth_secret("a-32-char-secret-for-testing-ok!")
+            .version_store(Arc::new(arcanum_core::traits::NoOpDocumentVersionStore))
+            .bm25_index(bm25)
+            .chunk_metadata_store(Arc::new(
+                arcanum_core::traits::InMemoryChunkMetadataStore::new(),
+            ))
+            .generator("fake", fake, 100)
+            .config(cfg)
+            .build()
+            .await
+            .unwrap();
+        let resp = call_generate(engine, json!({ "collection_id": "col1", "query": "hi" })).await;
+        let result = &resp["result"];
+        assert_eq!(
+            result["structuredContent"]["status"], "no_context",
+            "{resp}"
+        );
+        assert_eq!(result["content"][0]["type"], "text");
+        assert_eq!(
+            result["content"][0]["text"],
+            result["structuredContent"]["answer"]
+        );
     }
 }
