@@ -491,6 +491,7 @@ impl ArcanumEngineBuilder {
             ("default_max_tokens", u64::from(g.default_max_tokens)),
             ("first_token_timeout_secs", g.first_token_timeout_secs),
             ("total_timeout_secs", g.total_timeout_secs),
+            ("history_max_messages", g.history_max_messages as u64),
         ] {
             if v == 0 {
                 return Err(ArcanumError::Config(format!(
@@ -1357,7 +1358,7 @@ mod tests {
     #[tokio::test]
     async fn zero_generate_limits_are_config_errors() {
         type Tweak = fn(&mut ArcanumConfig);
-        let tweaks: [(&str, Tweak); 4] = [
+        let tweaks: [(&str, Tweak); 5] = [
             ("max_output_tokens", |c| {
                 c.generate
                     .generators
@@ -1370,6 +1371,9 @@ mod tests {
             }),
             ("total_timeout_secs", |c| c.generate.total_timeout_secs = 0),
             ("default_max_tokens", |c| c.generate.default_max_tokens = 0),
+            ("history_max_messages", |c| {
+                c.generate.history_max_messages = 0
+            }),
         ];
         for (key, tweak) in tweaks {
             let mut cfg = generate_config(

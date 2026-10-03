@@ -597,7 +597,7 @@ mod tests {
         assert_eq!(f.gen.calls(), 0);
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn first_token_timeout() {
         let mut o = opts(vec![ScriptStep::Hang]);
         o.threshold = 1;
@@ -610,6 +610,47 @@ mod tests {
         let records = f.audit.query(10).await;
         assert_eq!(records[0].entry.operation, "generate");
         assert_eq!(records[0].entry.result, "timeout");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn total_timeout_after_first_token() {
+        let mut o = opts(vec![ScriptStep::Delta("a".into()), ScriptStep::Hang]);
+        o.threshold = 1;
+        o.config.first_token_timeout_secs = 100;
+        o.config.total_timeout_secs = 1;
+        let f = fixture(o).await;
+        let s = f.svc.generate_stream(req("fox"), &f.claims).await.unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(matches!(&events[0], GenerateEvent::Delta(t) if t == "a"));
+        assert!(
+            matches!(&events[1], GenerateEvent::Error(GenerateError::Timeout)),
+            "{events:?}"
+        );
+        assert!(!f.breaker.allow_request(), "timeout must record a failure");
+        let records = f.audit.query(1).await;
+        assert_eq!(records[0].entry.result, "timeout");
+    }
+
+    #[tokio::test]
+    async fn stream_closed_without_done_is_upstream() {
+        let mut o = opts(vec![ScriptStep::Delta("a".into())]);
+        o.threshold = 1;
+        let f = fixture(o).await;
+        let s = f.svc.generate_stream(req("fox"), &f.claims).await.unwrap();
+        let events: Vec<GenerateEvent> = s.events.collect().await;
+        assert_eq!(events.len(), 2, "{events:?}");
+        assert!(
+            matches!(&events[1], GenerateEvent::Error(GenerateError::Upstream(m))
+                if m == "generation failed"),
+            "{events:?}"
+        );
+        assert!(
+            !f.breaker.allow_request(),
+            "truncation must record a failure"
+        );
+        let records = f.audit.query(1).await;
+        assert_eq!(records[0].entry.result, "error");
     }
 
     #[tokio::test]

@@ -117,7 +117,7 @@ impl McpJsonRpcHandler {
                     "query": { "type": "string" },
                     "messages": { "type": "array", "items": { "type": "object",
                         "properties": {
-                            "role": { "type": "string" },
+                            "role": { "type": "string", "enum": ["user", "assistant"] },
                             "content": { "type": "string" }
                         }, "required": ["role", "content"] } },
                     "generator": { "type": "string" },
@@ -764,6 +764,12 @@ mod tests {
                 "list_collections",
                 "search"
             ]
+        );
+        let generate = tools.iter().find(|t| t["name"] == "generate").unwrap();
+        assert_eq!(
+            generate["inputSchema"]["properties"]["messages"]["items"]["properties"]["role"]
+                ["enum"],
+            json!(["user", "assistant"])
         );
         // Every tool must carry a schema — proves we serialized ToolDefinition, not a stub.
         for t in tools {

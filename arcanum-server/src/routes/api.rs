@@ -168,13 +168,49 @@ fn sse_event<T: serde::Serialize>(name: &str, payload: &T) -> Event {
 }
 
 /// Emits `context` first, then `delta` events, then one `done` or `error`.
-fn sse_response(s: GenerateStream) -> Response {
+fn record_generate(status: &'static str, start: std::time::Instant) {
+    counter!("arcanum_requests_total", "endpoint" => "generate", "status" => status).increment(1);
+    histogram!("arcanum_request_duration_seconds", "endpoint" => "generate")
+        .record(start.elapsed().as_secs_f64());
+}
+
+/// Records the request metrics for an SSE response when its stream is
+/// dropped: after the terminal event, or early when the client disconnects.
+/// Only a `done` event counts as `ok`.
+struct SseMetrics {
+    start: std::time::Instant,
+    status: &'static str,
+}
+
+impl SseMetrics {
+    /// A method (not a field write) so a `move` closure captures the whole
+    /// guard and the guard lives as long as the stream.
+    fn set(&mut self, status: &'static str) {
+        self.status = status;
+    }
+}
+
+impl Drop for SseMetrics {
+    fn drop(&mut self) {
+        record_generate(self.status, self.start);
+    }
+}
+
+fn sse_response(s: GenerateStream, start: std::time::Instant) -> Response {
     let GenerateStream { context, events } = s;
+    let mut metrics = SseMetrics {
+        start,
+        status: "error",
+    };
     let head = futures::stream::once(async move { sse_event("context", &context) });
-    let tail = events.map(|ev| match ev {
+    let tail = events.map(move |ev| match ev {
         GenerateEvent::Delta(text) => sse_event("delta", &serde_json::json!({ "text": text })),
-        GenerateEvent::Done(outcome) => sse_event("done", &outcome),
+        GenerateEvent::Done(outcome) => {
+            metrics.set("ok");
+            sse_event("done", &outcome)
+        }
         GenerateEvent::Error(e) => {
+            metrics.set("error");
             sse_event("error", &serde_json::json!({ "error": e.to_string() }))
         }
     });
@@ -190,6 +226,7 @@ pub async fn generate(
     Json(body): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     let start = std::time::Instant::now();
+    let mut sse_started = false;
     let response: Response = {
         let claims = match validate_bearer(&headers, &engine) {
             Ok(c) => c,
@@ -213,7 +250,10 @@ pub async fn generate(
                 Some(svc) => {
                     let stream = req.stream;
                     let result: Result<Response, GenerateError> = if stream {
-                        svc.generate_stream(req, &claims).await.map(sse_response)
+                        svc.generate_stream(req, &claims).await.map(|s| {
+                            sse_started = true;
+                            sse_response(s, start)
+                        })
                     } else {
                         svc.generate(req, &claims)
                             .await
@@ -230,14 +270,15 @@ pub async fn generate(
             },
         }
     };
-    let elapsed = start.elapsed().as_secs_f64();
-    let status = if response.status() == StatusCode::OK {
-        "ok"
-    } else {
-        "error"
-    };
-    counter!("arcanum_requests_total", "endpoint" => "generate", "status" => status).increment(1);
-    histogram!("arcanum_request_duration_seconds", "endpoint" => "generate").record(elapsed);
+    // An SSE stream records its own metrics when it ends (see SseMetrics).
+    if !sse_started {
+        let status = if response.status() == StatusCode::OK {
+            "ok"
+        } else {
+            "error"
+        };
+        record_generate(status, start);
+    }
     response
 }
 
@@ -1087,11 +1128,14 @@ mod generate_tests {
 
     #[tokio::test]
     async fn sse_response_orders_events() {
-        let resp = sse_response(stream_of(vec![
-            GenerateEvent::Delta("a".into()),
-            GenerateEvent::Delta("b".into()),
-            GenerateEvent::Done(outcome()),
-        ]));
+        let resp = sse_response(
+            stream_of(vec![
+                GenerateEvent::Delta("a".into()),
+                GenerateEvent::Delta("b".into()),
+                GenerateEvent::Done(outcome()),
+            ]),
+            std::time::Instant::now(),
+        );
         let evs = events_of(resp).await;
         let names: Vec<&str> = evs.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, ["context", "delta", "delta", "done"]);
@@ -1101,14 +1145,138 @@ mod generate_tests {
 
     #[tokio::test]
     async fn sse_response_emits_error_event() {
-        let resp = sse_response(stream_of(vec![
-            GenerateEvent::Delta("a".into()),
-            GenerateEvent::Error(GenerateError::Upstream("generation failed".into())),
-        ]));
+        let resp = sse_response(
+            stream_of(vec![
+                GenerateEvent::Delta("a".into()),
+                GenerateEvent::Error(GenerateError::Upstream("generation failed".into())),
+            ]),
+            std::time::Instant::now(),
+        );
         let evs = events_of(resp).await;
         let (name, data) = evs.last().unwrap();
         assert_eq!(name, "error");
         let v: serde_json::Value = serde_json::from_str(data).unwrap();
         assert_eq!(v["error"], "generation failed", "{data}");
+    }
+
+    /// Captures `arcanum_requests_total` increments as their `status` label.
+    struct StatusRecorder(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+    struct StatusCounter(std::sync::Arc<std::sync::Mutex<Vec<String>>>, String);
+
+    impl metrics::CounterFn for StatusCounter {
+        fn increment(&self, _: u64) {
+            self.0.lock().unwrap().push(self.1.clone());
+        }
+        fn absolute(&self, _: u64) {}
+    }
+
+    impl metrics::Recorder for StatusRecorder {
+        fn describe_counter(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_gauge(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn describe_histogram(
+            &self,
+            _: metrics::KeyName,
+            _: Option<metrics::Unit>,
+            _: metrics::SharedString,
+        ) {
+        }
+        fn register_counter(
+            &self,
+            key: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Counter {
+            let status = key
+                .labels()
+                .find(|l| l.key() == "status")
+                .map(|l| l.value().to_string())
+                .unwrap_or_default();
+            metrics::Counter::from_arc(std::sync::Arc::new(StatusCounter(self.0.clone(), status)))
+        }
+        fn register_gauge(&self, _: &metrics::Key, _: &metrics::Metadata<'_>) -> metrics::Gauge {
+            metrics::Gauge::noop()
+        }
+        fn register_histogram(
+            &self,
+            _: &metrics::Key,
+            _: &metrics::Metadata<'_>,
+        ) -> metrics::Histogram {
+            metrics::Histogram::noop()
+        }
+    }
+
+    /// Drives `sse_response` with `events`, consuming `take` body frames
+    /// (None = all), and returns the statuses recorded at the end.
+    fn sse_statuses(events: Vec<GenerateEvent>, take: Option<usize>) -> Vec<String> {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let rec = StatusRecorder(seen.clone());
+        metrics::with_local_recorder(&rec, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async {
+                    let resp = sse_response(stream_of(events), std::time::Instant::now());
+                    assert!(
+                        seen.lock().unwrap().is_empty(),
+                        "recorded before the stream ran"
+                    );
+                    let mut body = resp.into_body().into_data_stream();
+                    let mut n = 0;
+                    while take.is_none_or(|t| n < t) && body.next().await.is_some() {
+                        n += 1;
+                    }
+                    drop(body);
+                });
+        });
+        let out = seen.lock().unwrap().clone();
+        out
+    }
+
+    #[test]
+    fn sse_metrics_ok_after_done() {
+        let got = sse_statuses(
+            vec![
+                GenerateEvent::Delta("a".into()),
+                GenerateEvent::Done(outcome()),
+            ],
+            None,
+        );
+        assert_eq!(got, ["ok"]);
+    }
+
+    #[test]
+    fn sse_metrics_error_after_stream_error() {
+        let got = sse_statuses(
+            vec![
+                GenerateEvent::Delta("a".into()),
+                GenerateEvent::Error(GenerateError::Upstream("x".into())),
+            ],
+            None,
+        );
+        assert_eq!(got, ["error"]);
+    }
+
+    #[test]
+    fn sse_metrics_error_on_client_drop() {
+        let got = sse_statuses(
+            vec![
+                GenerateEvent::Delta("a".into()),
+                GenerateEvent::Done(outcome()),
+            ],
+            Some(2),
+        );
+        assert_eq!(got, ["error"]);
     }
 }
