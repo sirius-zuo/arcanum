@@ -6,12 +6,12 @@ export type ChipTone = 'neutral' | 'accent' | 'supported' | 'partial' | 'unsuppo
 const tones: Record<ChipTone, string> = {
   neutral: 'bg-surface-2 text-text',
   accent: 'bg-accent/10 text-accent',
-  supported: 'bg-v-supported/10 text-v-supported',
-  partial: 'bg-v-partial/10 text-v-partial',
-  unsupported: 'bg-v-unsupported/10 text-v-unsupported',
-  miscited: 'bg-v-miscited/10 text-v-miscited',
-  uncited: 'bg-v-uncited/10 text-v-uncited',
-  noclaim: 'bg-v-noclaim/10 text-v-noclaim',
+  supported: 'bg-v-supported/10 text-vink-supported',
+  partial: 'bg-v-partial/10 text-vink-partial',
+  unsupported: 'bg-v-unsupported/10 text-vink-unsupported',
+  miscited: 'bg-v-miscited/10 text-vink-miscited',
+  uncited: 'bg-v-uncited/10 text-vink-uncited',
+  noclaim: 'bg-v-noclaim/10 text-vink-noclaim',
 }
 
 interface ChipProps {

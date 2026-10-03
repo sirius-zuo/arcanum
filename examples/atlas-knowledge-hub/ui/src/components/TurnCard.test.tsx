@@ -1,10 +1,19 @@
-import { describe, expect, it } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { createClient } from '../api/client'
+import { ANSWER, response } from '../test/verifyFixtures'
 import { MemoryRouter } from 'react-router-dom'
 import { TurnCard } from './TurnCard'
 import { INITIAL_ASK } from '../state/ask'
 import type { AskState } from '../state/ask'
 import type { ContextResponse, GenerateDone } from '../api/types'
+
+vi.mock('../state/bootstrap', () => ({
+  useBootstrap: () => ({ data: { collection: 'halcyon' }, client: createClient(() => 'k') }),
+}))
+
+afterEach(() => vi.unstubAllGlobals())
 
 const done = (over: Partial<GenerateDone> = {}): GenerateDone => ({
   status: 'ok',
@@ -20,9 +29,11 @@ const ctx = { passages: [], background: [] } as unknown as ContextResponse
 
 function show(state: Partial<AskState>, verify = false) {
   return render(
-    <MemoryRouter>
-      <TurnCard meta={{ question: 'q?', mode: 'answer', verify }} state={{ ...INITIAL_ASK, phase: 'done', ...state }} />
-    </MemoryRouter>,
+    <QueryClientProvider client={new QueryClient()}>
+      <MemoryRouter>
+        <TurnCard meta={{ question: 'q?', mode: 'answer', verify }} state={{ ...INITIAL_ASK, phase: 'done', ...state }} />
+      </MemoryRouter>
+    </QueryClientProvider>,
   )
 }
 
@@ -60,5 +71,32 @@ describe('TurnCard', () => {
     expect(strip).toHaveTextContent('local (qwen2.5)')
     expect(strip).toHaveTextContent('420 ms')
     expect(strip).toHaveTextContent('2.3 s')
+  })
+
+  it('verification_ok_renders_the_overall_verdict_and_underlined_sentences', () => {
+    show({ answer: ANSWER, context: ctx, outcome: done(), verification: { status: 'ok', ...response() } }, true)
+    expect(screen.getByText(/Verified: fail/)).toBeInTheDocument()
+    const sentences = screen.getByTestId('sentence-list')
+    expect(sentences).toHaveTextContent('日本語 is fine.')
+    expect(screen.getAllByRole('button', { name: /Unsupported/ })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: /It also carries 80 kg/ }))
+    expect(screen.getByText('carries 80 kg')).toBeInTheDocument()
+  })
+
+  it('verification_requested_but_missing_shows_a_notice', () => {
+    show({ answer: 'Sixty days [P1].', context: ctx, outcome: done() }, true)
+    expect(screen.getByRole('status')).toHaveTextContent(/verification was requested but no result arrived/i)
+  })
+
+  it('stop_after_done_does_not_claim_the_answer_is_incomplete', () => {
+    show({ phase: 'idle', stopped: true, answer: 'Sixty days.', context: ctx, outcome: done() })
+    expect(screen.queryByText(/text above is incomplete/i)).toBeNull()
+  })
+
+  it('duplicate_citation_markers_do_not_collide', () => {
+    const spy = vi.spyOn(console, 'error').mockImplementation(() => {})
+    show({ answer: 'Both say so [P1, P1].', context: ctx, outcome: done() })
+    expect(spy.mock.calls.flat().join(' ')).not.toMatch(/same key/i)
+    spy.mockRestore()
   })
 })

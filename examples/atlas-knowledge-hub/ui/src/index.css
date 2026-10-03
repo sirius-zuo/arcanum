@@ -31,6 +31,13 @@
   --v-miscited: 194 65 12;
   --v-uncited: 15 118 110;
   --v-noclaim: 100 100 110;
+  /* Verdict text on a 10 percent verdict tint (chips, banners): darker than --v-* so it keeps 4.5:1 on surface and surface-2. */
+  --vink-supported: 19 115 55;
+  --vink-partial: 144 86 5;
+  --vink-unsupported: 193 28 28;
+  --vink-miscited: 177 59 11;
+  --vink-uncited: 14 112 105;
+  --vink-noclaim: 99 99 109;
 
   --shadow-soft: 0 1px 2px rgb(24 24 27 / 0.04), 0 4px 16px -6px rgb(24 24 27 / 0.08);
   --shadow-lift: 0 2px 4px rgb(24 24 27 / 0.05), 0 12px 32px -10px rgb(24 24 27 / 0.16);
@@ -54,6 +61,12 @@
   --v-miscited: 251 146 60;
   --v-uncited: 45 212 191;
   --v-noclaim: 161 161 170;
+  --vink-supported: 74 222 128;
+  --vink-partial: 251 191 36;
+  --vink-unsupported: 248 113 113;
+  --vink-miscited: 251 146 60;
+  --vink-uncited: 45 212 191;
+  --vink-noclaim: 161 161 170;
 
   --shadow-soft: 0 1px 0 rgb(255 255 255 / 0.03) inset, 0 6px 20px -8px rgb(0 0 0 / 0.6);
   --shadow-lift: 0 1px 0 rgb(255 255 255 / 0.04) inset, 0 16px 40px -12px rgb(0 0 0 / 0.7);

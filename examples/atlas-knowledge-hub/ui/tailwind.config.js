@@ -23,6 +23,14 @@ export default {
           uncited: token('--v-uncited'),
           noclaim: token('--v-noclaim'),
         },
+        vink: {
+          supported: token('--vink-supported'),
+          partial: token('--vink-partial'),
+          unsupported: token('--vink-unsupported'),
+          miscited: token('--vink-miscited'),
+          uncited: token('--vink-uncited'),
+          noclaim: token('--vink-noclaim'),
+        },
       },
       fontFamily: {
         sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],

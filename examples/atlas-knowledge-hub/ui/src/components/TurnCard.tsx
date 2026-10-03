@@ -32,7 +32,7 @@ export interface VerificationRenderArgs {
 interface TurnCardProps {
   meta: TurnMeta
   state: AskState
-  /** Task 15 plugs the sentence-level verification view in here. */
+  /** Replaces the default sentence-level verification view. */
   renderVerification?: (args: VerificationRenderArgs) => ReactNode
 }
 
@@ -71,7 +71,7 @@ export function TurnCard({ meta, state, renderVerification }: TurnCardProps) {
 
   const verifyBlocked = verifyUnavailableMessage(state, meta.verify)
   const failedBeforeStart = state.phase === 'error' && state.context === null && state.answer === ''
-  const verification = (renderVerification ?? ((a) => <VerificationSlot requested={a.requested} verification={a.verification} running={a.running} />))({
+  const verification = (renderVerification ?? ((a) => <VerificationSlot requested={a.requested} verification={a.verification} running={a.running} answer={a.answer} finished={outcome !== null} stopped={state.stopped} />))({
     requested: meta.verify,
     verification: state.verification,
     running: streaming && outcome !== null,
@@ -102,7 +102,7 @@ export function TurnCard({ meta, state, renderVerification }: TurnCardProps) {
               <AnswerStream text={state.answer} streaming={answering} passages={passages} onSelect={select} />
             )}
 
-            {state.stopped && (
+            {state.stopped && outcome === null && (
               <p className="flex items-center gap-1.5 text-xs text-muted">
                 <Square className="h-3 w-3 fill-current" aria-hidden="true" />
                 Stopped. The text above is incomplete.

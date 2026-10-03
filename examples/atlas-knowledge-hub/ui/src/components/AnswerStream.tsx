@@ -22,8 +22,8 @@ export function AnswerStream({ text, streaming, passages, onSelect }: AnswerStre
           <Fragment key={i}>{part.text}</Fragment>
         ) : (
           <span key={i} className="animate-chip-in">
-            {part.ids.map((id) => (
-              <CitationChip key={id} refId={id} passage={byRef.get(id)} onSelect={onSelect} />
+            {part.ids.map((id, j) => (
+              <CitationChip key={`${id}-${j}`} refId={id} passage={byRef.get(id)} onSelect={onSelect} />
             ))}
           </span>
         ),
