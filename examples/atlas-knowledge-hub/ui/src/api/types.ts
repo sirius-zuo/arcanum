@@ -508,3 +508,69 @@ export interface GraphView {
   nodes: GraphNode[]
   edges: GraphEdge[]
 }
+
+// ---------- Lab: chunking and experiments ----------
+
+export interface ChunkStrategyConfig {
+  strategy: string
+  params: Record<string, number>
+}
+
+export interface AnnotatedChunk {
+  text: string
+  char_count: number
+  token_estimate: number
+  /** Named for chars but the server computes it from UTF-8 byte offsets (previous end minus this start). */
+  overlap_chars: number
+}
+
+export interface InspectResult {
+  strategy: ChunkStrategyConfig
+  chunks: AnnotatedChunk[]
+  total_chunks: number
+  mean_tokens: number
+}
+
+export interface BenchmarkMetrics {
+  strategy: ChunkStrategyConfig
+  recall_at_5: number
+  recall_at_10: number
+  mean_chunk_tokens: number
+  chunk_size_p50: number
+  chunk_size_p95: number
+}
+
+export interface PerBackendChunkConfig {
+  vector: ChunkStrategyConfig
+  lexical: ChunkStrategyConfig | null
+  graph: ChunkStrategyConfig | null
+  tree: ChunkStrategyConfig | null
+}
+
+export type ExperimentStatus = 'active' | 'ready_to_promote' | 'closed'
+
+export interface ExperimentMetrics {
+  champion_recall_at_5: number
+  challenger_recall_at_5: number
+  sample_size: number
+  computed_at: string
+}
+
+export interface Experiment {
+  experiment_id: string
+  status: ExperimentStatus
+  started_at: string
+  challenger_config: PerBackendChunkConfig
+  /** Absent on the start response; null until the first evaluation. */
+  metrics?: ExperimentMetrics | null
+}
+
+export interface ExperimentEvalResult {
+  status: ExperimentStatus
+  metrics: ExperimentMetrics
+}
+
+export interface ExperimentSample {
+  query: string
+  relevant_chunk_ids: string[]
+}
