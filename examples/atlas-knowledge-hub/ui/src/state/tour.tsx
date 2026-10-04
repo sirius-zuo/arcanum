@@ -42,7 +42,7 @@ export function TourStore({ steps, children }: { steps: TourStep[]; children: Re
     setStartCount((n) => n + 1)
   }, [steps])
   const next = useCallback(() => dispatch({ type: 'next', count }), [count])
-  const prev = useCallback(() => dispatch({ type: 'prev' }), [])
+  const prev = useCallback(() => dispatch({ type: 'prev', count }), [count])
   const goto = useCallback((index: number) => dispatch({ type: 'goto', index, count }), [count])
   const dismiss = useCallback(() => dispatch({ type: 'dismiss' }), [])
   const signal = useCallback(

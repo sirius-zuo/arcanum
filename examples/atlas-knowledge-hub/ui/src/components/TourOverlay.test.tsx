@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { TourOverlay } from './TourOverlay'
 import { TourStore, useTour } from '../state/tour'
@@ -43,7 +43,7 @@ describe('TourOverlay', () => {
 
     act(() => screen.getByText('fire').click())
     expect(screen.getByText(/Hits appear\./)).toBeInTheDocument()
-    expect(screen.getByRole('status')).toHaveTextContent('Hits appear.')
+    expect(within(card).getByRole('status')).toHaveTextContent('Hits appear.')
 
     fireEvent.keyDown(card, { key: 'ArrowRight' })
     expect(screen.getByText('Ask it')).toBeInTheDocument()
@@ -52,6 +52,14 @@ describe('TourOverlay', () => {
 
     fireEvent.keyDown(card, { key: 'Escape' })
     expect(screen.queryByRole('complementary', { name: 'Guided tour' })).toBeNull()
+  })
+
+  it('announces_completion_of_a_step_that_is_not_viewed_and_returns_focus_on_dismiss', () => {
+    setup()
+    fireEvent.keyDown(screen.getByRole('complementary', { name: 'Guided tour' }), { key: 'ArrowRight' })
+    act(() => screen.getByText('fire').click())
+    expect(screen.getAllByRole('status').some((n) => /Step 1 completed/.test(n.textContent ?? ''))).toBe(true)
+    expect(screen.getByText('Ask it')).toBeInTheDocument()
   })
 
   it('persists_progress_and_survives_corrupt_storage', () => {

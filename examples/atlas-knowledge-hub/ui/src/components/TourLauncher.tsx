@@ -8,6 +8,7 @@ export function TourLauncher() {
   const label = state.active ? `Tour ${done}/${total}` : done === 0 ? 'Tour' : done >= total && total > 0 ? 'Replay tour' : `Resume tour ${done}/${total}`
   return (
     <button
+      id="tour-launcher"
       type="button"
       onClick={state.active ? dismiss : start}
       disabled={total === 0}

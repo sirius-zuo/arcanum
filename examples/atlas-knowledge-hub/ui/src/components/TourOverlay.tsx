@@ -1,17 +1,48 @@
 import { Check, X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent } from 'react'
 import clsx from 'clsx'
 import { useTour } from '../state/tour'
 import { TourStepCard } from './TourStepCard'
 
+/** Polite announcement for steps that complete while another step is being viewed (the index never moves). */
+function useCompletionAnnouncement(): string {
+  const { state, steps } = useTour()
+  const known = useRef(state.completed)
+  const [message, setMessage] = useState('')
+  useEffect(() => {
+    const viewed = steps[Math.min(state.index, steps.length - 1)]?.id
+    for (const [i, s] of steps.entries()) {
+      if (state.completed[s.id] && !known.current[s.id] && s.id !== viewed) setMessage(`Step ${i + 1} completed: ${s.title}`)
+    }
+    known.current = state.completed
+  }, [state.completed, state.index, steps])
+  return message
+}
+
 /**
- * Non-blocking guide card. It sits at the bottom of the content column in normal flow (sticky), so on wide
- * screens it never covers the Inspector or the rail and on narrow screens it acts as a bottom sheet; the page
- * keeps its own scroll space beneath it, so forms near the page end stay reachable.
+ * Non-blocking guide card at the top of the content column, under the top bar. It is in normal flow on narrow
+ * screens (a card that scrolls away) and sticks below the top bar on wide ones, so it can never cover the Ask
+ * composer, which is pinned to the bottom of the page.
  */
 export function TourOverlay() {
-  const { state, steps, startCount, next, prev, goto, dismiss } = useTour()
+  const announcement = useCompletionAnnouncement()
+  return (
+    <>
+      <div role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </div>
+      <TourCard />
+    </>
+  )
+}
+
+function TourCard() {
+  const { state, steps, startCount, next, prev, goto, dismiss: hide } = useTour()
+  const dismiss = () => {
+    hide()
+    document.getElementById('tour-launcher')?.focus()
+  }
   const root = useRef<HTMLElement>(null)
   const seen = useRef(startCount)
 
@@ -52,9 +83,9 @@ export function TourOverlay() {
       tabIndex={-1}
       aria-label="Guided tour"
       onKeyDown={onKeyDown}
-      className="sticky bottom-0 z-20 mx-auto w-full max-w-[1200px] px-3 pb-3 outline-none sm:px-8 sm:pb-4"
+      className="mx-auto w-full max-w-[1200px] px-3 pt-3 outline-none sm:px-8 lg:sticky lg:top-16 lg:z-[9]"
     >
-      <div className="max-h-[50vh] overflow-y-auto rounded-card border border-border bg-surface p-4 shadow-lift motion-safe:animate-rise sm:ml-auto sm:max-w-md">
+      <div className="max-h-[40vh] overflow-y-auto rounded-card border border-border bg-surface p-4 shadow-lift motion-safe:animate-rise sm:ml-auto sm:max-w-md">
         <div className="mb-2 flex items-start justify-between gap-3">
           <ol className="flex flex-wrap gap-1" aria-label="Tour progress">
             {steps.map((s, i) => {

@@ -30,9 +30,13 @@ describe('reduceTour', () => {
     s = reduceTour(s, { type: 'next', count: 3 })
     s = reduceTour(s, { type: 'next', count: 3 })
     expect(s.index).toBe(2)
-    s = reduceTour({ ...s, index: 0 }, { type: 'prev' })
+    s = reduceTour({ ...s, index: 0 }, { type: 'prev', count: 3 })
     expect(s.index).toBe(0)
     expect(reduceTour(s, { type: 'goto', index: 99, count: 3 }).index).toBe(2)
+  })
+
+  it('prev_clamps_a_stale_index_into_range', () => {
+    expect(reduceTour({ active: true, index: 40, completed: {} }, { type: 'prev', count: 3 }).index).toBe(2)
   })
 
   it('dismiss_keeps_progress_and_reset_clears_it', () => {

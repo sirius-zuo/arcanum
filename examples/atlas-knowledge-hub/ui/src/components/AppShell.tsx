@@ -63,6 +63,7 @@ export function AppShell() {
       <Rail collapsed={collapsed} onToggle={toggle} />
       <div className="min-w-0 flex-1">
         <TopBar />
+        <TourOverlay />
         <main className="mx-auto w-full max-w-[1200px] px-8 py-10">
           {error ? (
             <ErrorState
@@ -83,7 +84,6 @@ export function AppShell() {
             <Outlet />
           )}
         </main>
-        <TourOverlay />
       </div>
       <Inspector />
       <AppCommandPalette />

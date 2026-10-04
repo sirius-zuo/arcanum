@@ -26,7 +26,7 @@ export interface StepRef {
 export type TourAction =
   | { type: 'start'; steps: StepRef[] }
   | { type: 'next'; count: number }
-  | { type: 'prev' }
+  | { type: 'prev'; count: number }
   | { type: 'goto'; index: number; count: number }
   | { type: 'dismiss' }
   | { type: 'complete'; event: TourEvent; steps: StepRef[] }
@@ -50,7 +50,7 @@ export function reduceTour(state: TourState, action: TourAction): TourState {
     case 'next':
       return { ...state, index: clamp(state.index + 1, action.count) }
     case 'prev':
-      return { ...state, index: Math.max(0, state.index - 1) }
+      return { ...state, index: clamp(state.index - 1, action.count) }
     case 'goto':
       return { ...state, index: clamp(action.index, action.count) }
     case 'dismiss':
