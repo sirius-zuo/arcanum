@@ -1,6 +1,6 @@
 # Arcanum
 
-**Production-grade grounded RAG engine written in Rust: retrieval, context, generation and verification, each traced to source document versions and offsets.**
+**Production-grade grounded RAG engine written in Rust: ingestion, retrieval, context, generation and verification.** Arcanum unifies the complete retrieval-augmented generation lifecycle in a single high-performance engine. Every generated answer is grounded in cited source material and systematically verified against it, providing the accuracy, traceability and auditability that enterprise knowledge applications require.
 
 Arcanum covers the whole path from raw documents to an answer you can audit:
 
