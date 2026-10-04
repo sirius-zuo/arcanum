@@ -366,7 +366,7 @@ dependencies = [
  "futures",
  "metrics",
  "metrics-prometheus",
- "prometheus 0.14.0",
+ "prometheus",
  "serde",
  "serde_json",
  "tokio",
@@ -384,7 +384,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
- "prometheus 0.14.0",
+ "prometheus",
  "tokio",
  "tracing",
  "tracing-opentelemetry",
@@ -2541,6 +2541,7 @@ dependencies = [
  "chrono",
  "futures",
  "http",
+ "metrics-prometheus",
  "rand 0.8.8",
  "reqwest",
  "serde",
@@ -4632,31 +4633,31 @@ dependencies = [
 
 [[package]]
 name = "metrics-prometheus"
-version = "0.9.0"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b9f065db7255ebf9df44c3ce5654aa6b21d532db099ea25e02102052118a380"
+checksum = "5ba1c653d1714b0057c0581e4ef8d50600470132d311fbed69cdcc1804e69788"
 dependencies = [
  "arc-swap",
  "metrics",
  "metrics-util",
- "prometheus 0.13.4",
+ "prometheus",
  "sealed",
  "smallvec",
- "thiserror 1.0.69",
 ]
 
 [[package]]
 name = "metrics-util"
-version = "0.19.1"
+version = "0.20.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8496cc523d1f94c1385dd8f0f0c2c480b2b8aeccb5b7e4485ad6365523ae376"
+checksum = "96f8722f8562635f92f8ed992f26df0532266eb03d5202607c20c0d7e9745e13"
 dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
- "hashbrown 0.15.5",
+ "hashbrown 0.16.1",
  "metrics",
  "rand 0.9.5",
  "rand_xoshiro 0.7.0",
+ "rapidhash",
  "sketches-ddsketch 0.3.1",
 ]
 
@@ -5613,20 +5614,6 @@ dependencies = [
 
 [[package]]
 name = "prometheus"
-version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d33c28a30771f7f96db69893f78b857f7450d7e0237e9c8fc6427a81bae7ed1"
-dependencies = [
- "cfg-if",
- "fnv",
- "lazy_static",
- "memchr",
- "parking_lot 0.12.5",
- "thiserror 1.0.69",
-]
-
-[[package]]
-name = "prometheus"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a"
@@ -6531,13 +6518,13 @@ dependencies = [
 
 [[package]]
 name = "sealed"
-version = "0.6.0"
+version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22f968c5ea23d555e670b449c1c5e7b2fc399fdaec1d304a17cd48e288abc107"
+checksum = "9b68e2ea526d9fb32f23ca8894fb5da9e743f34c2f41701f0501dc8a25c4b343"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.6",
 ]
 
 [[package]]

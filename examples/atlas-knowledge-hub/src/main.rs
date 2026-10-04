@@ -7,6 +7,9 @@ use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Record engine metrics into the registry the engine's /metrics endpoint renders.
+    // A recorder may already be installed (tests, embedding); that is not an error.
+    let _ = metrics_prometheus::try_install();
     let settings = Settings::from_env();
     let models = ModelDeps::ollama(&settings);
     let state = Arc::new(build_state(settings, models).await?);
