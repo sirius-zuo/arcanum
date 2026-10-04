@@ -144,3 +144,21 @@
     animation: caret 1s steps(2, start) infinite;
   }
 }
+
+/* Graph node palette: each color is at least 3:1 against surface in its theme. */
+:root {
+  --n1: 79 70 229;
+  --n2: 21 128 61;
+  --n3: 194 65 12;
+  --n4: 14 116 144;
+  --n5: 190 24 93;
+  --n6: 100 100 110;
+}
+.dark {
+  --n1: 129 140 248;
+  --n2: 74 222 128;
+  --n3: 251 146 60;
+  --n4: 34 211 238;
+  --n5: 244 114 182;
+  --n6: 161 161 170;
+}
