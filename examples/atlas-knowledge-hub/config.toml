@@ -1,0 +1,62 @@
+# Atlas startup config, read from the directory Atlas runs in. A missing or malformed file is a
+# startup error. Every table below mirrors a real `arcanum_core::ArcanumConfig` field; tables
+# that struct requires in full list every field. Atlas overrides orchestration_mode and the
+# generate/verify generator names in code (src/engine_setup.rs).
+
+[global]
+runtime_mode = "Development"
+
+[retrieval]
+top_k = 5
+orchestration_mode = "ParallelFusion"
+
+[embedding]
+provider    = "ollama"
+model_id    = "nomic-embed-text"
+dimension   = 768
+batch_size  = 32
+parallelism = 4
+
+[storage]
+metadata_backend = "Sqlite"
+vector_backend   = "lancedb"
+graph_enabled    = true
+tree_enabled     = true
+
+[ingestion]
+worker_pool_size = 2
+queue_capacity   = 100
+
+[context]
+default_token_budget = 4000
+default_candidate_k  = 50
+rewrite_max_messages = 6
+
+[generate]
+default_generator        = "local"
+default_max_tokens       = 1024
+summarize_token_budget   = 8000
+history_max_messages     = 10
+no_context_answer        = "No relevant information was found in the collection."
+# Local models are slow, especially reasoning ones. A hosted model can use the defaults (30 / 120).
+first_token_timeout_secs = 120
+total_timeout_secs       = 300
+
+# Atlas registers the "local" generator in code (src/engine_setup.rs, src/ollama_generator.rs)
+# and replaces this entry: the model comes from ATLAS_CHAT_MODEL and the endpoint from
+# OLLAMA_URL. It stays here so the file is a complete example of the schema.
+[generate.generators.local]
+protocol          = "openai_compatible"
+model             = "qwen2.5"
+base_url          = "http://localhost:11434/v1"
+max_output_tokens = 1024
+
+[verify]
+judge                    = "local"
+max_answer_chars         = 20000
+max_passages             = 50
+max_judge_input_tokens   = 24000
+max_sentences_per_batch  = 40
+judge_max_output_tokens  = 8192
+# Local judges are slow; a hosted judge can use the default (90).
+judge_timeout_secs       = 300

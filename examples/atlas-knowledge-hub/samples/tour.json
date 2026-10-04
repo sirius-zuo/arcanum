@@ -1,0 +1,83 @@
+[
+  {
+    "id": "load",
+    "title": "Load the Halcyon corpus",
+    "why": "Everything else in Atlas runs on documents that have been ingested, chunked, embedded and indexed. Loading the sample corpus builds the vector index, the lexical index, the knowledge graph and the summary tree in one pass, so you can watch what a full ingestion pipeline does with real files.",
+    "action": "Open the Library and press the Load sample corpus button.",
+    "route": "/library",
+    "completes_when": "corpus_loaded",
+    "payoff": "Ten Halcyon documents appear in the library, each with a version and a chunk count."
+  },
+  {
+    "id": "search",
+    "title": "Search by meaning and by exact term",
+    "why": "Retrieval combines vector search, which matches meaning, with BM25, which matches exact words such as part numbers and names. Seeing both in action explains why hybrid retrieval finds answers that either method alone would miss.",
+    "action": "Search for the query HX2-BAT-48V charging time and then for How often do I have to change my password?",
+    "route": "/search",
+    "completes_when": "searched",
+    "payoff": "The part number query finds the HX-2 datasheet by exact term, and the password question finds the security policy without sharing its words."
+  },
+  {
+    "id": "context",
+    "title": "Build grounded context",
+    "why": "Context turns raw search hits into numbered passages that fit a token budget. Those passage ids, such as P1 and P2, are what an answer cites and what Verify later checks, so this step is where grounding starts.",
+    "action": "Ask for context on the question Who is the on-call lead for the team that owns the navigation stack?",
+    "route": "/context",
+    "completes_when": "context_built",
+    "payoff": "You see numbered passages from the org chart and the runbook, packed into a budget with their sources."
+  },
+  {
+    "id": "ask",
+    "title": "Ask a multi-hop question",
+    "why": "Some answers need facts from more than one document. Here one document says which team owns navigation and who leads it, and another names the current on-call lead per team. Generation with citations shows whether the system combined them correctly.",
+    "action": "Ask the question Who is the on-call lead for the team that owns the navigation stack? and press Generate.",
+    "route": "/ask",
+    "completes_when": "asked",
+    "payoff": "An answer appears with inline citations that point at the passages from both documents."
+  },
+  {
+    "id": "verify",
+    "title": "Verify the answer",
+    "why": "A fluent answer is not necessarily a correct one. Verify checks each sentence against the passages it cites and reports a verdict, so you can see which claims are backed by evidence and which are not.",
+    "action": "Press the Verify button under the generated answer.",
+    "route": "/ask",
+    "completes_when": "verified",
+    "payoff": "Each sentence shows a verdict and the exact quote that supports it."
+  },
+  {
+    "id": "catch",
+    "title": "Catch a flawed answer",
+    "why": "The value of verification shows when an answer is wrong. The sample answers include a wrong number and a citation that points at the wrong document, which are the mistakes people miss when reading quickly.",
+    "action": "Pick the flawed sample answer and press Verify.",
+    "route": "/verify",
+    "completes_when": "flawed_checked",
+    "payoff": "The 80 kg payload sentence is flagged as unsupported and the HX-1 sentence is flagged as miscited, while the correct sentence passes."
+  },
+  {
+    "id": "update",
+    "title": "Update a document and see versions",
+    "why": "Knowledge changes. Re-ingesting a document under the same source creates a new version and supersedes the old one, so answers can change while the history is kept. The security policy update changes the rotation interval and makes MFA mandatory.",
+    "action": "Press the Apply policy update button and then ask how often passwords must be rotated.",
+    "route": "/library",
+    "completes_when": "update_applied",
+    "payoff": "The security policy shows version 2 as active, and the answer now says every 180 days with mandatory MFA."
+  },
+  {
+    "id": "trace",
+    "title": "Trace a claim to its source",
+    "why": "Evidence ties each verified claim to a document version and a byte range in the stored text. This lets you open the exact words behind an answer and see whether they come from the current version or a superseded one.",
+    "action": "Open the evidence for the security policy sentence from the verified answer.",
+    "route": "/evidence",
+    "completes_when": "evidence_opened",
+    "payoff": "The source text opens with the supporting quote highlighted and its version status shown."
+  },
+  {
+    "id": "measure",
+    "title": "Measure retrieval quality",
+    "why": "Without measurement, retrieval changes are guesses. The lab runs a golden set of twelve questions against the live index and reports hit rate, reciprocal rank and ranking quality, so you can compare configurations with numbers.",
+    "action": "Press Run evaluation to score the twelve golden queries.",
+    "route": "/lab",
+    "completes_when": "evaluated",
+    "payoff": "A report shows hit rate, MRR and NDCG, with the rank at which each query found its document."
+  }
+]

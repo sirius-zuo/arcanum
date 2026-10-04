@@ -1,9 +1,9 @@
 # Arcanum Usage Examples
 
 **Date:** 2026-06-01 (updated 2026-06-16)
-**Status:** Approved; all 6 examples implemented in `examples/`
+**Status:** Approved; all 7 examples implemented in `examples/`
 
-Six real-world scenarios for small and midsize companies covering every combination of ingestion strategy (Standard, Full) and retrieval orchestration mode (Static, QueryClassified, ParallelFusion).
+Six real-world scenarios for small and midsize companies (plus the Atlas all-capabilities showcase, see below) covering every combination of ingestion strategy (Standard, Full) and retrieval orchestration mode (Static, QueryClassified, ParallelFusion).
 
 ---
 
@@ -26,6 +26,7 @@ Each example explains:
 | 4 | Helix Labs — research intelligence | `examples/helix-research-copilot` | Full | QueryClassified |
 | 5 | Vantage Legal — contract intelligence | `examples/vantage-contract-intel` | Full | ParallelFusion |
 | 6 | Folio — digital library service | `examples/folio-library-search` | Full | ParallelFusion |
+| 7 | Atlas, all-capabilities showcase | `examples/atlas-knowledge-hub` | Full | ParallelFusion |
 
 The Full + Static combination is absent because it is an anti-pattern: building a graph and RAPTOR tree only to route queries to a fixed single retriever discards the investment made at ingestion time.
 
@@ -73,15 +74,16 @@ Added after this doc's original design (commits `3d552332`, `0b3108cc`, `4a001b8
 - `.evidence(Arc<dyn EvidenceResolver>)`: answers "show me the source" for any chunk, tree node, entity, or relation; served under `GET /evidence/chunk/:chunk_id`, `/evidence/tree-node/:node_id`, `/evidence/entity/:entity_id`, `/evidence/relation/:source_id/:relation_type/:target_id`.
 - `.gc_worker(Arc<dyn GcWorker>)`: retention-policy garbage collection; requires Postgres-backed stores, so no example wires this in dev.
 
-**Current wiring across the 6 examples:**
+**Current wiring across the examples:**
 
 | Example | `version_store` | `snapshot_store` | `chunk_metadata_store` + `evidence` |
 |---|---|---|---|
 | Devforge | ✅ (`SqliteDocumentVersionStore`) | ✅ (`LocalSnapshotStore`) | — |
 | Folio | ✅ | implicit default | ✅ (`DefaultEvidenceResolver`) |
+| Atlas | ✅ (`SqliteDocumentVersionStore`) | ✅ (`LocalSnapshotStore`) | ✅ (`DefaultEvidenceResolver`) |
 | Meridian, Canopy, Helix, Vantage | not yet wired | not yet wired | not yet wired |
 
-Devforge needed `version_store` to fix its document-count/list-documents endpoints (commit `48e42559`); Folio is the only example with the full evidence resolver wired, exercising `/evidence/*`. The other four examples don't wire any evidence-layer store yet: their `/api/v1/vector/collections/*/stats` and `/documents` endpoints will work but won't reflect document-level history, and `/evidence/*` will return nothing useful for their content.
+Devforge needed `version_store` to fix its document-count/list-documents endpoints (commit `48e42559`); Folio and Atlas are the examples with the full evidence resolver wired, exercising `/evidence/*`. The other four examples don't wire any evidence-layer store yet: their `/api/v1/vector/collections/*/stats` and `/documents` endpoints will work but won't reflect document-level history, and `/evidence/*` will return nothing useful for their content.
 
 ---
 
@@ -605,6 +607,16 @@ top_k               = 15
 **Full + QueryClassified:** "Jay Gatsby party quote" is simultaneously a character lookup (Graph) and a passage search (Vector); the classifier picks one and is wrong half the time. "Books about grief" looks semantic to the classifier but RAPTOR L2 root summaries carry the clearest thematic signal; routing to Vector-only misses those. Series ordering queries ("what Mistborn books are there") occasionally look semantic to the classifier and get routed to Vector instead of Graph, returning thematic passages instead of the ordered series list.
 
 **Standard + Static (Vector + BM25 only):** Author, series, character, and universe queries all degrade to text search over raw content. All summarization queries return fragmented chunk collages instead of synthesized answers.
+
+---
+
+## Example 7: Atlas Knowledge Hub (showcase)
+
+**Atlas** · internal knowledge hub of Halcyon Robotics, a fictional warehouse-robotics company
+
+Atlas is not a new ingestion and retrieval combination; it is the all-capabilities showcase. It uses Full + ParallelFusion like Folio, but its purpose is to exercise every layer of Arcanum end to end in one React UI with a nine-step guided tour: durable idempotent ingestion, document versioning, hybrid retrieval, context packing, streamed generation with citations, sentence-level verification, evidence tracing, the knowledge graph, retrieval evaluation, chunk and shadow experiments, auth and audit, observability, real-time events, and MCP. Ten short Markdown documents ship in `samples/`, including a version-2 security policy update and prepared flawed answers that make each Verify verdict reliable to demonstrate.
+
+Run it with `make dev` from `examples/atlas-knowledge-hub`; see its [README](examples/atlas-knowledge-hub/README.md) for the capability matrix, tour, environment variables and limits, and its [BUILD.md](examples/atlas-knowledge-hub/BUILD.md) for production stores, Anthropic and GC. Data resets on every start and GC is disabled in the demo.
 
 ---
 
