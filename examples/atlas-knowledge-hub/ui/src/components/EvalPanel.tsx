@@ -5,6 +5,7 @@ import { ApiError } from '../api/client'
 import { runEval } from '../api/lab'
 import type { EvalResponse } from '../api/types'
 import { useBootstrap } from '../state/bootstrap'
+import { useTourSignal } from '../state/tour'
 import { Chip } from './Chip'
 import { ErrorState } from './ErrorState'
 import { Stat } from './Stat'
@@ -62,7 +63,8 @@ export function EvalView({ data }: { data: EvalResponse }) {
 
 export function EvalPanel() {
   const { client } = useBootstrap()
-  const run = useMutation<EvalResponse, Error>({ mutationFn: () => runEval(client) })
+  const signal = useTourSignal()
+  const run = useMutation<EvalResponse, Error>({ mutationFn: () => runEval(client), onSuccess: () => signal('evaluated') })
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">

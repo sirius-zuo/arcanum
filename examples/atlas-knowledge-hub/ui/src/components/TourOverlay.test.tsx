@@ -1,0 +1,74 @@
+import { describe, expect, it } from 'vitest'
+import { act, fireEvent, render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { TourOverlay } from './TourOverlay'
+import { TourStore, useTour } from '../state/tour'
+import type { TourStep } from '../api/types'
+
+const steps: TourStep[] = [
+  { id: 'search', title: 'Search it', why: 'because', action: 'type', route: '/search', completes_when: 'searched', payoff: 'Hits appear.' },
+  { id: 'ask', title: 'Ask it', why: 'because', action: 'press', route: '/ask', completes_when: 'asked', payoff: 'An answer appears.' },
+]
+
+function Harness() {
+  const { start, signal } = useTour()
+  return (
+    <>
+      <button onClick={start}>go</button>
+      <button onClick={() => signal('searched')}>fire</button>
+    </>
+  )
+}
+
+function setup() {
+  localStorage.clear()
+  render(
+    <MemoryRouter>
+      <TourStore steps={steps}>
+        <Harness />
+        <TourOverlay />
+      </TourStore>
+    </MemoryRouter>,
+  )
+  fireEvent.click(screen.getByText('go'))
+}
+
+describe('TourOverlay', () => {
+  it('shows_payoff_when_step_completes_and_supports_keyboard', () => {
+    setup()
+    const card = screen.getByRole('complementary', { name: 'Guided tour' })
+    expect(screen.getByText('Search it')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /take me there/i })).toHaveAttribute('href', '/search')
+    expect(screen.queryByText('Hits appear.')).toBeNull()
+
+    act(() => screen.getByText('fire').click())
+    expect(screen.getByText(/Hits appear\./)).toBeInTheDocument()
+    expect(screen.getByRole('status')).toHaveTextContent('Hits appear.')
+
+    fireEvent.keyDown(card, { key: 'ArrowRight' })
+    expect(screen.getByText('Ask it')).toBeInTheDocument()
+    fireEvent.keyDown(card, { key: 'ArrowLeft' })
+    expect(screen.getByText('Search it')).toBeInTheDocument()
+
+    fireEvent.keyDown(card, { key: 'Escape' })
+    expect(screen.queryByRole('complementary', { name: 'Guided tour' })).toBeNull()
+  })
+
+  it('persists_progress_and_survives_corrupt_storage', () => {
+    setup()
+    act(() => screen.getByText('fire').click())
+    expect(JSON.parse(localStorage.getItem('atlas.tour') ?? '{}').completed).toEqual({ search: true })
+  })
+
+  it('does_not_take_focus_until_started_and_tolerates_corrupt_storage', () => {
+    localStorage.setItem('atlas.tour', '{not json')
+    render(
+      <MemoryRouter>
+        <TourStore steps={steps}>
+          <TourOverlay />
+        </TourStore>
+      </MemoryRouter>,
+    )
+    expect(screen.queryByRole('complementary')).toBeNull()
+  })
+})

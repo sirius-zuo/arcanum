@@ -17,15 +17,13 @@ import { RenderTabs } from '../components/RenderTabs'
 import { StrategyBadge } from '../components/StrategyBadge'
 import { ROUTES, routeMeta } from '../routes'
 import { useBootstrap } from '../state/bootstrap'
+import { useTourSignal } from '../state/tour'
 
 const meta = routeMeta('/context')
 const step = String(ROUTES.indexOf(meta) + 1).padStart(2, '0')
 
 const HOW_ARCANUM = ['POST /api/v1/context']
 const HOW_DEMO: string[] = []
-
-/** Tour hook point: Task 19 wires this to the tour. */
-const onContextBuilt = (): void => {}
 
 type Mode = 'query' | 'conversation'
 
@@ -62,6 +60,7 @@ function Slider(props: { id: string; label: string; min: number; max: number; st
 export default function ContextPage() {
   const { data: boot } = useBootstrap()
   const build = useBuildContext()
+  const signal = useTourSignal()
   const [mode, setMode] = useState<Mode>('query')
   const [query, setQuery] = useState('')
   const [messages, setMessages] = useState<ChatMessage[]>([{ role: 'user', content: '' }])
@@ -81,7 +80,7 @@ export default function ContextPage() {
     build.mutate(req, {
       onSuccess: (data) => {
         setBuilt({ format: req.render ?? 'xml', data, question })
-        onContextBuilt()
+        signal('context_built')
       },
     })
   }

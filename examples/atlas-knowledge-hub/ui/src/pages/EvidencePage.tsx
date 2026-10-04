@@ -13,15 +13,13 @@ import { PageHeader } from '../components/PageHeader'
 import { ProofTree } from '../components/ProofTree'
 import { ROUTES, routeMeta } from '../routes'
 import { useBootstrap } from '../state/bootstrap'
+import { useTourSignal } from '../state/tour'
 
 const meta = routeMeta('/evidence')
 const step = String(ROUTES.indexOf(meta) + 1).padStart(2, '0')
 
 const HOW_ARCANUM = ['GET /evidence/chunk/:id', 'GET /evidence/tree-node/:id', 'GET /evidence/entity/:id', 'GET /evidence/relation/:source/:type/:target']
 const HOW_DEMO = ['GET /demo/documents/:id/versions/:n/text']
-
-/** Tour hook: Task 19 wires this to the tour. */
-const onEvidenceOpened = (): void => {}
 
 type Kind = 'chunk' | 'tree-node' | 'entity' | 'relation'
 
@@ -64,6 +62,7 @@ function invalidUuid(kind: Kind, v: Fields): string | null {
 
 export default function EvidencePage() {
   const { data: boot, client } = useBootstrap()
+  const signal = useTourSignal()
   const [params] = useSearchParams()
   const [kind, setKind] = useState<Kind>('chunk')
   const [f, setF] = useState<Fields>({ id: '', source: '', type: '', target: '' })
@@ -101,7 +100,7 @@ export default function EvidencePage() {
               : await getRelationProof(client, v.source, v.type, v.target)
       if (seq.current !== mine) return
       setChain(result)
-      onEvidenceOpened()
+      signal('evidence_opened')
     } catch (e) {
       if (seq.current !== mine) return
       setChain(null)

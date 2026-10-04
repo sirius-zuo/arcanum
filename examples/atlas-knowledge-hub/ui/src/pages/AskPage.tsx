@@ -13,16 +13,13 @@ import { ROUTES, routeMeta } from '../routes'
 import { useAsk, verifyUnavailableMessage } from '../state/ask'
 import type { AskState } from '../state/ask'
 import { useBootstrap } from '../state/bootstrap'
+import { useTourSignal } from '../state/tour'
 
 const meta = routeMeta('/ask')
 const step = String(ROUTES.indexOf(meta) + 1).padStart(2, '0')
 
 const HOW_ARCANUM = ['POST /api/v1/generate']
 const HOW_DEMO: string[] = []
-
-/** Tour hooks: Task 19 wires these to the tour. */
-const onAsked = (): void => {}
-const onVerified = (): void => {}
 
 interface PastTurn {
   id: number
@@ -33,6 +30,7 @@ interface PastTurn {
 export default function AskPage() {
   const { data: boot } = useBootstrap()
   const ask = useAsk()
+  const signal = useTourSignal()
   const [past, setPast] = useState<PastTurn[]>([])
   const [current, setCurrent] = useState<{ id: number; meta: TurnMeta } | null>(null)
   const [verifyBlocked, setVerifyBlocked] = useState<string | null>(null)
@@ -48,9 +46,14 @@ export default function AskPage() {
     if (message) setVerifyBlocked(message)
     if (ask.state.verification && announced.current !== current.id) {
       announced.current = current.id
-      onVerified()
+      signal('verified')
     }
-  }, [ask.state, current])
+  }, [ask.state, current, signal])
+
+  const doneId = ask.state.phase === 'done' ? current?.id : undefined
+  useEffect(() => {
+    if (doneId !== undefined) signal('asked')
+  }, [doneId, signal])
 
   const currentId = current?.id
   useEffect(() => {
@@ -70,7 +73,6 @@ export default function AskPage() {
     }
     setCurrent({ id: nextId.current++, meta: { question: v.question, mode: v.mode, generator: v.generator, verify: v.verify } })
     ask.start(req)
-    onAsked()
   }
 
   const generateOff = !boot.features.generate

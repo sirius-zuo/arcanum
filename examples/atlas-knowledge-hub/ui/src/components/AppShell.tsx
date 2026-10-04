@@ -5,8 +5,10 @@ import { TopBar } from './TopBar'
 import { ErrorState } from './ErrorState'
 import { CommandPalette } from './CommandPalette'
 import type { PaletteAction } from './CommandPalette'
+import { TourOverlay } from './TourOverlay'
 import { Inspector, InspectorProvider } from './Inspector'
 import { CommandActionsProvider, useCommandActions } from '../state/commandActions'
+import { TourProvider } from '../state/tour'
 import { OperationsProvider } from '../state/operations'
 import { IngestEventsProvider } from '../state/ingestEvents'
 import { useApplyUpdate, useLoadSamples } from '../api/library'
@@ -55,6 +57,7 @@ export function AppShell() {
     <OperationsProvider>
     <IngestEventsProvider>
     <CommandActionsProvider>
+    <TourProvider>
     <InspectorProvider>
     <div className="flex min-h-screen">
       <Rail collapsed={collapsed} onToggle={toggle} />
@@ -80,11 +83,13 @@ export function AppShell() {
             <Outlet />
           )}
         </main>
+        <TourOverlay />
       </div>
       <Inspector />
       <AppCommandPalette />
     </div>
     </InspectorProvider>
+    </TourProvider>
     </CommandActionsProvider>
     </IngestEventsProvider>
     </OperationsProvider>

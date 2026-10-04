@@ -13,15 +13,13 @@ import { ResultCard } from '../components/ResultCard'
 import { Skeleton } from '../components/Skeleton'
 import { ROUTES, routeMeta } from '../routes'
 import { useBootstrap } from '../state/bootstrap'
+import { useTourSignal } from '../state/tour'
 
 const meta = routeMeta('/search')
 const step = String(ROUTES.indexOf(meta) + 1).padStart(2, '0')
 
 const HOW_ARCANUM = ['POST /api/v1/search']
 const HOW_DEMO: string[] = []
-
-/** Tour hook point: Task 19 wires this to the tour. */
-const onSearched = (): void => {}
 
 const libraryLink = (
   <Link to="/library" className="text-sm font-medium text-accent underline-offset-2 hover:underline">
@@ -33,6 +31,7 @@ export default function SearchPage() {
   const { data: boot } = useBootstrap()
   const samples = useSamples()
   const search = useSearch()
+  const signal = useTourSignal()
   const [query, setQuery] = useState('')
   const [topK, setTopK] = useState(5)
   const [asked, setAsked] = useState('')
@@ -45,7 +44,7 @@ export default function SearchPage() {
     setAsked(text)
     search.mutate(
       { query: text, collection_id: boot.collection, top_k: topK },
-      { onSuccess: () => onSearched() },
+      { onSuccess: () => signal('searched') },
     )
   }
 

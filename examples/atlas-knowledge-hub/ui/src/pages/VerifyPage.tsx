@@ -17,16 +17,13 @@ import { SentenceList } from '../components/SentenceList'
 import { VerdictChip } from '../components/VerdictChip'
 import { ROUTES, routeMeta } from '../routes'
 import { useBootstrap } from '../state/bootstrap'
+import { useTourSignal } from '../state/tour'
 
 const meta = routeMeta('/verify')
 const step = String(ROUTES.indexOf(meta) + 1).padStart(2, '0')
 
 const HOW_ARCANUM = ['POST /api/v1/context', 'POST /api/v1/verify']
 const HOW_DEMO = ['GET /demo/samples']
-
-/** Tour hooks: Task 19 wires these to the tour. */
-const onVerified = (): void => {}
-const onFlawedChecked = (): void => {}
 
 /** The picker value for "write my own answer". */
 const CUSTOM = ''
@@ -102,6 +99,7 @@ function ExpectedNote({ prepared, response }: { prepared: FlawedAnswer; response
 
 export default function VerifyPage() {
   const { data: boot, client } = useBootstrap()
+  const signal = useTourSignal()
   const samples = useSamples()
   const flawed = samples.data?.flawed_answers ?? []
 
@@ -197,8 +195,8 @@ export default function VerifyPage() {
       const prepared = sample && sample.answer === answer ? sample : null
       setOutcome({ response, answer, prepared })
       setSelected(response.sentences.findIndex((s) => s.verdict !== 'supported' && s.verdict !== 'no_claim'))
-      onVerified()
-      if (prepared && prepared.expected.some((v) => v !== 'supported')) onFlawedChecked()
+      signal('verified')
+      if (prepared && prepared.expected.some((v) => v !== 'supported')) signal('flawed_checked')
     } catch (e) {
       if (seq.current !== mine) return
       setFailure(stage === 'passages' ? { title: 'Could not build passages', message: e instanceof Error ? e.message : String(e) } : describeVerifyError(e))

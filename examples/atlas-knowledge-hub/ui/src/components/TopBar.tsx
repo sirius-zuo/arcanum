@@ -1,7 +1,7 @@
-import { Compass } from 'lucide-react'
 import { Chip } from './Chip'
 import { HealthPill } from './HealthPill'
 import { ThemeToggle } from './ThemeToggle'
+import { TourLauncher } from './TourLauncher'
 import { useBootstrap } from '../state/bootstrap'
 
 export function TopBar() {
@@ -14,15 +14,7 @@ export function TopBar() {
       </div>
       <div className="flex items-center gap-2">
         <HealthPill />
-        <button
-          type="button"
-          disabled
-          title="The guided tour arrives in a later task"
-          className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-3.5 text-sm font-medium text-accent-fg opacity-60 transition"
-        >
-          <Compass className="h-4 w-4" aria-hidden="true" />
-          Tour
-        </button>
+        <TourLauncher />
         <ThemeToggle />
       </div>
     </header>

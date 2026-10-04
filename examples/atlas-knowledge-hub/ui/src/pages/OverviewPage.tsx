@@ -31,6 +31,7 @@ import { LoadCorpusButton } from '../components/LoadCorpusButton'
 import { Skeleton } from '../components/Skeleton'
 import { useBootstrap } from '../state/bootstrap'
 import { useOperations } from '../state/operations'
+import { useTour } from '../state/tour'
 
 interface Capability {
   title: string
@@ -101,6 +102,7 @@ export default function OverviewPage() {
   const load = useLoadSamples()
   const update = useApplyUpdate()
   const { ops } = useOperations()
+  const tour = useTour()
   const progress = useTerminalCount(ops.map((o) => o.operation_id))
   const ctx: StatusContext = { boot, health: health.data, library: library.data }
 
@@ -121,9 +123,9 @@ export default function OverviewPage() {
             <LoadCorpusButton health={health.data} loading={load.isPending} trackedCount={ops.length} doneCount={progress.done} onLoad={() => load.mutate()} />
             <button
               type="button"
-              disabled
-              title="The guided tour arrives in a later task"
-              className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-surface px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50"
+              onClick={tour.start}
+              disabled={tour.steps.length === 0}
+              className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-surface px-4 text-sm font-medium transition hover:shadow-soft disabled:cursor-not-allowed disabled:opacity-50"
             >
               <Compass className="h-4 w-4" aria-hidden="true" />
               Start the guided tour
