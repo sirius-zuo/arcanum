@@ -19,6 +19,9 @@ pub struct LanceDbStore {
     uri: String,
     collections_file: String,
     sidecar_lock: Arc<TokioMutex<()>>,
+    /// Serialises first-use table creation so concurrent first upserts to a
+    /// collection cannot both try to create its table.
+    table_create_lock: Arc<TokioMutex<()>>,
 }
 
 /// Builds a LanceDB `only_if` predicate for `source_uri = <val>`.
@@ -55,6 +58,7 @@ impl LanceDbStore {
             collections_file: format!("{}.collections.json", uri),
             uri,
             sidecar_lock: Arc::new(TokioMutex::new(())),
+            table_create_lock: Arc::new(TokioMutex::new(())),
         })
     }
 
@@ -152,10 +156,24 @@ impl VectorStore for LanceDbStore {
                     .map_err(|e| ArcanumError::Storage(e.to_string()))?;
             }
             Err(_) => {
-                conn.create_table(collection, vec![batch])
-                    .execute()
-                    .await
-                    .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+                // Only one task may create the table. Re-check under the lock: a
+                // concurrent first upsert may have created it while we waited.
+                let _guard = self.table_create_lock.lock().await;
+                match conn.open_table(collection).execute().await {
+                    Ok(table) => {
+                        table
+                            .add(vec![batch])
+                            .execute()
+                            .await
+                            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+                    }
+                    Err(_) => {
+                        conn.create_table(collection, vec![batch])
+                            .execute()
+                            .await
+                            .map_err(|e| ArcanumError::Storage(e.to_string()))?;
+                    }
+                }
             }
         }
 
