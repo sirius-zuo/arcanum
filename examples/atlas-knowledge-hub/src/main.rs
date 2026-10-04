@@ -24,7 +24,13 @@ async fn main() -> Result<()> {
 
     let probe = Arc::new(HttpOllamaProbe::new(&s.ollama_url));
     let app = assemble_app(state.clone(), manifest, probe);
-    let listener = tokio::net::TcpListener::bind(format!("{}:{}", s.host, s.port))
+    // IPv6 literals need brackets in a socket address and in a URL.
+    let shown = if s.host.contains(':') && !s.host.starts_with('[') {
+        format!("[{}]", s.host)
+    } else {
+        s.host.clone()
+    };
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", shown, s.port))
         .await
         .with_context(|| format!("bind port {}", s.port))?;
 
@@ -34,7 +40,7 @@ async fn main() -> Result<()> {
         "run make dev: http://localhost:5173".to_string()
     };
     println!("Atlas Knowledge Hub");
-    println!("  API:      http://{}:{}", s.host, s.port);
+    println!("  API:      http://{}:{}", shown, s.port);
     println!("  UI:       {ui}");
     println!(
         "  Bind:     {} (set ATLAS_HOST to widen; MCP binds all interfaces)",

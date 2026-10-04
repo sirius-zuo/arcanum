@@ -123,6 +123,9 @@ pub async fn build_state_in(
             );
         }
     }
+    // Parsed before anything is wiped: a bad config must not cost the user their data.
+    let mut config = ArcanumConfig::from_file(&workdir.join("config.toml"))
+        .context("read config.toml (a missing or malformed file is an error, not defaults)")?;
     let dir = workdir.join(&settings.data_dir);
     if !settings.keep_data && dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("wipe {}", dir.display()))?;
@@ -130,8 +133,6 @@ pub async fn build_state_in(
     std::fs::create_dir_all(&dir)?;
     let path = |name: &str| -> String { dir.join(name).to_string_lossy().into_owned() };
 
-    let mut config = ArcanumConfig::from_file(&workdir.join("config.toml"))
-        .context("read config.toml (a missing or malformed file is an error, not defaults)")?;
     config.retrieval.orchestration_mode = OrchestrationMode::ParallelFusion;
     config.generate.default_generator = Some(models.default_generator.clone());
     config.verify.judge = models.judge.clone();

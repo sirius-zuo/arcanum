@@ -73,10 +73,11 @@ impl Settings {
 impl Settings {
     /// True when the server only listens on the loopback interface.
     pub fn is_loopback_bind(&self) -> bool {
-        matches!(
-            self.host.as_str(),
-            "127.0.0.1" | "::1" | "[::1]" | "localhost"
-        )
+        let host = self.host.trim_start_matches('[').trim_end_matches(']');
+        host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<std::net::IpAddr>()
+                .is_ok_and(|ip| ip.is_loopback())
     }
 }
 
@@ -95,6 +96,33 @@ pub fn is_local_host_header(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loopback_bind_uses_ip_semantics() {
+        let mut s = Settings::for_tests("data".into());
+        for ok in [
+            "127.0.0.1",
+            "127.0.0.2",
+            "::1",
+            "[::1]",
+            "0:0:0:0:0:0:0:1",
+            "localhost",
+        ] {
+            s.host = ok.into();
+            assert!(s.is_loopback_bind(), "{ok}");
+        }
+        for bad in ["0.0.0.0", "::", "192.168.1.5", "example.com", ""] {
+            s.host = bad.into();
+            assert!(!s.is_loopback_bind(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn trailing_dot_host_is_refused() {
+        // Strict on purpose: "localhost." is not on the allow list.
+        assert!(!is_local_host_header("localhost."));
+        assert!(!is_local_host_header("localhost.:8080"));
+    }
 
     #[test]
     fn local_host_headers() {

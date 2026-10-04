@@ -115,11 +115,15 @@ async fn malformed_config_is_an_error_not_defaults() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(dir.path().join("samples")).unwrap();
     std::fs::write(dir.path().join("config.toml"), "this is = = not toml").unwrap();
+    std::fs::create_dir_all(dir.path().join("data")).unwrap();
+    std::fs::write(dir.path().join("data/keep.txt"), "mine").unwrap();
     let err = build_state_in(dir.path(), Settings::for_tests("data".into()), models())
         .await
         .err()
         .expect("must fail");
     assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+    // The bad config is rejected before data/ is wiped.
+    assert!(dir.path().join("data/keep.txt").exists());
 }
 
 #[test]

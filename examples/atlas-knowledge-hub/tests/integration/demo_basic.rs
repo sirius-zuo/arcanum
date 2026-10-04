@@ -81,7 +81,16 @@ async fn bootstrap_refuses_non_local_host_headers_on_a_loopback_bind() {
     for ok in ["localhost:8080", "127.0.0.1:8080", "[::1]:8080"] {
         assert_eq!(bootstrap_status(&r, Some(ok)).await, StatusCode::OK, "{ok}");
     }
-    for bad in ["evil.example", "evil.example:8080", "192.168.1.9:8080"] {
+    // No Host header (HTTP/1.0 clients, curl with -H 'Host:') is allowed: a rebinding page
+    // always sends one.
+    assert_eq!(bootstrap_status(&r, None).await, StatusCode::OK);
+    for bad in [
+        "evil.example",
+        "evil.example:8080",
+        "192.168.1.9:8080",
+        "localhost.",
+        "localhost.:8080",
+    ] {
         assert_eq!(
             bootstrap_status(&r, Some(bad)).await,
             StatusCode::FORBIDDEN,

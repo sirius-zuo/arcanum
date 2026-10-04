@@ -198,4 +198,61 @@ mod tests {
             .unwrap();
         assert!(emb.get("think").is_none());
     }
+
+    /// Drives the real `arcanum_models::OllamaProvider` through the shim, so a reworded
+    /// framework prompt fails here instead of silently disabling the rewrite.
+    #[tokio::test]
+    async fn real_provider_prompts_are_rewritten_or_left_alone() {
+        use arcanum_core::traits::TextEnricher;
+        use arcanum_core::types::{EnrichIntent, EnrichRequest};
+        use std::sync::{Arc, Mutex};
+
+        let seen: Arc<Mutex<Vec<Value>>> = Arc::default();
+        let log = seen.clone();
+        let app = Router::new().route(
+            "/api/generate",
+            post(move |Json(b): Json<Value>| {
+                log.lock().unwrap().push(b);
+                async { Json(serde_json::json!({"response": "ok"})) }
+            }),
+        );
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let up = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+        let provider = arcanum_models::OllamaProvider::new(&spawn(&up).unwrap(), "embed", "chat");
+
+        let ask = |intent| EnrichRequest {
+            text: "Maren Voss leads Halcyon.".into(),
+            intent,
+            context: None,
+        };
+        provider
+            .enrich(ask(EnrichIntent::ExtractEntities))
+            .await
+            .unwrap();
+        provider.enrich(ask(EnrichIntent::Summarize)).await.unwrap();
+
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        let extract = &bodies[0];
+        let prompt = extract["prompt"].as_str().unwrap();
+        assert_eq!(
+            extract["format"], "json",
+            "extraction prompt was not recognised: {prompt}"
+        );
+        assert!(
+            prompt.contains("entity_type") && prompt.contains("\"relation\""),
+            "{prompt}"
+        );
+        assert!(prompt.ends_with("Maren Voss leads Halcyon."), "{prompt}");
+        assert_eq!(extract["think"], false);
+
+        let summarize = &bodies[1];
+        assert_eq!(summarize["think"], false);
+        assert!(summarize.get("format").is_none());
+        assert_eq!(
+            summarize["prompt"],
+            "Summarize the following text concisely:\nMaren Voss leads Halcyon."
+        );
+    }
 }
