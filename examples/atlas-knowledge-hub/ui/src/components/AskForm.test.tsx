@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { AskForm } from './AskForm'
-import { ASK_PREFILL_KEY } from './PassageList'
+import { ASK_PREFILL_KEY } from '../lib/askPrefill'
 import type { Bootstrap } from '../api/types'
 
 const boot = (over: Partial<Bootstrap> = {}): Bootstrap => ({

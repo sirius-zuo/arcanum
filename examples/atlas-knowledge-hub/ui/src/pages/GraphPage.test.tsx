@@ -3,7 +3,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { createClient } from '../api/client'
-import { ASK_PREFILL_KEY } from '../components/PassageList'
+import { ASK_PREFILL_KEY } from '../lib/askPrefill'
 import GraphPage, { MULTI_HOP_QUESTION } from './GraphPage'
 
 vi.mock('../state/bootstrap', () => ({
@@ -69,5 +69,23 @@ describe('GraphPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /multi-hop/i }))
     expect(sessionStorage.getItem(ASK_PREFILL_KEY)).toBe(MULTI_HOP_QUESTION)
     expect(screen.getByText('ask page')).toBeInTheDocument()
+  })
+
+  it('keeps_the_selection_after_panning_but_a_plain_click_clears_it', async () => {
+    // jsdom has no PointerEvent, so coordinates would be dropped.
+    vi.stubGlobal('PointerEvent', MouseEvent)
+    renderPage(graph)
+    const node = await screen.findByRole('button', { name: 'Maya Chen, Person' })
+    fireEvent.keyDown(node, { key: 'Enter' })
+    const svg = screen.getByRole('group', { name: /knowledge graph/i })
+    fireEvent.pointerDown(svg, { clientX: 10, clientY: 10, pointerId: 1 })
+    fireEvent.pointerMove(svg, { clientX: 40, clientY: 30, pointerId: 1 })
+    fireEvent.pointerUp(svg, { pointerId: 1 })
+    fireEvent.click(svg)
+    expect(node).toHaveAttribute('aria-pressed', 'true')
+    fireEvent.pointerDown(svg, { clientX: 10, clientY: 10, pointerId: 1 })
+    fireEvent.pointerUp(svg, { pointerId: 1 })
+    fireEvent.click(svg)
+    expect(node).toHaveAttribute('aria-pressed', 'false')
   })
 })

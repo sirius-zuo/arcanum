@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import { Link } from 'react-router-dom'
 import type { Bootstrap, GenerateMode } from '../api/types'
-import { ASK_PREFILL_KEY } from './PassageList'
+import { ASK_PREFILL_KEY } from '../lib/askPrefill'
 import { Card } from './Card'
 
 export interface AskSubmit {

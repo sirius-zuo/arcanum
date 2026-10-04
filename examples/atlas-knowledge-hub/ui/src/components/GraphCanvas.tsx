@@ -37,7 +37,8 @@ export function GraphCanvas({ graph }: { graph: GraphView }) {
   const [query, setQuery] = useState('')
   const [t, setT] = useState<Transform>({ x: 0, y: 0, k: 1 })
   const svgRef = useRef<SVGSVGElement>(null)
-  const drag = useRef<{ x: number; y: number; moved: boolean } | null>(null)
+  const drag = useRef<{ x: number; y: number } | null>(null)
+  const panned = useRef(false)
   const listId = useId()
 
   // Wheel zoom needs a non-passive listener to stop the page from scrolling.
@@ -73,7 +74,8 @@ export function GraphCanvas({ graph }: { graph: GraphView }) {
   }
 
   const onPointerDown = (e: PointerEvent<SVGSVGElement>) => {
-    drag.current = { x: e.clientX, y: e.clientY, moved: false }
+    drag.current = { x: e.clientX, y: e.clientY }
+    panned.current = false
     e.currentTarget.setPointerCapture?.(e.pointerId)
   }
   const onPointerMove = (e: PointerEvent<SVGSVGElement>) => {
@@ -83,7 +85,7 @@ export function GraphCanvas({ graph }: { graph: GraphView }) {
     const scale = rect.width > 0 ? W / rect.width : 1
     const dx = (e.clientX - d.x) * scale
     const dy = (e.clientY - d.y) * scale
-    if (Math.abs(dx) + Math.abs(dy) > 0) d.moved = true
+    if (Math.abs(dx) + Math.abs(dy) > 0) panned.current = true
     d.x = e.clientX
     d.y = e.clientY
     setT((c) => ({ ...c, x: c.x + dx, y: c.y + dy }))
@@ -118,7 +120,7 @@ export function GraphCanvas({ graph }: { graph: GraphView }) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Find entity..."
-              aria-controls={`${listId}-r`}
+              aria-controls={matches.length > 0 ? `${listId}-r` : undefined}
               className="h-9 w-full rounded-lg border border-border bg-surface pl-8 pr-2 text-sm"
             />
             {matches.length > 0 && (
@@ -179,7 +181,7 @@ export function GraphCanvas({ graph }: { graph: GraphView }) {
             onPointerUp={onPointerUp}
             onPointerCancel={onPointerUp}
             onClick={(e) => {
-              if (e.target === e.currentTarget) select(null)
+              if (e.target === e.currentTarget && !panned.current) select(null)
             }}
           >
             <g transform={`translate(${t.x} ${t.y}) scale(${t.k})`}>
@@ -238,7 +240,7 @@ export function GraphCanvas({ graph }: { graph: GraphView }) {
         </div>
       </div>
 
-      <aside aria-label="Entity inspector" className="rounded-card border border-border bg-surface p-4 text-sm">
+      <aside aria-label="Entity inspector" aria-live="polite" className="rounded-card border border-border bg-surface p-4 text-sm">
         {sel ? (
           <div className="space-y-4">
             <div>

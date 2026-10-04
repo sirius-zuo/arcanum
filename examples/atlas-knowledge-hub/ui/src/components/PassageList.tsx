@@ -5,8 +5,8 @@ import { Card } from './Card'
 import { Chip } from './Chip'
 import { CopyButton } from './CopyButton'
 import { StrategyBadge } from './StrategyBadge'
+import { ASK_PREFILL_KEY } from '../lib/askPrefill'
 
-export const ASK_PREFILL_KEY = 'atlas.ask.prefill'
 
 interface PassageListProps {
   passages: ContextPassage[]

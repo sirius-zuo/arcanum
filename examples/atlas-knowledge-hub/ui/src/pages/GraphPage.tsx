@@ -7,7 +7,7 @@ import { GraphCanvas } from '../components/GraphCanvas'
 import { HowItWorks } from '../components/HowItWorks'
 import { PageHeader } from '../components/PageHeader'
 import { Skeleton } from '../components/Skeleton'
-import { ASK_PREFILL_KEY } from '../components/PassageList'
+import { ASK_PREFILL_KEY } from '../lib/askPrefill'
 import { ROUTES, routeMeta } from '../routes'
 
 const meta = routeMeta('/graph')
