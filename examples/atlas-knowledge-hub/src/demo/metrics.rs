@@ -130,7 +130,7 @@ pub fn parse_prometheus(text: &str) -> MetricsSnapshot {
     snap
 }
 
-const UNAVAILABLE: &str = "metrics recorder not installed";
+const UNAVAILABLE: &str = "the engine returned no metrics";
 
 /// `GET /demo/metrics`: proxies the engine's token-protected `/metrics` as JSON.
 pub async fn metrics(

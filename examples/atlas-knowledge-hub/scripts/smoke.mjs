@@ -5,7 +5,7 @@ const BASE = (process.env.ATLAS_URL || "http://localhost:8080").replace(/\/$/, "
 const COLLECTION = "halcyon";
 const MULTI_HOP = "Who is the on-call lead for the team that owns the navigation stack?";
 const POLL_MS = 2000;
-const TIMEOUT_MS = 15 * 60 * 1000;
+const TIMEOUT_MS = Number(process.env.ATLAS_SMOKE_TIMEOUT_MIN || 45) * 60 * 1000; // slow local models with the full pipeline need tens of minutes
 
 let key = "";
 
@@ -76,7 +76,9 @@ async function waitForOperations(operations) {
       }
     }
     process.stdout.write(".");
-    if (pending.size > 0) await new Promise((r) => setTimeout(r, POLL_MS));
+    // The engine rate limits a key to 120 requests a minute: stay at or under 60 however many
+    // operations are pending (slow pipelines keep them pending for minutes).
+    if (pending.size > 0) await new Promise((r) => setTimeout(r, Math.max(POLL_MS, pending.size * 1000)));
   }
   process.stdout.write("\n");
   if (failures.length) throw new Error(`failed: ${failures.join(", ")}`);

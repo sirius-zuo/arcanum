@@ -1,5 +1,5 @@
 use crate::common::{env_guard, models};
-use atlas::{build_state, Settings};
+use atlas::{build_state, build_state_in, Settings};
 
 #[allow(clippy::await_holding_lock)]
 #[tokio::test]
@@ -79,4 +79,56 @@ fn settings_from_env_defaults() {
     assert!(s.anthropic_key.is_none());
     assert_eq!(s.auth_secret, "arcanum-dev-secret-minimum-32chars!!");
     assert!(!s.keep_data);
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn startup_refuses_and_wipes_nothing_outside_the_example_directory() {
+    let _env = env_guard();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("data")).unwrap();
+    std::fs::write(dir.path().join("data/keep.txt"), "mine").unwrap();
+    let err = build_state_in(dir.path(), Settings::for_tests("data".into()), models())
+        .await
+        .err()
+        .expect("must refuse");
+    assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("data/keep.txt")).unwrap(),
+        "mine"
+    );
+
+    // config.toml present but samples/ missing: still refused, still untouched.
+    std::fs::write(dir.path().join("config.toml"), "").unwrap();
+    let err = build_state_in(dir.path(), Settings::for_tests("data".into()), models())
+        .await
+        .err()
+        .expect("must refuse");
+    assert!(format!("{err:#}").contains("samples"), "{err:#}");
+    assert!(dir.path().join("data/keep.txt").exists());
+}
+
+#[allow(clippy::await_holding_lock)]
+#[tokio::test]
+async fn malformed_config_is_an_error_not_defaults() {
+    let _env = env_guard();
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join("samples")).unwrap();
+    std::fs::write(dir.path().join("config.toml"), "this is = = not toml").unwrap();
+    let err = build_state_in(dir.path(), Settings::for_tests("data".into()), models())
+        .await
+        .err()
+        .expect("must fail");
+    assert!(format!("{err:#}").contains("config.toml"), "{err:#}");
+}
+
+#[test]
+fn committed_config_toml_parses_and_carries_the_local_model_timeouts() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("config.toml");
+    let cfg =
+        arcanum_core::config::ArcanumConfig::from_file(&path).expect("config.toml must parse");
+    assert_eq!(cfg.generate.first_token_timeout_secs, 120);
+    assert_eq!(cfg.generate.total_timeout_secs, 300);
+    assert_eq!(cfg.verify.judge_timeout_secs, 300);
+    assert_eq!(cfg.ingestion.worker_pool_size, 2);
 }

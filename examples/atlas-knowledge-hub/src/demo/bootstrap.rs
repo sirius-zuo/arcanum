@@ -1,7 +1,9 @@
-use super::DemoCtx;
+use super::{DemoCtx, DemoError};
 use crate::engine_setup::COLLECTION;
+use crate::settings::is_local_host_header;
 use crate::state::GeneratorMeta;
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::Serialize;
 
@@ -28,10 +30,24 @@ pub struct Bootstrap {
     pub features: Features,
 }
 
-pub async fn bootstrap(State(ctx): State<DemoCtx>) -> Json<Bootstrap> {
+/// Unauthenticated by design (it hands the demo key to the UI). While the server is bound to
+/// loopback only, a `Host` that is not local is refused so a DNS-rebinding page cannot read it.
+pub async fn bootstrap(
+    State(ctx): State<DemoCtx>,
+    headers: HeaderMap,
+) -> Result<Json<Bootstrap>, DemoError> {
     let s = &ctx.state;
+    if s.settings.is_loopback_bind() {
+        if let Some(host) = headers.get("host").and_then(|h| h.to_str().ok()) {
+            if !is_local_host_header(host) {
+                return Err(DemoError::Forbidden(
+                    "the demo key is only served to local hosts; set ATLAS_HOST to widen".into(),
+                ));
+            }
+        }
+    }
     let e = &s.engine;
-    Json(Bootstrap {
+    Ok(Json(Bootstrap {
         api_key: s.admin_key.clone(),
         collection: COLLECTION,
         orchestration_mode: format!("{:?}", e.config.retrieval.orchestration_mode),
@@ -48,5 +64,5 @@ pub async fn bootstrap(State(ctx): State<DemoCtx>) -> Json<Bootstrap> {
             experiments: true,
             gc: false,
         },
-    })
+    }))
 }

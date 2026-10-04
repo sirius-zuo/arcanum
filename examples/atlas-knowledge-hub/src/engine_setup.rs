@@ -61,8 +61,13 @@ impl ModelDeps {
             "nomic-embed-text",
             &settings.chat_model,
         ));
+        // Enrichment goes through a loopback shim that turns thinking off (see ollama_shim).
+        let enrich_url = crate::ollama_shim::spawn(ollama).unwrap_or_else(|e| {
+            tracing::warn!("ollama shim unavailable ({e}); enrichment talks to Ollama directly");
+            ollama.to_string()
+        });
         let enricher = Arc::new(OllamaProvider::new(
-            ollama,
+            &enrich_url,
             "nomic-embed-text",
             &settings.enrich_model,
         ));
@@ -92,17 +97,41 @@ impl ModelDeps {
     }
 }
 
-/// Wipes (unless `keep_data`) and rebuilds every store, then wires the engine.
-/// This is the only place `AtlasState` is constructed.
+/// Files that mark the example directory. Startup refuses to wipe `data/` anywhere else.
+const WORKDIR_MARKERS: [&str; 2] = ["config.toml", "samples"];
+
+/// Wipes (unless `keep_data`) and rebuilds every store, then wires the engine, with the
+/// current directory as the working directory. This is the only place `AtlasState` is built.
 pub async fn build_state(settings: Settings, models: ModelDeps) -> Result<AtlasState> {
-    let dir = settings.data_dir.clone();
+    build_state_in(Path::new("."), settings, models).await
+}
+
+/// Like [`build_state`] with an explicit working directory. A relative `data_dir` and
+/// `config.toml` are resolved against it. It must contain `config.toml` and `samples/`;
+/// otherwise nothing is touched and an error says where to run Atlas from.
+pub async fn build_state_in(
+    workdir: &Path,
+    settings: Settings,
+    models: ModelDeps,
+) -> Result<AtlasState> {
+    for marker in WORKDIR_MARKERS {
+        if !workdir.join(marker).exists() {
+            anyhow::bail!(
+                "{} not found in {}: run Atlas from the example directory (cd examples/atlas-knowledge-hub); nothing was changed",
+                marker,
+                workdir.canonicalize().unwrap_or_else(|_| workdir.to_path_buf()).display()
+            );
+        }
+    }
+    let dir = workdir.join(&settings.data_dir);
     if !settings.keep_data && dir.exists() {
         std::fs::remove_dir_all(&dir).with_context(|| format!("wipe {}", dir.display()))?;
     }
     std::fs::create_dir_all(&dir)?;
     let path = |name: &str| -> String { dir.join(name).to_string_lossy().into_owned() };
 
-    let mut config = ArcanumConfig::from_file(Path::new("config.toml")).unwrap_or_default();
+    let mut config = ArcanumConfig::from_file(&workdir.join("config.toml"))
+        .context("read config.toml (a missing or malformed file is an error, not defaults)")?;
     config.retrieval.orchestration_mode = OrchestrationMode::ParallelFusion;
     config.generate.default_generator = Some(models.default_generator.clone());
     config.verify.judge = models.judge.clone();

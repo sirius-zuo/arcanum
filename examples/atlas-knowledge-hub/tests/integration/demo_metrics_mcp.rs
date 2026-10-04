@@ -183,7 +183,7 @@ async fn metrics_503_when_unreachable() {
     let k = key(&router).await;
     let (st, body) = get(&router, "/demo/metrics", Some(&k)).await;
     assert_eq!(st, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(body["error"], "metrics recorder not installed");
+    assert_eq!(body["error"], "the engine returned no metrics");
 }
 
 #[tokio::test]

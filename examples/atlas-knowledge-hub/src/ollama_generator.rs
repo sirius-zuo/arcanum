@@ -34,7 +34,7 @@ impl OllamaGenerator {
     }
 }
 
-fn request_body(model: &str, req: &GenerationRequest) -> Value {
+fn request_body(model: &str, req: &GenerationRequest, reasoning_off: bool) -> Value {
     let mut messages = vec![json!({"role": "system", "content": req.system})];
     messages.extend(req.messages.iter().map(|m| json!(m)));
     let mut body = json!({
@@ -43,8 +43,10 @@ fn request_body(model: &str, req: &GenerationRequest) -> Value {
         "max_tokens": req.max_tokens,
         "stream": true,
         "stream_options": {"include_usage": true},
-        "reasoning_effort": "none",
     });
+    if reasoning_off {
+        body["reasoning_effort"] = json!("none");
+    }
     if let Some(t) = req.temperature {
         body["temperature"] = json!(t);
     }
@@ -129,13 +131,23 @@ impl Generator for OllamaGenerator {
         &self,
         req: GenerationRequest,
     ) -> Result<BoxStream<'static, Result<GenerationEvent>>> {
-        let resp = self
-            .client
-            .post(format!("{}/chat/completions", self.base_url))
-            .json(&request_body(&self.model, &req))
-            .send()
+        let url = format!("{}/chat/completions", self.base_url);
+        let send = |reasoning_off: bool| {
+            self.client
+                .post(&url)
+                .json(&request_body(&self.model, &req, reasoning_off))
+                .send()
+        };
+        let mut resp = send(true)
             .await
             .map_err(|e| ArcanumError::Generation(e.to_string()))?;
+        // An Ollama that does not know `reasoning_effort` answers 400: retry once without it.
+        if resp.status() == reqwest::StatusCode::BAD_REQUEST {
+            tracing::warn!("ollama rejected reasoning_effort; retrying without it");
+            resp = send(false)
+                .await
+                .map_err(|e| ArcanumError::Generation(e.to_string()))?;
+        }
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -163,36 +175,39 @@ impl Generator for OllamaGenerator {
 mod tests {
     use super::*;
     use arcanum_core::types::{Message, Role};
-    use axum::{extract::State as AxState, routing::post, Json, Router};
+    use axum::http::StatusCode;
+    use axum::response::{IntoResponse, Response};
+    use axum::{routing::post, Json, Router};
     use std::sync::{Arc, Mutex};
 
-    #[tokio::test]
-    async fn sends_reasoning_off_and_streams_content_only() {
-        let seen: Arc<Mutex<Option<Value>>> = Arc::default();
-        let sse = concat!(
-            "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking\"}}]}\n\n",
-            "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n",
-            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n",
-            "data: [DONE]\n\n",
+    type Seen = Arc<Mutex<Vec<Value>>>;
+
+    /// Serves `/v1/chat/completions` with `handler`, recording every request body.
+    async fn serve(
+        handler: impl Fn(&Value) -> Response + Clone + Send + Sync + 'static,
+    ) -> (String, Seen) {
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(b): Json<Value>| {
+                let out = handler(&b);
+                log.lock().unwrap().push(b);
+                async move { out }
+            }),
         );
-        let app = Router::new()
-            .route(
-                "/v1/chat/completions",
-                post(
-                    move |AxState(seen): AxState<Arc<Mutex<Option<Value>>>>,
-                          Json(b): Json<Value>| async move {
-                        *seen.lock().unwrap() = Some(b);
-                        ([("content-type", "text/event-stream")], sse)
-                    },
-                ),
-            )
-            .with_state(seen.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (format!("http://{addr}/v1/"), seen)
+    }
 
-        let g = OllamaGenerator::new("m", format!("http://{addr}/v1/"));
-        let req = GenerationRequest {
+    fn sse(body: &str) -> Response {
+        ([("content-type", "text/event-stream")], body.to_string()).into_response()
+    }
+
+    fn req() -> GenerationRequest {
+        GenerationRequest {
             system: "sys".into(),
             messages: vec![Message {
                 role: Role::User,
@@ -200,9 +215,30 @@ mod tests {
             }],
             max_tokens: 64,
             temperature: Some(0.0),
-        };
-        let events: Vec<_> = g.stream(req).await.unwrap().collect().await;
-        let events: Vec<_> = events.into_iter().map(|e| e.unwrap()).collect();
+        }
+    }
+
+    async fn collect(url: String) -> Result<Vec<Result<GenerationEvent>>> {
+        let g = OllamaGenerator::new("m", url);
+        Ok(g.stream(req()).await?.collect().await)
+    }
+
+    const OK_BODY: &str = concat!(
+        "data: {\"choices\":[{\"delta\":{\"reasoning\":\"thinking\"}}]}\n\n",
+        "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"},\"finish_reason\":\"stop\"}]}\n\n",
+        "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n",
+        "data: [DONE]\n\n",
+    );
+
+    #[tokio::test]
+    async fn sends_reasoning_off_and_streams_content_only() {
+        let (url, seen) = serve(|_| sse(OK_BODY)).await;
+        let events: Vec<_> = collect(url)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.unwrap())
+            .collect();
         assert_eq!(
             events,
             vec![
@@ -216,9 +252,77 @@ mod tests {
                 },
             ]
         );
-        let body = seen.lock().unwrap().clone().unwrap();
-        assert_eq!(body["reasoning_effort"], "none");
-        assert_eq!(body["model"], "m");
-        assert_eq!(body["stream"], true);
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["reasoning_effort"], "none");
+        assert_eq!(bodies[0]["model"], "m");
+        assert_eq!(bodies[0]["stream"], true);
+        assert_eq!(bodies[0]["messages"][0]["role"], "system");
+    }
+
+    #[tokio::test]
+    async fn retries_once_without_reasoning_effort_on_400() {
+        let (url, seen) = serve(|b| {
+            if b.get("reasoning_effort").is_some() {
+                (StatusCode::BAD_REQUEST, "unknown field").into_response()
+            } else {
+                sse(OK_BODY)
+            }
+        })
+        .await;
+        let events = collect(url).await.unwrap();
+        assert!(events.iter().all(|e| e.is_ok()));
+        let bodies = seen.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert!(bodies[0].get("reasoning_effort").is_some());
+        assert!(bodies[1].get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_second_400_is_an_error_and_is_not_retried_again() {
+        let (url, seen) = serve(|_| (StatusCode::BAD_REQUEST, "nope").into_response()).await;
+        let err = collect(url).await.expect_err("error");
+        assert!(err.to_string().contains("400"), "{err}");
+        assert_eq!(seen.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn non_2xx_is_an_error_without_retry() {
+        let (url, seen) =
+            serve(|_| (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response()).await;
+        let err = collect(url).await.expect_err("error");
+        let msg = err.to_string();
+        assert!(msg.contains("500") && msg.contains("boom"), "{msg}");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn error_event_in_the_stream_is_an_error() {
+        let (url, _) =
+            serve(|_| sse("data: {\"error\":{\"message\":\"model crashed\"}}\n\n")).await;
+        let events = collect(url).await.unwrap();
+        assert_eq!(events.len(), 1);
+        assert!(events[0]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("model crashed"));
+    }
+
+    #[tokio::test]
+    async fn truncated_stream_is_an_error() {
+        let (url, _) =
+            serve(|_| sse("data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n")).await;
+        let events = collect(url).await.unwrap();
+        assert_eq!(
+            events[0].as_ref().unwrap(),
+            &GenerationEvent::TextDelta("Hel".into())
+        );
+        assert!(events[1]
+            .as_ref()
+            .unwrap_err()
+            .to_string()
+            .contains("stream ended before completion"));
+        assert_eq!(events.len(), 2);
     }
 }

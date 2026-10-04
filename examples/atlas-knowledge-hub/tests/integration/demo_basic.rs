@@ -62,6 +62,51 @@ fn check<'a>(h: &'a Value, id: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("no check {id}"))
 }
 
+async fn bootstrap_status(router: &Router, host: Option<&str>) -> StatusCode {
+    let mut req = Request::builder().uri("/demo/bootstrap");
+    if let Some(h) = host {
+        req = req.header("Host", h);
+    }
+    router
+        .clone()
+        .oneshot(req.body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+        .status()
+}
+
+#[tokio::test]
+async fn bootstrap_refuses_non_local_host_headers_on_a_loopback_bind() {
+    let (r, _d) = app(tags(&[])).await;
+    for ok in ["localhost:8080", "127.0.0.1:8080", "[::1]:8080"] {
+        assert_eq!(bootstrap_status(&r, Some(ok)).await, StatusCode::OK, "{ok}");
+    }
+    for bad in ["evil.example", "evil.example:8080", "192.168.1.9:8080"] {
+        assert_eq!(
+            bootstrap_status(&r, Some(bad)).await,
+            StatusCode::FORBIDDEN,
+            "{bad}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn bootstrap_host_check_is_off_when_the_bind_was_widened() {
+    let (state, _dir) = crate::common::test_state().await;
+    let mut settings = state.settings.clone();
+    settings.host = "0.0.0.0".into();
+    let widened = Arc::new(atlas::AtlasState {
+        settings,
+        ..(*state).clone()
+    });
+    let manifest = load_manifest(&Path::new(env!("CARGO_MANIFEST_DIR")).join("samples")).unwrap();
+    let r = demo_router(widened, Arc::new(manifest), Arc::new(FakeProbe(tags(&[]))));
+    assert_eq!(
+        bootstrap_status(&r, Some("10.0.0.5:8080")).await,
+        StatusCode::OK
+    );
+}
+
 #[tokio::test]
 async fn bootstrap_needs_no_auth_and_matches_contract() {
     let (r, _d) = app(tags(&[])).await;

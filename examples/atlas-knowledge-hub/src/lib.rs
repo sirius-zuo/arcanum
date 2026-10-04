@@ -3,11 +3,12 @@
 pub mod demo;
 pub mod engine_setup;
 pub mod ollama_generator;
+pub mod ollama_shim;
 pub mod samples;
 pub mod settings;
 pub mod state;
 
-pub use engine_setup::{build_state, ModelDeps};
+pub use engine_setup::{build_state, build_state_in, ModelDeps};
 pub use settings::Settings;
 pub use state::AtlasState;
 

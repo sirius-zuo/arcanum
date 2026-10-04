@@ -53,8 +53,14 @@ async fn call(router: &Router, method: &str, uri: &str, key: Option<&str>) -> (S
 #[allow(clippy::await_holding_lock)]
 async fn post_standard(router: &Router, uri: &str, key: &str) -> (StatusCode, Value) {
     let _env = env_guard();
+    let previous = std::env::var_os("ATLAS_PIPELINE");
     std::env::set_var("ATLAS_PIPELINE", "standard");
-    call(router, "POST", uri, Some(key)).await
+    let out = call(router, "POST", uri, Some(key)).await;
+    match previous {
+        Some(v) => std::env::set_var("ATLAS_PIPELINE", v),
+        None => std::env::remove_var("ATLAS_PIPELINE"),
+    }
+    out
 }
 
 fn op_ids(body: &Value) -> Vec<String> {

@@ -77,7 +77,7 @@ Other targets: `make test` (cargo tests and UI tests), `make smoke` (end-to-end 
 
 ## Guided tour
 
-Press **Tour** in the top bar. Nine steps, each with a deep link, an auto-detected completion check and a result callout. The copy lives in `samples/tour.json`.
+Press **Tour** in the top bar. Nine steps, each with a deep link, an auto-detected completion check and a result callout. The copy lives in `samples/tour.json`. Progress is kept in your browser; steps that depend on the library (load, update) are taken back when Atlas restarts with empty data, and **Reset tour** on the card clears everything.
 
 | # | Step | Page | What you see |
 |---|---|---|---|
@@ -121,8 +121,9 @@ Read by `Settings::from_env` in `src/settings.rs` unless noted.
 
 | Variable | Default | Description |
 |---|---|---|
+| `ATLAS_HOST` | `127.0.0.1` | Interface the HTTP server binds. Loopback by default; set `0.0.0.0` only on a trusted network (see [Security](#security-read-this-before-widening-the-bind)) |
 | `PORT` | `8080` | HTTP port (API, `/demo` routes, built UI) |
-| `MCP_PORT` | `8081` | MCP server port |
+| `MCP_PORT` | `8081` | MCP server port (always bound on all interfaces, see Security) |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama base URL |
 | `ATLAS_CHAT_MODEL` | `qwen2.5` | Local generator and judge model |
 | `ATLAS_ENRICH_MODEL` | `qwen2.5` | Model used for enrichment during ingestion |
@@ -158,11 +159,26 @@ The UI calls the real Arcanum API for everything it can. The `/demo` routes exis
 
 ---
 
+## Security (read this before widening the bind)
+
+Atlas is a local demo, not a hardened service.
+
+- **Bind address.** The HTTP server (API, `/demo`, UI) binds `127.0.0.1` by default. `ATLAS_HOST=0.0.0.0` opts in to listening on every interface.
+- **The demo key is public by design.** `GET /demo/bootstrap` is unauthenticated and returns an admin API key so the UI can sign in. While the server is bound to loopback it refuses requests whose `Host` header is not `localhost`, `*.localhost`, `127.0.0.1` or `[::1]` (403), which blocks DNS-rebinding pages from reading the key. With `ATLAS_HOST` widened that check is off, so anyone who can reach the port gets an admin key.
+- **The default signing secret is public.** `ARCANUM_AUTH_SECRET` defaults to `arcanum-dev-secret-minimum-32chars!!`, which is in this repository. Anyone can mint valid keys for an Atlas using it. Use it for local runs only, and set your own secret if the port is reachable by others.
+- **MCP port.** The MCP server comes from `arcanum-mcp`, which hard-codes `0.0.0.0:<MCP_PORT>`; Atlas cannot narrow it. On a normal desktop that exposes `/mcp` (tool listing and tool calls, authenticated like the API) to your network even though the HTTP server is loopback only. Block port 8081 with a firewall if that matters.
+- **Startup wipes `data/`.** Atlas refuses to start unless `config.toml` and `samples/` exist in the working directory, so it never wipes a `data/` directory elsewhere. A missing or malformed `config.toml` is a startup error.
+
+---
+
 ## Honest limits
 
 - **Data resets on every start.** `data/` is wiped at startup unless `ATLAS_KEEP_DATA` is set. The graph, tree and chunk registry are in memory and are not persisted either, so keeping `data/` alone does not restore them.
 - **Local model quality.** A small local model gives weaker answers, enrichment and judging than a hosted one. For better results use a larger Ollama model or set `ANTHROPIC_API_KEY`. The prepared flawed answers do not depend on the answer model, only on the judge.
+- **Reasoning models (observed with Ollama 0.34.2 and `qwen3.6:35b-a3b-nvfp4`).** Their thinking is streamed separately and used up the whole token budget, so answers were empty and the judge returned nothing. Atlas works around it in two places: the chat and judge client sends `reasoning_effort: "none"` (Ollama 0.34.2 honored it on `/v1/chat/completions`; `think: false` was ignored there) and retries once without it if Ollama answers 400, and enrichment goes through a loopback shim (`src/ollama_shim.rs`) that adds `think: false` to `/api/generate`. I did not test other Ollama versions; models without a thinking mode ignore both fields. Without the shim the `full` pipeline took 5 to 6 minutes per enrichment call on that model and concurrent calls got HTTP 500. The shim also replaces the framework's entity extraction prompt, which names no JSON keys: the model answered with its own keys inside a code fence, the framework silently parsed that as empty and the graph stayed empty. With the shim, the full pipeline on `qwen3.6:35b-a3b-nvfp4` ingested the ten documents in about 12 minutes and produced a graph of about 100 entities and 34 relations (small models extract few relations).
 - **Slow local models.** The `full` pipeline calls the enricher many times, and local generation and judging are slow. `config.toml` raises the generate and verify timeouts for this reason. The Library shows live progress.
+- **Metrics are empty (known upstream limitation).** The framework's `/metrics` returns no data in this build because two incompatible `prometheus` crate versions are in the dependency tree (the recorder writes to one registry, the endpoint reads another). The Admin page therefore shows a "no metrics" state and stops polling; it has a Check again button. This is not an Atlas setting and is tracked as a separate task.
+- **The engine rate limits a key to 120 requests a minute.** Atlas polls slowly (every 8 s per pending operation, plus socket nudges) and the smoke script paces itself; hammering the API from other scripts with the demo key can return 429.
 - **GC is disabled.** `/admin/gc` returns 503 because retention GC needs Postgres-backed stores. The Admin page shows this as a designed state.
 - **Search returns one chunk per document** under fusion, and responses carry full vectors, which the UI drops client-side.
 - **Orchestration mode is engine-wide config.** It is set at startup in `src/engine_setup.rs` (overriding `config.toml`), not per request.

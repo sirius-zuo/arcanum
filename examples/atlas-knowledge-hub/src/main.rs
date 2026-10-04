@@ -24,7 +24,7 @@ async fn main() -> Result<()> {
 
     let probe = Arc::new(HttpOllamaProbe::new(&s.ollama_url));
     let app = assemble_app(state.clone(), manifest, probe);
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", s.port))
+    let listener = tokio::net::TcpListener::bind(format!("{}:{}", s.host, s.port))
         .await
         .with_context(|| format!("bind port {}", s.port))?;
 
@@ -34,8 +34,12 @@ async fn main() -> Result<()> {
         "run make dev: http://localhost:5173".to_string()
     };
     println!("Atlas Knowledge Hub");
-    println!("  API:      http://localhost:{}", s.port);
+    println!("  API:      http://{}:{}", s.host, s.port);
     println!("  UI:       {ui}");
+    println!(
+        "  Bind:     {} (set ATLAS_HOST to widen; MCP binds all interfaces)",
+        s.host
+    );
     println!("  MCP:      http://localhost:{}/mcp", s.mcp_port);
     println!("  Ollama:   {}", s.ollama_url);
     println!(
