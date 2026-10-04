@@ -13,5 +13,6 @@ describe('snippets', () => {
     expect(verifySnippet(input)).toContain('/api/v1/verify')
     expect(verifySnippet(input)).toContain('"passages"')
     expect(JSON.parse(mcpConfigSnippet(input)).mcpServers.atlas.url).toBe('http://localhost:8081/mcp')
+    expect(JSON.parse(mcpConfigSnippet(input)).mcpServers.atlas.headers).toEqual({ Authorization: 'Bearer demo-key' })
   })
 })

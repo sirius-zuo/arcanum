@@ -146,8 +146,8 @@ export default function AdminPage() {
           {metrics.data?.kind === 'unavailable' && (
             <EmptyState
               icon={Gauge}
-              title="Metrics are not available"
-              description={`The engine has no metrics recorder installed (${metrics.data.message}). Start Atlas with its default configuration to see request counts and latency here.`}
+              title="Metrics are not reporting right now"
+              description={`Metrics are not reporting right now (${metrics.data.message}). Request counts and latency appear here once the engine serves them.`}
             />
           )}
           {snapshot && <MetricCards snapshot={snapshot} />}

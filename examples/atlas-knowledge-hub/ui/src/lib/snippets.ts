@@ -38,7 +38,7 @@ export function verifySnippet(i: SnippetInput): string {
 }
 
 export function mcpConfigSnippet(i: SnippetInput): string {
-  return JSON.stringify({ mcpServers: { atlas: { type: 'http', url: i.mcpEndpoint } } }, null, 2)
+  return JSON.stringify({ mcpServers: { atlas: { type: 'http', url: i.mcpEndpoint, headers: { Authorization: `Bearer ${i.apiKey}` } } } }, null, 2)
 }
 
 export function mcpListSnippet(i: SnippetInput): string {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { connectEvents, eventsUrl } from '../api/ws'
 import type { WsStatus } from '../api/ws'
 import { Chip } from './Chip'
@@ -29,13 +29,15 @@ interface EventFeedProps {
 export function EventFeed({ apiKey, wsFactory }: EventFeedProps) {
   const [status, setStatus] = useState<WsStatus | 'connecting'>('connecting')
   const [events, setEvents] = useState<FeedEvent[]>([])
+  const factoryRef = useRef(wsFactory)
+  factoryRef.current = wsFactory
 
   useEffect(() => {
     let n = 0
     return connectEvents({
       url: eventsUrl(window.location),
       key: apiKey,
-      wsFactory,
+      wsFactory: factoryRef.current,
       onStatus: setStatus,
       onEvent: (raw) => {
         n += 1
@@ -43,7 +45,7 @@ export function EventFeed({ apiKey, wsFactory }: EventFeedProps) {
         setEvents((prev) => [ev, ...prev].slice(0, MAX_EVENTS))
       },
     })
-  }, [apiKey, wsFactory])
+  }, [apiKey])
 
   const label = status === 'connecting' ? 'Connecting' : statusLabel[status]
   return (
