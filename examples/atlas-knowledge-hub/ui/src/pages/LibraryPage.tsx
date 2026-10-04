@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { BookOpen, FileText, Loader2, Sparkles, Trash2 } from 'lucide-react'
-import { deleteSource } from '../api/ingest'
+import { deleteSource, useTerminalCount } from '../api/ingest'
 import { useApplyUpdate, useHealth, useLibrary, useLoadSamples } from '../api/library'
 import type { LibraryDocument } from '../api/types'
 import { Card } from '../components/Card'
@@ -115,11 +115,12 @@ export default function LibraryPage() {
   const load = useLoadSamples()
   const update = useApplyUpdate()
   const { ops } = useOperations()
+  const progress = useTerminalCount(ops.map((o) => o.operation_id))
   const docs = library.data?.documents ?? []
   const policy = docs.find((d) => d.source_uri === POLICY)
   const canUpdate = policy !== undefined && policy.versions.length === 1
 
-  const loadButton = <LoadCorpusButton health={health.data} loading={load.isPending} trackedCount={ops.length} onLoad={() => load.mutate()} />
+  const loadButton = <LoadCorpusButton health={health.data} loading={load.isPending} trackedCount={ops.length} doneCount={progress.done} onLoad={() => load.mutate()} />
 
   return (
     <>

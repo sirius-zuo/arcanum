@@ -11,7 +11,8 @@ import { CommandActionsProvider, useCommandActions } from '../state/commandActio
 import { TourProvider } from '../state/tour'
 import { OperationsProvider } from '../state/operations'
 import { IngestEventsProvider } from '../state/ingestEvents'
-import { useApplyUpdate, useLoadSamples } from '../api/library'
+import { useApplyUpdate, useHealth, useLibrary, useLoadSamples } from '../api/library'
+import { loadBlockedReason } from './LoadCorpusButton'
 import { useTheme } from '../state/theme'
 import { useBootstrap } from '../state/bootstrap'
 import { safeGet, safeSet } from '../lib/storage'
@@ -31,14 +32,19 @@ function AppCommandPalette() {
   const update = useApplyUpdate()
   const { toggle } = useTheme()
   const { run } = useCommandActions()
+  const health = useHealth().data
+  const docs = useLibrary().data?.documents.length ?? 0
+  // The same gates as the Overview buttons: not ready blocks both, an update needs a corpus.
+  const loadBlocked = loadBlockedReason(health) ?? (load.isPending ? 'Loading' : undefined)
+  const updateBlocked = !health?.ready ? 'Not ready' : docs === 0 ? 'Load the corpus first' : update.isPending ? 'Applying' : undefined
   const actions = useMemo<PaletteAction[]>(
     () => [
-      { id: 'load', label: 'Load sample corpus', run: () => load.mutate() },
-      { id: 'update', label: 'Apply policy update', run: () => update.mutate() },
+      { id: 'load', label: 'Load sample corpus', run: () => load.mutate(), disabledReason: loadBlocked },
+      { id: 'update', label: 'Apply policy update', run: () => update.mutate(), disabledReason: updateBlocked },
       { id: 'theme', label: 'Toggle theme', run: toggle },
       { id: 'tour', label: 'Start tour', run: () => run('tour.start') },
     ],
-    [load, update, toggle, run],
+    [load, update, toggle, run, loadBlocked, updateBlocked],
   )
   return <CommandPalette actions={actions} />
 }

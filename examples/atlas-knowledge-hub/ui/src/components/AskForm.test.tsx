@@ -91,4 +91,26 @@ describe('AskForm', () => {
     expect(screen.getByRole('checkbox', { name: /verify answer/i })).toBeDisabled()
     expect(screen.getByText('verification requires a configured judge')).toBeInTheDocument()
   })
+
+  it('restores_the_question_of_a_failed_turn_only_into_an_empty_box', () => {
+    const { rerender } = mount(boot())
+    const ui = (restore: { key: number; text: string } | null) => (
+      <MemoryRouter>
+        <AskForm boot={boot()} busy={false} onSubmit={vi.fn()} onStop={vi.fn()} restore={restore} />
+      </MemoryRouter>
+    )
+    fireEvent.change(screen.getByLabelText('Question'), { target: { value: 'why?' } })
+    fireEvent.click(screen.getByRole('button', { name: /^ask$/i }))
+    expect(screen.getByLabelText('Question')).toHaveValue('')
+    rerender(ui({ key: 1, text: 'why?' }))
+    expect(screen.getByLabelText('Question')).toHaveValue('why?')
+    fireEvent.change(screen.getByLabelText('Question'), { target: { value: 'typed since' } })
+    rerender(ui({ key: 2, text: 'other' }))
+    expect(screen.getByLabelText('Question')).toHaveValue('typed since')
+  })
+
+  it('hides_example_chips_when_asked_to', () => {
+    mount(boot(), { showExamples: false })
+    expect(screen.queryByLabelText('Example questions')).toBeNull()
+  })
 })

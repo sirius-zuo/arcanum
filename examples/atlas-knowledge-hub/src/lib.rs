@@ -2,6 +2,7 @@
 
 pub mod demo;
 pub mod engine_setup;
+pub mod ollama_generator;
 pub mod samples;
 pub mod settings;
 pub mod state;

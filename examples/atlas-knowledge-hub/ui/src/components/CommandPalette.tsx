@@ -8,6 +8,8 @@ export interface PaletteAction {
   id: string
   label: string
   run: () => void
+  /** Why the action cannot run right now; the entry is listed but inert. */
+  disabledReason?: string
 }
 
 interface Entry {
@@ -15,6 +17,7 @@ interface Entry {
   label: string
   group: 'Go to' | 'Actions'
   run: () => void
+  disabledReason?: string
 }
 
 /** Subsequence match; lower is better, null means no match. Substring hits beat scattered ones. */
@@ -47,7 +50,7 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }) {
   const entries = useMemo<Entry[]>(
     () => [
       ...ROUTES.map<Entry>((r) => ({ id: `route:${r.path}`, label: r.label, group: 'Go to', run: () => navigate(r.path) })),
-      ...actions.map<Entry>((a) => ({ id: `action:${a.id}`, label: a.label, group: 'Actions', run: a.run })),
+      ...actions.map<Entry>((a) => ({ id: `action:${a.id}`, label: a.label, group: 'Actions', run: a.run, disabledReason: a.disabledReason })),
     ],
     [actions, navigate],
   )
@@ -92,7 +95,7 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }) {
   if (!open) return null
 
   const choose = (entry: Entry | undefined) => {
-    if (!entry) return
+    if (!entry || entry.disabledReason) return
     hide()
     entry.run()
   }
@@ -107,6 +110,9 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }) {
     } else if (e.key === 'Enter') {
       e.preventDefault()
       choose(results[active])
+    } else if (e.key === 'Tab') {
+      // The input is the only tab stop in the dialog: keep focus inside it.
+      e.preventDefault()
     } else if (e.key === 'Escape') {
       e.stopPropagation()
       hide()
@@ -150,10 +156,12 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }) {
               id={`${listId}-${i}`}
               role="option"
               aria-selected={i === active}
+              aria-disabled={r.disabledReason ? true : undefined}
               onMouseMove={() => setActive(i)}
               onClick={() => choose(r)}
               className={
                 'flex cursor-pointer items-center justify-between gap-3 rounded-lg px-3 py-2 text-sm ' +
+                (r.disabledReason ? 'cursor-not-allowed text-muted ' : '') +
                 (i === active ? 'bg-accent/10 text-accent' : '')
               }
             >
@@ -162,8 +170,8 @@ export function CommandPalette({ actions }: { actions: PaletteAction[] }) {
                 {r.label}
               </span>
               <span className="flex items-center gap-1.5 text-xs text-muted">
-                {r.group}
-                {i === active && <CornerDownLeft className="h-3 w-3" aria-hidden="true" />}
+                {r.disabledReason ?? r.group}
+                {i === active && !r.disabledReason && <CornerDownLeft className="h-3 w-3" aria-hidden="true" />}
               </span>
             </li>
           ))}

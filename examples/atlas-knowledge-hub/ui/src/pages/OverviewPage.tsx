@@ -145,7 +145,8 @@ export default function OverviewPage() {
           {update.isError && <p role="alert" className="mt-3 text-sm text-v-unsupported">{update.error.message}</p>}
           <p className="mt-6 flex items-center gap-1.5 text-xs text-muted">
             <Command className="h-3 w-3" aria-hidden="true" />
-            Press <kbd className="rounded border border-border px-1 font-mono text-[10px]">Ctrl</kbd>
+            Press <kbd className="rounded border border-border px-1 font-mono text-[10px]">Ctrl</kbd> or
+            <kbd className="rounded border border-border px-1 font-mono text-[10px]">Cmd</kbd>
             <kbd className="rounded border border-border px-1 font-mono text-[10px]">K</kbd> to jump anywhere.
           </p>
         </div>

@@ -50,6 +50,9 @@ export default function AskPage() {
     }
   }, [ask.state, current, signal])
 
+  const failedId = ask.state.phase === 'error' ? current?.id : undefined
+  const restore = failedId !== undefined && current ? { key: failedId, text: current.meta.question } : null
+
   const doneId = ask.state.phase === 'done' ? current?.id : undefined
   useEffect(() => {
     if (doneId !== undefined) signal('asked')
@@ -112,7 +115,7 @@ export default function AskPage() {
             )}
           </div>
           <div className="sticky bottom-4 z-20">
-            <AskForm boot={boot} busy={busy} onSubmit={submit} onStop={ask.stop} verifyDisabledReason={verifyBlocked} />
+            <AskForm boot={boot} busy={busy} onSubmit={submit} onStop={ask.stop} verifyDisabledReason={verifyBlocked} restore={restore} showExamples={!current} />
           </div>
         </div>
       )}

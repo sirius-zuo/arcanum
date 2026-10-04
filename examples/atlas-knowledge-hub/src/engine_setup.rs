@@ -1,3 +1,4 @@
+use crate::ollama_generator::OllamaGenerator;
 use crate::settings::Settings;
 use crate::state::{AtlasState, GeneratorMeta};
 use anyhow::{Context, Result};
@@ -14,7 +15,7 @@ use arcanum_graph::InMemoryGraphStore;
 use arcanum_ingestion::{
     LocalOperationPayloadStore, LocalSnapshotStore, SqliteDocumentVersionStore,
 };
-use arcanum_models::{AnthropicGenerator, OllamaProvider, OpenAiCompatibleGenerator};
+use arcanum_models::{AnthropicGenerator, OllamaProvider};
 use arcanum_tree::InMemoryTreeStore;
 use arcanum_vector::{Bm25Index, LanceDbStore};
 use rand::distributions::Alphanumeric;
@@ -65,10 +66,9 @@ impl ModelDeps {
             "nomic-embed-text",
             &settings.enrich_model,
         ));
-        let local: Arc<dyn Generator> = Arc::new(OpenAiCompatibleGenerator::new(
+        let local: Arc<dyn Generator> = Arc::new(OllamaGenerator::new(
             settings.chat_model.clone(),
-            None,
-            Some(format!("{ollama}/v1")),
+            format!("{ollama}/v1"),
         ));
         let mut generators = vec![("local".to_string(), local, GENERATOR_MAX_OUTPUT_TOKENS)];
         let mut default_generator = "local".to_string();

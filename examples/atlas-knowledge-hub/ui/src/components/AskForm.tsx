@@ -29,6 +29,10 @@ interface AskFormProps {
   onStop: () => void
   /** Set when the server refused verification; disables the toggle and explains why. */
   verifyDisabledReason?: string | null
+  /** A turn failed: put its question back (when the box is empty) so the user can retry. */
+  restore?: { key: number; text: string } | null
+  /** Hide the example chips once a conversation has started, to keep the sticky form short. */
+  showExamples?: boolean
 }
 
 /** Read and remove the question another page left for Ask. Safe when storage is blocked. */
@@ -42,7 +46,7 @@ function consumePrefill(): string | null {
   }
 }
 
-export function AskForm({ boot, busy, onSubmit, onStop, verifyDisabledReason }: AskFormProps) {
+export function AskForm({ boot, busy, onSubmit, onStop, verifyDisabledReason, restore, showExamples = true }: AskFormProps) {
   const defaultGen = boot.generators.find((g) => g.is_default)?.name ?? boot.generators[0]?.name ?? ''
   const [question, setQuestion] = useState('')
   const [mode, setMode] = useState<GenerateMode>('answer')
@@ -54,6 +58,12 @@ export function AskForm({ boot, busy, onSubmit, onStop, verifyDisabledReason }: 
     const v = consumePrefill()
     if (v) setQuestion(v)
   }, [])
+
+  const restoreKey = restore?.key
+  const restoreText = restore?.text
+  useEffect(() => {
+    if (restoreKey !== undefined && restoreText) setQuestion((q) => (q.trim() === '' ? restoreText : q))
+  }, [restoreKey, restoreText])
 
   const noJudge = !boot.features.verify || !boot.judge
   const reason = verifyDisabledReason
@@ -181,6 +191,7 @@ export function AskForm({ boot, busy, onSubmit, onStop, verifyDisabledReason }: 
         </p>
       </form>
 
+      {showExamples && (
       <ul className="mt-2 flex flex-wrap gap-1.5" aria-label="Example questions">
         {EXAMPLE_QUESTIONS.map((q) => (
           <li key={q}>
@@ -194,6 +205,7 @@ export function AskForm({ boot, busy, onSubmit, onStop, verifyDisabledReason }: 
           </li>
         ))}
       </ul>
+      )}
     </Card>
   )
 }
