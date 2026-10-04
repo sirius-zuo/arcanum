@@ -192,7 +192,7 @@ Both paths go through `ChunkRegistry.build()` at job-start time, so a bad config
 | `semantic` | `max_chars` | Sentence-boundary-aware splitting |
 | `propositional` | — | Claim-level granularity |
 | `hierarchical` | — | Knowledge graph construction |
-| `structure_aware` | — | Markdown / HTML with heading structure |
+| `structure` | `max_chunk_chars` | Markdown / HTML with heading structure |
 
 Specify a strategy in config or per-collection override:
 

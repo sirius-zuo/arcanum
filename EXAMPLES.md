@@ -26,6 +26,7 @@ Each example explains:
 | 4 | Helix Labs — research intelligence | `examples/helix-research-copilot` | Full | QueryClassified |
 | 5 | Vantage Legal — contract intelligence | `examples/vantage-contract-intel` | Full | ParallelFusion |
 | 6 | Folio — digital library service | `examples/folio-library-search` | Full | ParallelFusion |
+| 7 | Atlas, all-capabilities showcase | `examples/atlas-knowledge-hub` | Full | ParallelFusion |
 
 The Full + Static combination is absent because it is an anti-pattern: building a graph and RAPTOR tree only to route queries to a fixed single retriever discards the investment made at ingestion time.
 
@@ -605,6 +606,16 @@ top_k               = 15
 **Full + QueryClassified:** "Jay Gatsby party quote" is simultaneously a character lookup (Graph) and a passage search (Vector); the classifier picks one and is wrong half the time. "Books about grief" looks semantic to the classifier but RAPTOR L2 root summaries carry the clearest thematic signal; routing to Vector-only misses those. Series ordering queries ("what Mistborn books are there") occasionally look semantic to the classifier and get routed to Vector instead of Graph, returning thematic passages instead of the ordered series list.
 
 **Standard + Static (Vector + BM25 only):** Author, series, character, and universe queries all degrade to text search over raw content. All summarization queries return fragmented chunk collages instead of synthesized answers.
+
+---
+
+## Example 7: Atlas Knowledge Hub (showcase)
+
+**Atlas** · internal knowledge hub of Halcyon Robotics, a fictional warehouse-robotics company
+
+Atlas is not a new ingestion and retrieval combination; it is the all-capabilities showcase. It uses Full + ParallelFusion like Folio, but its purpose is to exercise every layer of Arcanum end to end in one React UI with a nine-step guided tour: durable idempotent ingestion, document versioning, hybrid retrieval, context packing, streamed generation with citations, sentence-level verification, evidence tracing, the knowledge graph, retrieval evaluation, chunk and shadow experiments, auth and audit, observability, real-time events, and MCP. Ten short Markdown documents ship in `samples/`, including a version-2 security policy update and prepared flawed answers that make each Verify verdict reliable to demonstrate.
+
+Run it with `make dev` from `examples/atlas-knowledge-hub`; see its [README](examples/atlas-knowledge-hub/README.md) for the capability matrix, tour, environment variables and limits, and its [BUILD.md](examples/atlas-knowledge-hub/BUILD.md) for production stores, Anthropic and GC. Data resets on every start and GC is disabled in the demo.
 
 ---
 
