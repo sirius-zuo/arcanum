@@ -1,5 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { Play } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { ApiError } from '../api/client'
 import { runEval } from '../api/lab'
 import type { EvalResponse } from '../api/types'
 import { useBootstrap } from '../state/bootstrap'
@@ -78,13 +80,20 @@ export function EvalPanel() {
           {run.isPending ? 'Evaluating...' : 'Run evaluation'}
         </button>
       </div>
-      {run.isError && (
-        <ErrorState
-          title="Evaluation failed"
-          message={run.error.message}
-          fix="Check Overview for the health of Ollama and the models."
-        />
-      )}
+      {run.isError &&
+        (run.error instanceof ApiError && run.error.status === 409 ? (
+          <ErrorState
+            title="Nothing to evaluate yet"
+            message={`${run.error.message}. Load the sample corpus first.`}
+            action={
+              <Link to="/library" className="text-sm font-medium text-accent underline">
+                Open Library
+              </Link>
+            }
+          />
+        ) : (
+          <ErrorState title="Evaluation failed" message={run.error.message} fix="Check Overview for the health of Ollama and the models." />
+        ))}
       {run.data && <EvalView data={run.data} />}
     </div>
   )

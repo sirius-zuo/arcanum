@@ -59,7 +59,7 @@ function ChunkingTab({ library }: { library: Library }) {
     mutationFn: ({ text: t, ids }) => inspectChunking(client, t, presetsById(ids)),
   })
   // Results belong to the text they were computed for.
-  const [shown, setShown] = useState<{ text: string; results: InspectResult[] } | null>(null)
+  const [shown, setShown] = useState<{ docId: string; text: string; results: InspectResult[] } | null>(null)
 
   const strategies = useMemo(() => presetsById(picked), [picked])
   const loadCorpus = async (): Promise<CorpusDoc[]> => {
@@ -103,7 +103,8 @@ function ChunkingTab({ library }: { library: Library }) {
           disabled={!loaded || picked.length === 0 || compare.isPending}
           onClick={() => {
             if (!loaded) return
-            compare.mutate({ text: loaded.text, ids: picked }, { onSuccess: (results) => setShown({ text: loaded.text, results }) })
+            const docKey = loaded.document_id
+            compare.mutate({ text: loaded.text, ids: picked }, { onSuccess: (results) => setShown({ docId: docKey, text: loaded.text, results }) })
           }}
           className="inline-flex h-9 items-center gap-2 rounded-lg bg-accent px-3 text-sm font-medium text-accent-fg transition hover:opacity-90 disabled:opacity-50"
         >
@@ -113,9 +114,10 @@ function ChunkingTab({ library }: { library: Library }) {
         {text.isError && <ErrorState title="Could not load the document text" message={text.error.message} />}
       </Card>
 
+      {samples.isError && <ErrorState title="Could not load the golden queries" message={samples.error.message} />}
       {compare.isError && <ErrorState title="Chunking failed" message={compare.error.message} />}
 
-      {shown && (
+      {shown && shown.docId === doc?.document_id && (
         <div className={clsx('grid gap-4', shown.results.length > 1 && 'lg:grid-cols-2', shown.results.length > 2 && 'xl:grid-cols-3')}>
           {shown.results.map((r, i) => (
             <Card key={i} className="min-w-0 p-4">
@@ -168,7 +170,7 @@ export default function LabPage() {
           ) : (
             <p className="text-sm text-muted">Loading the library...</p>
           ))}
-        {tab === 'experiments' && <ExperimentPanel collection={boot.collection} golden={samples.data?.golden ?? []} />}
+        {tab === 'experiments' && <ExperimentPanel collection={boot.collection} golden={samples.data?.golden ?? []} samplesError={samples.isError ? samples.error.message : null} />}
         {tab === 'evaluation' && <EvalPanel />}
       </div>
     </>

@@ -28,6 +28,15 @@ describe('readiness', () => {
     expect(r.message).toMatch(/0\.05/)
   })
 
+  it('is_not_ready_at_an_exact_f32_style_boundary', () => {
+    expect(readiness(m(60, 4 / 60, 1 / 60)).ready).toBe(false)
+    expect(readiness(m(60, 0.8 + 0.05, 0.8)).ready).toBe(false)
+  })
+
+  it('names_the_champion_id_label_caveat', () => {
+    expect(readiness(m(12, 0.9, 0.5)).message).toMatch(/champion chunk ids/)
+  })
+
   it('treats_missing_metrics_as_sample_zero', () => {
     const r = readiness(null)
     expect(r.sampleSize).toBe(0)

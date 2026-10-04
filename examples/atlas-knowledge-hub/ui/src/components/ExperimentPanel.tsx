@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { abandonExperiment, buildExperimentSamples, evalExperiment, getExperiment, promoteExperiment, startExperiment } from '../api/lab'
 import { ApiError } from '../api/client'
 import type { Experiment, ExperimentStatus, GoldenQuery } from '../api/types'
@@ -24,7 +24,13 @@ const STATUS: Record<ExperimentStatus, { label: string; tone: ChipTone }> = {
 const btn =
   'inline-flex h-9 items-center rounded-lg border border-border bg-surface px-3 text-sm font-medium transition hover:border-accent/40 disabled:opacity-50'
 
-export function ExperimentPanel({ collection, golden }: { collection: string; golden: GoldenQuery[] }) {
+interface ExperimentPanelProps {
+  collection: string
+  golden: GoldenQuery[]
+  samplesError?: string | null
+}
+
+export function ExperimentPanel({ collection, golden, samplesError }: ExperimentPanelProps) {
   const { client } = useBootstrap()
   const qc = useQueryClient()
   const [id, setId] = useState<string | null>(() => safeGet(EXPERIMENT_KEY))
@@ -43,6 +49,13 @@ export function ExperimentPanel({ collection, golden }: { collection: string; go
     enabled: id !== null,
     retry: false,
   })
+  useEffect(() => {
+    if (exp.error instanceof ApiError && exp.error.status === 404) {
+      setId(null)
+      safeRemove(EXPERIMENT_KEY)
+      setNotice('The stored experiment was not found on the server (it may have restarted), so it was forgotten.')
+    }
+  }, [exp.error])
   const refresh = () => qc.invalidateQueries({ queryKey: ['lab', 'experiment', collection] })
 
   const start = useMutation<Experiment, Error>({
@@ -79,11 +92,18 @@ export function ExperimentPanel({ collection, golden }: { collection: string; go
     },
   })
 
+  const clearOutcomes = () => {
+    setNotice(null)
+    start.reset()
+    evaluate.reset()
+    promote.reset()
+    abandon.reset()
+  }
   const data = exp.data
   const ready = readiness(data?.metrics)
   const closed = data?.status === 'closed'
   const busy = start.isPending || evaluate.isPending || promote.isPending || abandon.isPending
-  const startError = start.error instanceof ApiError && start.error.status === 409 ? start.error.message : start.error?.message
+  const startError = start.error?.message
 
   return (
     <div className="space-y-4">
@@ -108,16 +128,19 @@ export function ExperimentPanel({ collection, golden }: { collection: string; go
               ))}
             </select>
           </label>
-          <button type="button" className={btn} disabled={busy} onClick={() => start.mutate()}>
+          <button type="button" className={btn} disabled={busy} onClick={() => {
+              clearOutcomes()
+              start.mutate()
+            }}>
             {start.isPending ? 'Starting...' : 'Start experiment'}
           </button>
         </section>
       )}
       {start.isError && <ErrorState title="Could not start the experiment" message={startError ?? 'Unknown error'} />}
 
-      {id !== null && exp.isError && (
+      {id !== null && exp.isError && !(exp.error instanceof ApiError && exp.error.status === 404) && (
         <ErrorState
-          title="Experiment not found"
+          title="Could not load the experiment"
           message={exp.error.message}
           action={
             <button type="button" className={btn} onClick={() => remember(null)}>
@@ -160,14 +183,30 @@ export function ExperimentPanel({ collection, golden }: { collection: string; go
           </p>
 
           {!closed && (
+            <p className="text-xs text-muted">
+              Caveat: the evaluation labels are champion chunk ids, and a challenger that re-chunks gets fresh ids in its shadow namespace, so it is
+              structurally disadvantaged. This panel demonstrates the experiment lifecycle and the readiness rules, not a fair quality verdict.
+            </p>
+          )}
+          {samplesError && <p className="text-xs text-v-unsupported">Could not load the golden queries: {samplesError}</p>}
+          {!closed && (
             <div className="flex flex-wrap gap-2">
-              <button type="button" className={btn} disabled={busy || golden.length === 0} onClick={() => evaluate.mutate()}>
+              <button type="button" className={btn} disabled={busy || golden.length === 0} onClick={() => {
+                  clearOutcomes()
+                  evaluate.mutate()
+                }}>
                 {evaluate.isPending ? 'Evaluating...' : 'Evaluate on golden queries'}
               </button>
-              <button type="button" className={btn} disabled={busy} onClick={() => promote.mutate()}>
+              <button type="button" className={btn} disabled={busy} onClick={() => {
+                  clearOutcomes()
+                  promote.mutate()
+                }}>
                 Promote
               </button>
-              <button type="button" className={btn} disabled={busy} onClick={() => abandon.mutate()}>
+              <button type="button" className={btn} disabled={busy} onClick={() => {
+                  clearOutcomes()
+                  abandon.mutate()
+                }}>
                 Abandon
               </button>
             </div>

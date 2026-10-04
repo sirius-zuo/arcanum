@@ -31,7 +31,7 @@ export function BenchmarkPanel({ strategies, golden, loadCorpus }: BenchmarkPane
         <div>
           <h3 className="text-sm font-semibold">Benchmark</h3>
           <p className="mt-1 max-w-2xl text-xs text-muted">
-            Chunks every library document with each strategy, then scores the {golden.length} golden queries by plain word overlap
+            Chunks every library document with each strategy, then scores the golden queries whose document is in the library by plain word overlap
             (no embeddings). It compares how strategies slice text, not how the live index ranks.
           </p>
         </div>

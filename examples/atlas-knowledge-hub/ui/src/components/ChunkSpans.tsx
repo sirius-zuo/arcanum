@@ -1,4 +1,4 @@
-import { Fragment } from 'react'
+import { Fragment, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import type { AnnotatedChunk } from '../api/types'
 import { byteToIndex, utf8Length } from '../lib/offsets'
@@ -34,7 +34,7 @@ export function locateChunks(text: string, chunks: AnnotatedChunk[]): (Located |
       const prevEndByte = utf8Length(text.slice(0, prev.start)) + utf8Length(text.slice(prev.start, prev.end))
       const hint = byteToIndex(text, prevEndByte - c.overlap_chars)
       if (text.startsWith(c.text, hint)) start = hint
-      else start = text.indexOf(c.text, prev.start + 1)
+      else start = text.indexOf(c.text, prev.end)
     } else {
       start = text.indexOf(c.text)
     }
@@ -97,9 +97,9 @@ interface ChunkSpansProps {
 }
 
 export function ChunkSpans({ text, chunks }: ChunkSpansProps) {
-  const located = locateChunks(text, chunks)
-  const spans = buildSpans(text, located)
-  const missing = located.filter((l) => l === null).length
+  const located = useMemo(() => locateChunks(text, chunks), [text, chunks])
+  const spans = useMemo(() => buildSpans(text, located), [text, located])
+  const missing = located.filter((l, i) => l === null && chunks[i].text.length > 0).length
   return (
     <div>
       <p
@@ -130,7 +130,7 @@ export function ChunkSpans({ text, chunks }: ChunkSpansProps) {
               <Fragment>
                 #{i} {c.char_count} chars, ~{c.token_estimate} tok
                 {c.overlap_chars > 0 ? `, overlap ${c.overlap_chars} B` : ''}
-                {located[i] === null ? ', not in source' : ''}
+                {located[i] === null && c.text.length > 0 ? ', not in source' : ''}
               </Fragment>
             </Chip>
           </li>
