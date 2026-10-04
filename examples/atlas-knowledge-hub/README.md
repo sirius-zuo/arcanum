@@ -34,7 +34,7 @@ Dev mode uses LanceDB, in-memory graph, tree and chunk-metadata stores, and a SQ
 | Real-time events | Library, Admin | `/ws/events` |
 | Retention GC | Admin | `/admin/gc` (disabled state explained) |
 | MCP | Connect | MCP server on `MCP_PORT`, `/demo/mcp` |
-| Source deletion | Library | `DELETE /collections/:c/sources` |
+| Source deletion | Library | `DELETE /api/v1/collections/:c/sources` |
 
 ---
 
@@ -143,7 +143,7 @@ The UI calls the real Arcanum API for everything it can. The `/demo` routes exis
 | Page | Arcanum API | `/demo` helpers (and why) |
 |---|---|---|
 | Overview (`/`) | none | `/demo/bootstrap` (dev key, mode, generators; the UI has no other way to get a key), `/demo/health` (Ollama and model probe), `/demo/samples/load` |
-| Library (`/library`) | `/api/v1/ingestion-operations`, `/ws/events`, `DELETE /collections/:c/sources` | `/demo/library` (versions plus chunk counts, no single API call), `/demo/samples/apply-update`, `/demo/samples` |
+| Library (`/library`) | `/api/v1/ingestion-operations`, `/ws/events`, `DELETE /api/v1/collections/:c/sources` | `/demo/library` (versions plus chunk counts, no single API call), `/demo/samples/apply-update`, `/demo/samples` |
 | Search (`/search`) | `POST /api/v1/search` | none |
 | Context (`/context`) | `POST /api/v1/context` | none |
 | Ask (`/ask`) | `POST /api/v1/generate` (SSE) | none |

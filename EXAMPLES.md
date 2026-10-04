@@ -1,9 +1,9 @@
 # Arcanum Usage Examples
 
 **Date:** 2026-06-01 (updated 2026-06-16)
-**Status:** Approved; all 6 examples implemented in `examples/`
+**Status:** Approved; all 7 examples implemented in `examples/`
 
-Six real-world scenarios for small and midsize companies covering every combination of ingestion strategy (Standard, Full) and retrieval orchestration mode (Static, QueryClassified, ParallelFusion).
+Six real-world scenarios for small and midsize companies (plus the Atlas all-capabilities showcase, see below) covering every combination of ingestion strategy (Standard, Full) and retrieval orchestration mode (Static, QueryClassified, ParallelFusion).
 
 ---
 
@@ -74,15 +74,16 @@ Added after this doc's original design (commits `3d552332`, `0b3108cc`, `4a001b8
 - `.evidence(Arc<dyn EvidenceResolver>)`: answers "show me the source" for any chunk, tree node, entity, or relation; served under `GET /evidence/chunk/:chunk_id`, `/evidence/tree-node/:node_id`, `/evidence/entity/:entity_id`, `/evidence/relation/:source_id/:relation_type/:target_id`.
 - `.gc_worker(Arc<dyn GcWorker>)`: retention-policy garbage collection; requires Postgres-backed stores, so no example wires this in dev.
 
-**Current wiring across the 6 examples:**
+**Current wiring across the examples:**
 
 | Example | `version_store` | `snapshot_store` | `chunk_metadata_store` + `evidence` |
 |---|---|---|---|
 | Devforge | ✅ (`SqliteDocumentVersionStore`) | ✅ (`LocalSnapshotStore`) | — |
 | Folio | ✅ | implicit default | ✅ (`DefaultEvidenceResolver`) |
+| Atlas | ✅ (`SqliteDocumentVersionStore`) | ✅ (`LocalSnapshotStore`) | ✅ (`DefaultEvidenceResolver`) |
 | Meridian, Canopy, Helix, Vantage | not yet wired | not yet wired | not yet wired |
 
-Devforge needed `version_store` to fix its document-count/list-documents endpoints (commit `48e42559`); Folio is the only example with the full evidence resolver wired, exercising `/evidence/*`. The other four examples don't wire any evidence-layer store yet: their `/api/v1/vector/collections/*/stats` and `/documents` endpoints will work but won't reflect document-level history, and `/evidence/*` will return nothing useful for their content.
+Devforge needed `version_store` to fix its document-count/list-documents endpoints (commit `48e42559`); Folio and Atlas are the examples with the full evidence resolver wired, exercising `/evidence/*`. The other four examples don't wire any evidence-layer store yet: their `/api/v1/vector/collections/*/stats` and `/documents` endpoints will work but won't reflect document-level history, and `/evidence/*` will return nothing useful for their content.
 
 ---
 
