@@ -30,6 +30,7 @@ export type TourAction =
   | { type: 'goto'; index: number; count: number }
   | { type: 'dismiss' }
   | { type: 'complete'; event: TourEvent; steps: StepRef[] }
+  | { type: 'revoke'; events: TourEvent[]; steps: StepRef[] }
   | { type: 'reset' }
 
 export const INITIAL_TOUR: TourState = { active: false, index: 0, completed: {} }
@@ -60,6 +61,13 @@ export function reduceTour(state: TourState, action: TourAction): TourState {
       if (hit.length === 0) return state
       const completed = { ...state.completed }
       for (const s of hit) completed[s.id] = true
+      return { ...state, completed }
+    }
+    case 'revoke': {
+      const hit = action.steps.filter((s) => state.completed[s.id] && action.events.includes(s.completes_when as TourEvent))
+      if (hit.length === 0) return state
+      const completed = { ...state.completed }
+      for (const s of hit) delete completed[s.id]
       return { ...state, completed }
     }
     case 'reset':
@@ -101,4 +109,14 @@ export function libraryEvents(library: Library | undefined): TourEvent[] {
   const policy = library.documents.find((d) => d.source_uri === POLICY)
   if (policy && policy.versions.length >= 2) events.push('update_applied')
   return events
+}
+
+/** The events `libraryEvents` can derive. Data resets on every Atlas start, so these can become false again. */
+export const LIBRARY_EVENTS: TourEvent[] = ['corpus_loaded', 'update_applied']
+
+/** Library-derived events that the data shows as not (or no longer) true. */
+export function staleLibraryEvents(library: Library | undefined): TourEvent[] {
+  if (!library) return []
+  const now = libraryEvents(library)
+  return LIBRARY_EVENTS.filter((e) => !now.includes(e))
 }

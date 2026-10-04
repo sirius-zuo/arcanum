@@ -49,6 +49,18 @@ function mount(children: React.ReactNode) {
 afterEach(() => vi.unstubAllGlobals())
 
 describe('TourProvider', () => {
+  it('revokes_library_completions_when_the_data_was_reset', async () => {
+    localStorage.setItem('atlas.tour', JSON.stringify({ active: false, index: 0, completed: { load: true, update: true, context: true } }))
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) =>
+        new Response(JSON.stringify(url === '/demo/samples' ? { files: [], golden: [], flawed_answers: [], tour } : { collection: 'halcyon', documents: [] }), { status: 200 }),
+      ),
+    )
+    mount(null)
+    await waitFor(() => expect(screen.getByTestId('done')).toHaveTextContent(/^context$/))
+  })
+
   it('derives_corpus_loaded_and_update_applied_from_library_data', async () => {
     localStorage.clear()
     vi.stubGlobal(

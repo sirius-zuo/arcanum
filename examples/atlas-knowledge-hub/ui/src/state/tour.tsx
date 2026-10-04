@@ -2,7 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import type { ReactNode } from 'react'
 import { useLibrary, useSamples } from '../api/library'
 import type { TourStep } from '../api/types'
-import { libraryEvents, parseTour, reduceTour, serializeTour } from '../lib/tourState'
+import { libraryEvents, parseTour, staleLibraryEvents, reduceTour, serializeTour } from '../lib/tourState'
 import type { TourEvent, TourState } from '../lib/tourState'
 import { safeGet, safeSet } from '../lib/storage'
 import { useCommandActions } from './commandActions'
@@ -14,12 +14,16 @@ export interface TourValue {
   steps: TourStep[]
   /** Increments on every start so the card can take focus for a user-initiated start only. */
   startCount: number
+  /** Increments on every reset so library-derived steps can be re-derived from unchanged data. */
+  resets: number
   start: () => void
   next: () => void
   prev: () => void
   goto: (index: number) => void
   dismiss: () => void
+  reset: () => void
   signal: (event: TourEvent) => void
+  revoke: (events: TourEvent[]) => void
 }
 
 const Ctx = createContext<TourValue | null>(null)
@@ -28,6 +32,7 @@ const Ctx = createContext<TourValue | null>(null)
 export function TourStore({ steps, children }: { steps: TourStep[]; children: ReactNode }) {
   const [state, dispatch] = useReducer(reduceTour, undefined, () => parseTour(safeGet(KEY)))
   const [startCount, setStartCount] = useState(0)
+  const [resets, setResets] = useState(0)
 
   useEffect(() => {
     safeSet(KEY, serializeTour(state))
@@ -45,6 +50,14 @@ export function TourStore({ steps, children }: { steps: TourStep[]; children: Re
   const prev = useCallback(() => dispatch({ type: 'prev', count }), [count])
   const goto = useCallback((index: number) => dispatch({ type: 'goto', index, count }), [count])
   const dismiss = useCallback(() => dispatch({ type: 'dismiss' }), [])
+  const reset = useCallback(() => {
+    dispatch({ type: 'reset' })
+    setResets((n) => n + 1)
+  }, [])
+  const revoke = useCallback(
+    (events: TourEvent[]) => dispatch({ type: 'revoke', events, steps: stepsRef.current }),
+    [steps],
+  )
   const signal = useCallback(
     (event: TourEvent) => dispatch({ type: 'complete', event, steps: stepsRef.current }),
     // steps is a dependency on purpose: a new identity re-runs LibrarySync once the step list arrives.
@@ -52,8 +65,8 @@ export function TourStore({ steps, children }: { steps: TourStep[]; children: Re
   )
 
   const value = useMemo(
-    () => ({ state, steps, startCount, start, next, prev, goto, dismiss, signal }),
-    [state, steps, startCount, start, next, prev, goto, dismiss, signal],
+    () => ({ state, steps, startCount, resets, start, next, prev, goto, dismiss, reset, signal, revoke }),
+    [state, steps, startCount, resets, start, next, prev, goto, dismiss, reset, signal, revoke],
   )
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>
 }
@@ -61,11 +74,13 @@ export function TourStore({ steps, children }: { steps: TourStep[]; children: Re
 /** Completes corpus_loaded and update_applied from library data, never from ingestion events. */
 function LibrarySync() {
   const library = useLibrary()
-  const { signal } = useTour()
+  const { signal, revoke, resets } = useTour()
   const data = library.data
   useEffect(() => {
+    // Data resets on every start: a completion the library no longer backs is taken back.
+    revoke(staleLibraryEvents(data))
     for (const e of libraryEvents(data)) signal(e)
-  }, [data, signal])
+  }, [data, signal, revoke, resets])
   return null
 }
 

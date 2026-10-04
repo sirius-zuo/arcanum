@@ -41,7 +41,7 @@ export async function runGc(client: Client): Promise<GcResult> {
   }
 }
 
-/** A 503 means the engine has no metrics recorder; the page explains it instead of failing. */
+/** A 503 means the engine's /metrics returned nothing; the page explains it instead of failing. */
 export async function getMetrics(client: Client): Promise<MetricsResult> {
   try {
     return { kind: 'ok', data: await client.get<DemoMetrics>('/demo/metrics') }
@@ -80,7 +80,8 @@ export function useMetrics() {
     queryKey: ['demo', 'metrics'],
     queryFn: () => getMetrics(client),
     enabled: data !== null,
-    refetchInterval: 10_000,
+    // Stop polling once the engine reports nothing; the page offers a manual retry.
+    refetchInterval: (query) => (query.state.data?.kind === 'unavailable' ? false : 10_000),
     retry: false,
   })
 }

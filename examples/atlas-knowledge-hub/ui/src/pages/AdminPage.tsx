@@ -146,8 +146,14 @@ export default function AdminPage() {
           {metrics.data?.kind === 'unavailable' && (
             <EmptyState
               icon={Gauge}
-              title="Metrics are not reporting right now"
-              description={`Metrics are not reporting right now (${metrics.data.message}). Request counts and latency appear here once the engine serves them.`}
+              title="No metrics to show"
+              description={`The engine's /metrics endpoint returned no data (${metrics.data.message}), so there is nothing to chart. This is a known limitation of the framework build used here, not a setting; see the README. Atlas stopped polling.`}
+              action={
+                <button type="button" className={button} onClick={() => void metrics.refetch()}>
+                  <RefreshCw className="h-4 w-4" aria-hidden="true" />
+                  Check again
+                </button>
+              }
             />
           )}
           {snapshot && <MetricCards snapshot={snapshot} />}

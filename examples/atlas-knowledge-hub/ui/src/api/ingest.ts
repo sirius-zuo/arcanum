@@ -6,7 +6,9 @@ import { idempotencyKey } from '../lib/idempotency'
 import { useBootstrap } from '../state/bootstrap'
 
 export const COLLECTION = 'halcyon'
-export const POLL_MS = 1_500
+// The engine rate limits a key to 120 requests a minute. Ten pending operations at 8 s is 75 a
+// minute; socket events (ingestEvents) nudge an immediate refetch, so progress still feels live.
+export const POLL_MS = 8_000
 
 export type OperationStatus = 'Accepted' | 'Running' | 'Succeeded' | 'Failed'
 

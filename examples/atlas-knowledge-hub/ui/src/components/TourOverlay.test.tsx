@@ -62,6 +62,15 @@ describe('TourOverlay', () => {
     expect(screen.getByText('Ask it')).toBeInTheDocument()
   })
 
+  it('reset_tour_clears_progress_and_closes_the_card', () => {
+    setup()
+    act(() => screen.getByText('fire').click())
+    expect(JSON.parse(localStorage.getItem('atlas.tour') ?? '{}').completed).toEqual({ search: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Reset tour' }))
+    expect(screen.queryByRole('complementary', { name: 'Guided tour' })).toBeNull()
+    expect(JSON.parse(localStorage.getItem('atlas.tour') ?? '{}').completed).toEqual({})
+  })
+
   it('persists_progress_and_survives_corrupt_storage', () => {
     setup()
     act(() => screen.getByText('fire').click())

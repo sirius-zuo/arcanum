@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { INITIAL_TOUR, libraryEvents, nextIncomplete, parseTour, reduceTour, serializeTour } from './tourState'
+import { INITIAL_TOUR, libraryEvents, staleLibraryEvents, nextIncomplete, parseTour, reduceTour, serializeTour } from './tourState'
 import type { TourState } from './tourState'
 import type { Library } from '../api/types'
 
@@ -8,6 +8,20 @@ const steps = [
   { id: 'search', completes_when: 'searched' },
   { id: 'ask', completes_when: 'asked' },
 ]
+
+describe('revoke', () => {
+  it('removes_only_the_completions_of_the_named_events', () => {
+    const state: TourState = { active: true, index: 1, completed: { load: true, search: true } }
+    const out = reduceTour(state, { type: 'revoke', events: ['corpus_loaded'], steps })
+    expect(out.completed).toEqual({ search: true })
+    expect(reduceTour(out, { type: 'revoke', events: ['corpus_loaded'], steps })).toBe(out)
+  })
+
+  it('stale_library_events_are_those_the_data_no_longer_shows', () => {
+    expect(staleLibraryEvents(undefined)).toEqual([])
+    expect(staleLibraryEvents({ collection: 'halcyon', documents: [] })).toEqual(['corpus_loaded', 'update_applied'])
+  })
+})
 
 describe('reduceTour', () => {
   it('start_activates_at_the_first_incomplete_step', () => {

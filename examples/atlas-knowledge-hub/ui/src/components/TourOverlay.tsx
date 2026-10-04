@@ -38,7 +38,7 @@ export function TourOverlay() {
 }
 
 function TourCard() {
-  const { state, steps, startCount, next, prev, goto, dismiss: hide } = useTour()
+  const { state, steps, startCount, next, prev, goto, dismiss: hide, reset } = useTour()
   const dismiss = () => {
     hide()
     document.getElementById('tour-launcher')?.focus()
@@ -132,6 +132,13 @@ function TourCard() {
             </button>
           )}
         </div>
+        <button
+          type="button"
+          onClick={reset}
+          className="mt-2 text-xs text-muted underline-offset-2 transition hover:text-text hover:underline"
+        >
+          Reset tour
+        </button>
       </div>
     </aside>
   )

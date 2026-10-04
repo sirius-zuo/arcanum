@@ -26,8 +26,8 @@ describe('admin api', () => {
   })
 
   it('metrics_503_maps_to_empty_state', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (_url: string) => json({ error: 'metrics recorder not installed' }, 503)))
-    expect(await getMetrics(client())).toEqual({ kind: 'unavailable', message: 'metrics recorder not installed' })
+    vi.stubGlobal('fetch', vi.fn(async (_url: string) => json({ error: 'the engine returned no metrics' }, 503)))
+    expect(await getMetrics(client())).toEqual({ kind: 'unavailable', message: 'the engine returned no metrics' })
   })
 
   it('audit_unwraps_logs_and_caps_at_100', async () => {
